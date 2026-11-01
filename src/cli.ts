@@ -191,6 +191,13 @@ function render(command: string, result: unknown): string {
   }
 }
 
+/** Holding directories the installer could not delete, from an add or an update-style result. */
+function leftoverDirs(result: unknown): { name: string; dir: string }[] {
+  const r = result as { name?: string; leftoverDir?: string; addons?: { name: string; leftoverDir?: string }[] };
+  const entries = Array.isArray(r.addons) ? r.addons : [r];
+  return entries.flatMap((e) => (e.leftoverDir && e.name ? [{ name: e.name, dir: e.leftoverDir }] : []));
+}
+
 function hasErrors(result: unknown): boolean {
   const addons = (result as { addons?: { status: string }[] }).addons;
   return Array.isArray(addons) && addons.some((a) => a.status === "error");
@@ -245,6 +252,9 @@ async function main(argv: string[]): Promise<number> {
 
     progress.flush();
     process.stdout.write(`${values.json ? JSON.stringify(result, null, 2) : render(command, result)}\n`);
+    for (const { name, dir } of leftoverDirs(result)) {
+      process.stderr.write(`wowget: warning: ${name}: could not delete the previous copies in ${dir}; remove it by hand.\n`);
+    }
     return hasErrors(result) ? 1 : 0;
   } catch (err) {
     progress.flush();

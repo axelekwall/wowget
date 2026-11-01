@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { openState, SCHEMA_VERSION } from "../src/core/state.ts";
@@ -24,6 +25,40 @@ describe("openState", () => {
     expect((second.db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION);
     expect(second.getActiveInstall("questie")?.releaseId).toBe("v1");
     second.close();
+  });
+
+  test("migrates a version 1 database, keeping its rows", async () => {
+    const path = join(await tempDir(), "state.db");
+    const v1 = new Database(path, { create: true });
+    v1.exec(`
+      CREATE TABLE installs (
+        id INTEGER PRIMARY KEY, addon TEXT NOT NULL, source TEXT NOT NULL, release_id TEXT NOT NULL,
+        version TEXT, filename TEXT NOT NULL, sha256 TEXT NOT NULL, zip_path TEXT NOT NULL,
+        installed_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE UNIQUE INDEX installs_active ON installs(addon) WHERE active = 1;
+      CREATE TABLE install_folders (
+        install_id INTEGER NOT NULL REFERENCES installs(id) ON DELETE CASCADE,
+        folder TEXT NOT NULL,
+        PRIMARY KEY (install_id, folder)
+      );
+      CREATE TABLE http_cache (
+        url TEXT PRIMARY KEY, etag TEXT, last_modified TEXT, body BLOB NOT NULL, fetched_at TEXT NOT NULL
+      );
+      INSERT INTO installs (id, addon, source, release_id, filename, sha256, zip_path, installed_at)
+        VALUES (1, 'questie', 'github:Questie/Questie', 'v1', 'Questie.zip', 'ab', '/z', '2026-01-01T00:00:00Z');
+      INSERT INTO install_folders (install_id, folder) VALUES (1, 'Questie');
+      PRAGMA user_version = 1;
+    `);
+    v1.close();
+
+    const state = openState(path);
+    expect((state.db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION);
+    const columns = (state.db.query("PRAGMA table_info(install_folders)").all() as { name: string }[]).map((c) => c.name);
+    expect(columns).toContain("displaced");
+    expect(state.getActiveInstall("Questie")).toMatchObject({ releaseId: "v1", folders: ["Questie"], displacedFolders: [] });
+    expect(state.folderOwner("questie")).toBe("questie");
+    state.close();
   });
 });
 

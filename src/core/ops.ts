@@ -95,22 +95,37 @@ async function pathExists(path: string): Promise<boolean> {
   );
 }
 
-/** Folders of the install that are absent from the AddOns directory. */
+/**
+ * Folders of the install that are absent from the AddOns directory, plus those another addon took
+ * over with --force.
+ */
 async function missingFolders(installPath: string, active: InstallRecord): Promise<string[]> {
   const missing: string[] = [];
   for (const folder of active.folders) {
     if (!(await pathExists(join(installPath, folder)))) missing.push(folder);
   }
-  return missing;
+  return [...missing, ...active.displacedFolders].sort();
+}
+
+/** The installer's leftover holding directory, as an optional result field. */
+function leftover(result: { leftoverDir?: string }): { leftoverDir?: string } {
+  return result.leftoverDir ? { leftoverDir: result.leftoverDir } : {};
 }
 
 /** Installs over an existing install, which is a repair when the release is unchanged. */
 async function reinstall(ctx: Context, entry: AddonEntry, resolved: Resolved, active: InstallRecord): Promise<UpdateEntry> {
   const result = await installEntry(ctx, entry, resolved);
   if (isCurrent(active, entry, resolved)) {
-    return { name: entry.name, status: "repaired", version: result.version, folders: result.folders };
+    return { name: entry.name, status: "repaired", version: result.version, folders: result.folders, ...leftover(result) };
   }
-  return { name: entry.name, status: "updated", from: active.version ?? active.releaseId, to: result.version, folders: result.folders };
+  return {
+    name: entry.name,
+    status: "updated",
+    from: active.version ?? active.releaseId,
+    to: result.version,
+    folders: result.folders,
+    ...leftover(result),
+  };
 }
 
 // init
@@ -179,6 +194,8 @@ export interface AddResult {
   releaseId: string;
   version: string;
   folders: string[];
+  /** Previous copies of replaced folders that could not be deleted. */
+  leftoverDir?: string;
 }
 
 export async function add(opts: AddOptions): Promise<AddResult> {
@@ -216,7 +233,14 @@ export async function add(opts: AddOptions): Promise<AddResult> {
     }
     throw err;
   }
-  return { name, source: opts.source, releaseId: installed.releaseId, version: installed.version, folders: installed.folders };
+  return {
+    name,
+    source: opts.source,
+    releaseId: installed.releaseId,
+    version: installed.version,
+    folders: installed.folders,
+    ...leftover(installed),
+  };
 }
 
 // remove
@@ -250,7 +274,7 @@ export interface ListEntry {
   version: string | null;
   releaseId: string | null;
   status: ListStatus;
-  /** Recorded folders that are absent on disk. */
+  /** Recorded folders that are absent on disk or were taken over by another addon. */
   missingFolders: string[];
 }
 
@@ -322,12 +346,13 @@ export async function outdated(opts: OpsOptions): Promise<OutdatedResult> {
 
 // update and install
 
+/** `leftoverDir`: previous copies of replaced folders that could not be deleted. */
 export type UpdateEntry =
   | { name: string; status: "current"; version: string }
-  | { name: string; status: "updated"; from: string; to: string; folders: string[] }
-  | { name: string; status: "installed"; version: string; folders: string[] }
+  | { name: string; status: "updated"; from: string; to: string; folders: string[]; leftoverDir?: string }
+  | { name: string; status: "installed"; version: string; folders: string[]; leftoverDir?: string }
   /** The same release was reinstalled because recorded folders were missing. */
-  | { name: string; status: "repaired"; version: string; folders: string[] }
+  | { name: string; status: "repaired"; version: string; folders: string[]; leftoverDir?: string }
   | { name: string; status: "skipped"; version: string }
   | { name: string; status: "error"; error: string };
 
@@ -364,7 +389,7 @@ export async function update(opts: UpdateOptions): Promise<UpdateResult> {
         continue;
       }
       const result = await installEntry(ctx, entry, resolved);
-      addons.push({ name, status: "installed", version: result.version, folders: result.folders });
+      addons.push({ name, status: "installed", version: result.version, folders: result.folders, ...leftover(result) });
     } catch (err) {
       addons.push({ name, status: "error", error: message(err) });
     }
@@ -393,7 +418,7 @@ export async function install(opts: OpsOptions): Promise<UpdateResult> {
         continue;
       }
       const result = await installEntry(ctx, entry, resolved);
-      addons.push({ name, status: "installed", version: result.version, folders: result.folders });
+      addons.push({ name, status: "installed", version: result.version, folders: result.folders, ...leftover(result) });
     } catch (err) {
       addons.push({ name, status: "error", error: message(err) });
     }

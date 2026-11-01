@@ -199,20 +199,53 @@ describe("install", () => {
     expect(result.folders).toEqual(["Foo-Classic"]);
   });
 
-  test("a forced takeover moves folder ownership to the new addon", async () => {
+  test("a forced takeover moves folder ownership to the new addon and marks it displaced for the old one", async () => {
     const env = await setup();
     const opts = { targetDir: env.addons, flavor: "forever" as const, state: env.state, cacheDir: env.cache };
     await install({ ...opts, addon: "A", resolved: await localRelease(env, "a1", { "Shared/Shared_Forever.toc": "" }) });
     await install({ ...opts, addon: "B", force: true, resolved: await localRelease(env, "b1", { "Shared/Shared_Forever.toc": "" }) });
     expect(env.state.folderOwners("Shared")).toEqual(["b"]);
-    expect(env.state.getActiveInstall("A")?.folders).toEqual([]);
+    expect(env.state.getActiveInstall("A")).toMatchObject({ folders: [], displacedFolders: ["Shared"] });
 
-    const err = await install({ ...opts, addon: "A", resolved: await localRelease(env, "a2", { "Shared/Shared_Forever.toc": "" }) }).catch((e) => e);
+    const a2 = await localRelease(env, "a2", { "Shared/Shared_Forever.toc": "" });
+    const err = await install({ ...opts, addon: "A", resolved: a2 }).catch((e) => e);
     expect(err.code).toBe("conflict");
     expect(err.message).toContain('belongs to "b"');
 
     expect((await uninstall({ addon: "B", targetDir: env.addons, state: env.state })).removedFolders).toEqual(["Shared"]);
     expect(await visible(env.addons)).toEqual([]);
+
+    await install({ ...opts, addon: "A", resolved: a2 });
+    expect(env.state.getActiveInstall("A")).toMatchObject({ folders: ["Shared"], displacedFolders: [] });
+  });
+
+  test("uninstalling the displaced addon leaves the folder to its new owner", async () => {
+    const env = await setup();
+    const opts = { targetDir: env.addons, flavor: "forever" as const, state: env.state, cacheDir: env.cache };
+    await install({ ...opts, addon: "A", resolved: await localRelease(env, "a1", { "A/A_Forever.toc": "", "Shared/Shared_Forever.toc": "" }) });
+    await install({ ...opts, addon: "B", force: true, resolved: await localRelease(env, "b1", { "Shared/Shared_Forever.toc": "" }) });
+    expect((await uninstall({ addon: "A", targetDir: env.addons, state: env.state })).removedFolders).toEqual(["A"]);
+    expect(await visible(env.addons)).toEqual(["Shared"]);
+  });
+
+  test("previous copies that cannot be deleted after a swap are reported, not thrown", async () => {
+    const env = await setup();
+    const opts = { addon: "Details", targetDir: env.addons, flavor: "forever" as const, state: env.state, cacheDir: env.cache };
+    await install({ ...opts, resolved: await localRelease(env, "v1", { "Details/Details_Forever.toc": "", "Details/locked/x.lua": "v1" }) });
+    // A read-only subdirectory keeps its file from being deleted.
+    await chmod(join(env.addons, "Details", "locked"), 0o555);
+    let leftoverDir: string | undefined;
+    try {
+      const result = await install({ ...opts, resolved: await localRelease(env, "v2", { "Details/Details_Forever.toc": "" }) });
+      leftoverDir = result.leftoverDir;
+      expect(leftoverDir).toStartWith(join(env.addons, ".wowget-old-"));
+      expect(await readFile(join(leftoverDir!, "Details", "locked", "x.lua"), "utf8")).toBe("v1");
+      expect(await readdir(join(env.addons, "Details"))).toEqual(["Details_Forever.toc"]);
+      expect(env.state.getActiveInstall("Details")?.releaseId).toBe("v2");
+    } finally {
+      if (leftoverDir) await chmod(join(leftoverDir, "Details", "locked"), 0o755);
+      else await chmod(join(env.addons, "Details", "locked"), 0o755).catch(() => {});
+    }
   });
 
   test("a non-zip download is not cached, and a corrupt cached zip is downloaded again", async () => {

@@ -14,6 +14,8 @@ export interface InstallRecord {
   installedAt: string;
   active: boolean;
   folders: string[];
+  /** Folders another addon took over with --force; they count as missing for this install. */
+  displacedFolders: string[];
 }
 
 export interface NewInstall {
@@ -66,6 +68,9 @@ const MIGRATIONS: string[] = [
     fetched_at TEXT NOT NULL
   );
   `,
+  `
+  ALTER TABLE install_folders ADD COLUMN displaced INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
@@ -108,11 +113,11 @@ export class State {
     this.db = db;
   }
 
-  private foldersOf(id: number): string[] {
+  private foldersOf(id: number, displaced: boolean): string[] {
     return (
-      this.db.query("SELECT folder FROM install_folders WHERE install_id = ? ORDER BY folder").all(id) as {
-        folder: string;
-      }[]
+      this.db
+        .query("SELECT folder FROM install_folders WHERE install_id = ? AND displaced = ? ORDER BY folder")
+        .all(id, displaced ? 1 : 0) as { folder: string }[]
     ).map((r) => r.folder);
   }
 
@@ -128,7 +133,8 @@ export class State {
       zipPath: row.zip_path,
       installedAt: row.installed_at,
       active: row.active === 1,
-      folders: this.foldersOf(row.id),
+      folders: this.foldersOf(row.id, false),
+      displacedFolders: this.foldersOf(row.id, true),
     };
   }
 
@@ -146,7 +152,8 @@ export class State {
 
   /**
    * Inserts the install and its folders and deactivates the previous active row, in one
-   * transaction. With `releaseFromOthers`, other active installs stop owning its folders.
+   * transaction. With `releaseFromOthers`, other active installs stop owning its folders and
+   * record them as displaced.
    */
   recordInstall(install: NewInstall, options?: { releaseFromOthers?: boolean }): InstallRecord {
     const addon = install.addon.toLowerCase();
@@ -175,14 +182,14 @@ export class State {
     return this.toRecord(this.db.query("SELECT * FROM installs WHERE id = ?").get(id) as InstallRow);
   }
 
-  /** Removes `folders` (case-insensitively) from every active install except `exceptAddon`'s. */
+  /** Marks `folders` (case-insensitively) as displaced in every active install except `exceptAddon`'s. */
   releaseFolders(folders: string[], exceptAddon: string): void {
-    const remove = this.db.query(
-      `DELETE FROM install_folders WHERE folder = ? COLLATE NOCASE
+    const displace = this.db.query(
+      `UPDATE install_folders SET displaced = 1 WHERE folder = ? COLLATE NOCASE
          AND install_id IN (SELECT id FROM installs WHERE active = 1 AND addon != ?)`,
     );
     this.db.transaction(() => {
-      for (const folder of folders) remove.run(folder, exceptAddon.toLowerCase());
+      for (const folder of folders) displace.run(folder, exceptAddon.toLowerCase());
     })();
   }
 
@@ -192,12 +199,15 @@ export class State {
     return result.changes > 0;
   }
 
-  /** Addon names (lower-case) whose active install recorded `folder`, compared case-insensitively. */
+  /**
+   * Addon names (lower-case) whose active install recorded `folder`, compared case-insensitively.
+   * Displaced folders do not count.
+   */
   folderOwners(folder: string): string[] {
     const rows = this.db
       .query(
         `SELECT DISTINCT i.addon FROM installs i JOIN install_folders f ON f.install_id = i.id
-         WHERE i.active = 1 AND f.folder = ? COLLATE NOCASE ORDER BY i.addon`,
+         WHERE i.active = 1 AND f.displaced = 0 AND f.folder = ? COLLATE NOCASE ORDER BY i.addon`,
       )
       .all(folder) as { addon: string }[];
     return rows.map((r) => r.addon);

@@ -194,11 +194,15 @@ transaction), `deactivateInstall(addon)`, `folderOwner(folder)`,
    be moved back, keep the old directory and name it in the error. Remove the old set
    after success. Also remove folders from the previous active install that
    are not in the new set.
-7. `state.recordInstall(...)`, which also removes the folders from any other
-   active install, so a forced takeover leaves one owner.
+7. `state.recordInstall(...)`, which also marks the folders as displaced
+   (`install_folders.displaced = 1`, schema version 2) in any other active
+   install, so a forced takeover leaves one owner. The displaced addon counts
+   those folders as missing and its repair fails with a conflict naming the new
+   owner until that owner is removed. If deleting the old set after the swap
+   fails, the install still succeeds and the result names the leftover directory.
 
-`uninstall({ addon, targetDir, state })` removes the active install's folders
-if they exist and calls `deactivateInstall`. Missing folders are not an error.
+`uninstall({ addon, targetDir, state })` removes the active install's
+non-displaced folders if they exist and calls `deactivateInstall`. Missing folders are not an error.
 
 Emit events: `download:start/progress/done`, `extract`, `verify`, `swap`,
 `done`, each with the addon name.
@@ -242,7 +246,8 @@ Anything else is an error naming the supported forms.
   to the asset with that name, or failing that, compared lower-cased with runs
   of non-alphanumeric characters replaced by `.` (GitHub rewrites some
   characters on upload). `flavorVerified = true`. With no matching asset, fall
-  through to the zip-name rules below.
+  through to the zip-name rules below. When the entries list flavors but not
+  the wanted one, fail with a `flavor` error naming the listed flavors.
 - Without `release.json`: consider assets ending in `.zip`. One zip: use it
   with `flavorVerified = false`. Several: prefer a filename containing the
   flavor name (case-insensitive; for forever also accept `camelot`), else
@@ -253,7 +258,8 @@ Anything else is an error naming the supported forms.
 ### URL
 
 - `GET` the URL with the cache's ETag as `If-None-Match`. On 304 reuse the
-  cached file. Otherwise save the body to the cache dir under
+  cached file. Otherwise check that the body is a readable zip (else a `zip`
+  error, nothing cached) and save it to the cache dir under
   `<cache>/<addon>/<sha256>/<filename>` and store the ETag.
 - `releaseId` is the sha256. `flavorVerified = false`.
 

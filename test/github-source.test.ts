@@ -107,6 +107,41 @@ describe("github source", () => {
     expect(draft.message).toContain('no release tagged "v10.0.0"');
   });
 
+  test("a pin containing a slash is fetched by tag with the slash kept", async () => {
+    const tagUrl = "https://api.github.com/repos/Questie/Questie/releases/tags/bundle/v1.0";
+    const bundle = {
+      tag_name: "bundle/v1.0",
+      draft: false,
+      prerelease: false,
+      assets: [{ name: "Questie.zip", browser_download_url: `${DL}/bundle/v1.0/Questie.zip` }],
+    };
+    const resolved = await resolve({ pin: "bundle/v1.0" }, { [API]: () => json(releases), [tagUrl]: () => json(bundle) }).result;
+    expect(resolved.releaseId).toBe("bundle/v1.0");
+  });
+
+  test("a release.json that lists only other flavors is a flavor error before any zip download", async () => {
+    const release = {
+      tag_name: "v1.0.0",
+      draft: false,
+      prerelease: false,
+      assets: [
+        { name: "Questie-classic.zip", browser_download_url: `${DL}/v1.0.0/Questie-classic.zip` },
+        { name: "release.json", browser_download_url: `${DL}/v1.0.0/release.json` },
+      ],
+    };
+    const meta = {
+      releases: [
+        { filename: "Questie-classic.zip", nolib: false, metadata: [{ flavor: "titan" }, { flavor: "classic" }] },
+        { filename: "Questie-classic-nolib.zip", nolib: true, metadata: [{ flavor: "mists" }, { flavor: "classic" }] },
+      ],
+    };
+    const { result, requests } = resolve({}, { [API]: () => json([release]), [`${DL}/v1.0.0/release.json`]: () => json(meta) });
+    const err = await result.catch((e) => e);
+    expect(err.code).toBe("flavor");
+    expect(err.message).toBe('Questie/Questie v1.0.0 has no build for flavor "forever" (release.json lists: classic, mists, titan).');
+    expect(requests.some((r) => r.url.endsWith(".zip"))).toBe(false);
+  });
+
   test("a release.json filename matches an asset after normalising, else the zips are chosen by name", async () => {
     const release = (assetName: string) => ({
       tag_name: "v1.0.0",

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { addAddon, readManifest } from "../src/core/manifest.ts";
 import * as ops from "../src/core/ops.ts";
 import { openState, type State } from "../src/core/state.ts";
-import { fakeFetch } from "./helpers/fetch.ts";
+import { fakeFetch, json } from "./helpers/fetch.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
 
 const tempDir = useTempDirs();
@@ -134,6 +134,72 @@ describe("ops end to end", () => {
     await rm(join(addons, "MyAddon"), { recursive: true });
     expect((await ops.install(opts)).addons[0]!.status).toBe("repaired");
     expect(await readFile(join(addons, "MyAddon", "core.lua"), "utf8")).toBe("v1");
+  });
+
+  test("an addon whose folder another addon took over with --force is missing until that addon is removed", async () => {
+    const { manifestPath, addons, opts } = await setup();
+    const zips: Record<string, Uint8Array> = {
+      "/A.zip": zipSync({ "A/A_Forever.toc": text(""), "Lib/Lib_Forever.toc": text(""), "Lib/lib.lua": text("from A") }),
+      "/B.zip": zipSync({ "B/B_Forever.toc": text(""), "Lib/Lib_Forever.toc": text(""), "Lib/lib.lua": text("from B") }),
+    };
+    server = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        const zip = zips[new URL(req.url).pathname];
+        return zip ? new Response(zip) : new Response("not found", { status: 404 });
+      },
+    });
+    const base = `http://localhost:${server.port}`;
+    await ops.init({ manifestPath, path: addons });
+    await ops.add({ ...opts, source: `url:${base}/A.zip` });
+    await ops.add({ ...opts, force: true, source: `url:${base}/B.zip` });
+    expect(await readFile(join(addons, "Lib", "lib.lua"), "utf8")).toBe("from B");
+
+    expect((await ops.list(opts)).addons.map((a) => [a.name, a.status, a.missingFolders])).toEqual([
+      ["A", "missing", ["Lib"]],
+      ["B", "ok", []],
+    ]);
+    expect((await ops.outdated(opts)).addons[0]).toMatchObject({ name: "A", status: "missing", missingFolders: ["Lib"] });
+    const conflict = (await ops.update({ ...opts, names: ["A"] })).addons[0]!;
+    expect(conflict).toMatchObject({ name: "A", status: "error" });
+    expect(conflict.status === "error" && conflict.error).toContain('belongs to "b"');
+
+    expect(await ops.remove({ ...opts, name: "B" })).toEqual({ name: "B", wasInstalled: true, removedFolders: ["B", "Lib"] });
+    expect(await readdir(addons)).toEqual(["A"]);
+
+    expect((await ops.update({ ...opts, names: ["A"] })).addons[0]).toMatchObject({ name: "A", status: "repaired" });
+    expect(await readFile(join(addons, "Lib", "lib.lua"), "utf8")).toBe("from A");
+    expect((await ops.list(opts)).addons[0]).toMatchObject({ name: "A", status: "ok" });
+  });
+
+  test("a GitHub release without a build for the flavor is a per-addon error", async () => {
+    const { manifestPath, addons, opts } = await setup();
+    const dl = "https://github.com/Example/Classic/releases/download/v1.0.0";
+    const fake = fakeFetch({
+      "https://api.github.com/repos/Example/Classic/releases?per_page=30": () =>
+        json([
+          {
+            tag_name: "v1.0.0",
+            draft: false,
+            prerelease: false,
+            assets: [
+              { name: "Classic.zip", browser_download_url: `${dl}/Classic.zip` },
+              { name: "release.json", browser_download_url: `${dl}/release.json` },
+            ],
+          },
+        ]),
+      [`${dl}/release.json`]: () => json({ releases: [{ filename: "Classic.zip", nolib: false, metadata: [{ flavor: "classic" }] }] }),
+    });
+    await ops.init({ manifestPath, path: addons });
+    await addAddon(manifestPath, { name: "Classic", source: "github:Example/Classic", prerelease: false });
+    const withFetch = { ...opts, fetch: fake.fetch };
+
+    for (const result of [await ops.outdated(withFetch), await ops.update(withFetch), await ops.install(withFetch)]) {
+      expect(result.addons).toEqual([
+        { name: "Classic", status: "error", error: 'Example/Classic v1.0.0 has no build for flavor "forever" (release.json lists: classic).' },
+      ]);
+    }
+    expect(fake.requests.some((r) => r.url.endsWith(".zip"))).toBe(false);
   });
 
   test("add rejects an entry the manifest would not accept before any download", async () => {

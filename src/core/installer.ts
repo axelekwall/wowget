@@ -36,6 +36,8 @@ export interface InstallResult {
   zipPath: string;
   sha256: string;
   record: InstallRecord;
+  /** Set when the previous copies could not be deleted after a successful install; they are still here. */
+  leftoverDir?: string;
 }
 
 export interface UninstallOptions {
@@ -301,7 +303,11 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
       await rm(oldDir, { recursive: true, force: true }).catch(() => {});
       throw err;
     }
-    await rm(oldDir, { recursive: true, force: true });
+    // The install is recorded, so failing to delete the previous copies must not fail it.
+    const leftover = await rm(oldDir, { recursive: true, force: true }).then(
+      () => false,
+      () => true,
+    );
 
     onEvent?.({ type: "done", addon, releaseId: resolved.releaseId, folders });
     return {
@@ -313,6 +319,7 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
       zipPath,
       sha256,
       record,
+      ...(leftover ? { leftoverDir: oldDir } : {}),
     };
   } finally {
     // Best effort, so that a cleanup failure does not hide the error that got here.

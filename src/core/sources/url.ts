@@ -3,6 +3,7 @@ import { mkdir, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { WowgetError } from "../errors.ts";
 import { cachedZipPath } from "../installer.ts";
+import { readZip } from "../zip.ts";
 import { decodeSegment } from "./parse.ts";
 import type { ResolveContext, Resolved, Source } from "./types.ts";
 
@@ -48,6 +49,13 @@ export function urlSource(spec: { raw: string; url: string }): Source {
         localPath = previousPath!;
       } else {
         const body = result.body!;
+        try {
+          readZip(body);
+        } catch (err) {
+          throw new WowgetError("zip", `${spec.url} did not return a readable zip (${err instanceof Error ? err.message : String(err)}).`, {
+            cause: err,
+          });
+        }
         pointer = { sha256: createHash("sha256").update(body).digest("hex"), filename: filenameFor(spec.url, ctx.addon) };
         ctx.onEvent?.({ type: "download:start", addon: ctx.addon, url: spec.url, filename: pointer.filename });
         localPath = cachedZipPath(ctx.cacheDir, ctx.addon, pointer.sha256, pointer.filename);

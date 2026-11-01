@@ -64,6 +64,12 @@ function chooseFromReleaseJson(entries: ReleaseJsonEntry[], flavor: Flavor): Rel
   return matching.find((e) => e.nolib === false) ?? matching.find((e) => !e.nolib) ?? matching[0];
 }
 
+/** Flavor names the release.json entries list, sorted and without duplicates. */
+function listedFlavors(entries: ReleaseJsonEntry[]): string[] {
+  const flavors = entries.flatMap((e) => (Array.isArray(e?.metadata) ? e.metadata.map((m) => m?.flavor) : []));
+  return [...new Set(flavors.filter((f): f is string => typeof f === "string" && f !== ""))].sort();
+}
+
 function chooseByName(zips: GithubAsset[], flavor: Flavor, releaseUrl: string): GithubAsset {
   if (zips.length === 1) return zips[0]!;
   if (zips.length === 0) throw new WowgetError("source", `Release ${releaseUrl} has no .zip asset.`);
@@ -84,6 +90,19 @@ export function githubSource(spec: { raw: string; owner: string; repo: string })
       return await ctx.http.getJson<T>(url, { headers });
     } catch (err) {
       if (err instanceof HttpStatusError && isRateLimited(err)) throw rateLimitError(err);
+      throw err;
+    }
+  }
+
+  /** Returns undefined when the file is not valid JSON. */
+  async function readReleaseJson(
+    ctx: ResolveContext,
+    url: string,
+  ): Promise<{ version?: unknown; releases?: ReleaseJsonEntry[] } | undefined> {
+    try {
+      return await getJson(ctx, url);
+    } catch (err) {
+      if (err instanceof WowgetError && err.cause instanceof SyntaxError) return undefined;
       throw err;
     }
   }
@@ -122,7 +141,9 @@ export function githubSource(spec: { raw: string; owner: string; repo: string })
     if (listed) return listed;
     let release: GithubRelease;
     try {
-      release = await getJson<GithubRelease>(ctx, `${API}/repos/${repo}/releases/tags/${encodeURIComponent(pin)}`, API_HEADERS);
+      // Tags may contain "/" ("bundle/v1.0"), which the endpoint expects literally.
+      const tag = pin.split("/").map(encodeURIComponent).join("/");
+      release = await getJson<GithubRelease>(ctx, `${API}/repos/${repo}/releases/tags/${tag}`, API_HEADERS);
     } catch (err) {
       if (err instanceof HttpStatusError && err.status === 404) {
         throw new WowgetError("source", `${repo}: no release tagged "${pin}".`, { cause: err });
@@ -147,9 +168,17 @@ export function githubSource(spec: { raw: string; owner: string; repo: string })
       let version = release.tag_name;
       const releaseJson = assets.find((a) => a.name === "release.json");
       if (releaseJson) {
-        const data = await getJson<{ version?: unknown; releases?: ReleaseJsonEntry[] }>(ctx, releaseJson.browser_download_url);
-        const entry = chooseFromReleaseJson(Array.isArray(data?.releases) ? data.releases : [], ctx.flavor);
-        if (entry) {
+        const data = await readReleaseJson(ctx, releaseJson.browser_download_url);
+        const entries = Array.isArray(data?.releases) ? data.releases : [];
+        const entry = chooseFromReleaseJson(entries, ctx.flavor);
+        const listed = listedFlavors(entries);
+        if (!entry && listed.length) {
+          throw new WowgetError(
+            "flavor",
+            `${repo} ${release.tag_name} has no build for flavor "${ctx.flavor}" (release.json lists: ${listed.join(", ")}).`,
+          );
+        }
+        if (entry && data) {
           const wanted = typeof entry.filename === "string" ? normaliseAssetName(entry.filename) : undefined;
           asset =
             assets.find((a) => a.name === entry.filename) ?? assets.find((a) => normaliseAssetName(a.name) === wanted);
@@ -159,8 +188,8 @@ export function githubSource(spec: { raw: string; owner: string; repo: string })
           if (typeof named === "string" && named) version = named;
         }
       }
-      // Without a release.json entry for the flavor, or when its filename matches no asset, fall
-      // back to the zips and let the installer check the TOC files.
+      // Without a usable release.json, or when the entry's filename matches no asset, fall back to
+      // the zips and let the installer check the TOC files.
       asset ??= chooseByName(
         assets.filter((a) => a.name.toLowerCase().endsWith(".zip")),
         ctx.flavor,
