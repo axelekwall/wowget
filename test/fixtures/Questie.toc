@@ -1,0 +1,7 @@
+﻿## Interface: 11507, 16001, 110105
+## Interface-Classic: 11507
+## Title: |cFFFFFFFFQuestie|r
+## Version: 11.2.0
+## SavedVariables: QuestieConfig
+# not a field
+Questie.lua

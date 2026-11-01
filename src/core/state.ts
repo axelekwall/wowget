@@ -1,0 +1,233 @@
+import { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
+export interface InstallRecord {
+  id: number;
+  addon: string;
+  source: string;
+  releaseId: string;
+  version: string | null;
+  filename: string;
+  sha256: string;
+  zipPath: string;
+  installedAt: string;
+  active: boolean;
+  folders: string[];
+}
+
+export interface NewInstall {
+  addon: string;
+  source: string;
+  releaseId: string;
+  version?: string | null;
+  filename: string;
+  sha256: string;
+  zipPath: string;
+  folders: string[];
+  installedAt?: string;
+}
+
+export interface CacheEntry {
+  url: string;
+  etag: string | null;
+  lastModified: string | null;
+  body: Uint8Array;
+  fetchedAt: string;
+}
+
+const MIGRATIONS: string[] = [
+  `
+  CREATE TABLE installs (
+    id INTEGER PRIMARY KEY,
+    addon TEXT NOT NULL,
+    source TEXT NOT NULL,
+    release_id TEXT NOT NULL,
+    version TEXT,
+    filename TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    zip_path TEXT NOT NULL,
+    installed_at TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1
+  );
+  CREATE UNIQUE INDEX installs_active ON installs(addon) WHERE active = 1;
+
+  CREATE TABLE install_folders (
+    install_id INTEGER NOT NULL REFERENCES installs(id) ON DELETE CASCADE,
+    folder TEXT NOT NULL,
+    PRIMARY KEY (install_id, folder)
+  );
+
+  CREATE TABLE http_cache (
+    url TEXT PRIMARY KEY,
+    etag TEXT,
+    last_modified TEXT,
+    body BLOB NOT NULL,
+    fetched_at TEXT NOT NULL
+  );
+  `,
+];
+
+export const SCHEMA_VERSION = MIGRATIONS.length;
+
+interface InstallRow {
+  id: number;
+  addon: string;
+  source: string;
+  release_id: string;
+  version: string | null;
+  filename: string;
+  sha256: string;
+  zip_path: string;
+  installed_at: string;
+  active: number;
+}
+
+interface CacheRow {
+  url: string;
+  etag: string | null;
+  last_modified: string | null;
+  body: Uint8Array;
+  fetched_at: string;
+}
+
+function migrate(db: Database): void {
+  const current = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
+  for (let version = current; version < MIGRATIONS.length; version++) {
+    db.transaction(() => {
+      db.exec(MIGRATIONS[version]!);
+      db.exec(`PRAGMA user_version = ${version + 1}`);
+    })();
+  }
+}
+
+export class State {
+  readonly db: Database;
+
+  constructor(db: Database) {
+    this.db = db;
+  }
+
+  private foldersOf(id: number): string[] {
+    return (
+      this.db.query("SELECT folder FROM install_folders WHERE install_id = ? ORDER BY folder").all(id) as {
+        folder: string;
+      }[]
+    ).map((r) => r.folder);
+  }
+
+  private toRecord(row: InstallRow): InstallRecord {
+    return {
+      id: row.id,
+      addon: row.addon,
+      source: row.source,
+      releaseId: row.release_id,
+      version: row.version,
+      filename: row.filename,
+      sha256: row.sha256,
+      zipPath: row.zip_path,
+      installedAt: row.installed_at,
+      active: row.active === 1,
+      folders: this.foldersOf(row.id),
+    };
+  }
+
+  getActiveInstall(addon: string): InstallRecord | undefined {
+    const row = this.db
+      .query("SELECT * FROM installs WHERE addon = ? AND active = 1")
+      .get(addon.toLowerCase()) as InstallRow | null;
+    return row ? this.toRecord(row) : undefined;
+  }
+
+  listActiveInstalls(): InstallRecord[] {
+    const rows = this.db.query("SELECT * FROM installs WHERE active = 1 ORDER BY addon").all() as InstallRow[];
+    return rows.map((r) => this.toRecord(r));
+  }
+
+  /** Inserts the install and its folders and deactivates the previous active row, in one transaction. */
+  recordInstall(install: NewInstall): InstallRecord {
+    const addon = install.addon.toLowerCase();
+    const id = this.db.transaction(() => {
+      this.db.query("UPDATE installs SET active = 0 WHERE addon = ? AND active = 1").run(addon);
+      const result = this.db
+        .query(
+          `INSERT INTO installs (addon, source, release_id, version, filename, sha256, zip_path, installed_at, active)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+        )
+        .run(
+          addon,
+          install.source,
+          install.releaseId,
+          install.version ?? null,
+          install.filename,
+          install.sha256,
+          install.zipPath,
+          install.installedAt ?? new Date().toISOString(),
+        );
+      const insertFolder = this.db.query("INSERT INTO install_folders (install_id, folder) VALUES (?, ?)");
+      for (const folder of new Set(install.folders)) insertFolder.run(result.lastInsertRowid, folder);
+      return Number(result.lastInsertRowid);
+    })();
+    return this.toRecord(this.db.query("SELECT * FROM installs WHERE id = ?").get(id) as InstallRow);
+  }
+
+  /** Returns true when there was an active install to deactivate. */
+  deactivateInstall(addon: string): boolean {
+    const result = this.db.query("UPDATE installs SET active = 0 WHERE addon = ? AND active = 1").run(addon.toLowerCase());
+    return result.changes > 0;
+  }
+
+  /** Addon names (lower-case) whose active install recorded `folder`, compared case-insensitively. */
+  folderOwners(folder: string): string[] {
+    const rows = this.db
+      .query(
+        `SELECT DISTINCT i.addon FROM installs i JOIN install_folders f ON f.install_id = i.id
+         WHERE i.active = 1 AND f.folder = ? COLLATE NOCASE ORDER BY i.addon`,
+      )
+      .all(folder) as { addon: string }[];
+    return rows.map((r) => r.addon);
+  }
+
+  folderOwner(folder: string): string | undefined {
+    return this.folderOwners(folder)[0];
+  }
+
+  getCache(url: string): CacheEntry | undefined {
+    const row = this.db.query("SELECT * FROM http_cache WHERE url = ?").get(url) as CacheRow | null;
+    if (!row) return undefined;
+    return {
+      url: row.url,
+      etag: row.etag,
+      lastModified: row.last_modified,
+      body: new Uint8Array(row.body),
+      fetchedAt: row.fetched_at,
+    };
+  }
+
+  putCache(
+    url: string,
+    entry: { etag?: string | null; lastModified?: string | null; body: Uint8Array; fetchedAt?: string },
+  ): void {
+    this.db
+      .query(
+        `INSERT INTO http_cache (url, etag, last_modified, body, fetched_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(url) DO UPDATE SET etag = excluded.etag, last_modified = excluded.last_modified,
+           body = excluded.body, fetched_at = excluded.fetched_at`,
+      )
+      .run(url, entry.etag ?? null, entry.lastModified ?? null, entry.body, entry.fetchedAt ?? new Date().toISOString());
+  }
+
+  close(): void {
+    this.db.close();
+  }
+}
+
+/** Opens (creating if needed) the state database at `path` and runs pending migrations. */
+export function openState(path: string): State {
+  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+  const db = new Database(path, { create: true, strict: true });
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA foreign_keys = ON");
+  migrate(db);
+  return new State(db);
+}
