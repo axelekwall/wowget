@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { addAddon, readManifest } from "../src/core/manifest.ts";
 import * as ops from "../src/core/ops.ts";
 import { openState, type State } from "../src/core/state.ts";
+import { fakeFetch } from "./helpers/fetch.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
 
 const tempDir = useTempDirs();
@@ -118,6 +119,38 @@ describe("ops end to end", () => {
     expect((await ops.update(opts)).addons.map((a) => a.status)).toEqual(["error", "current"]);
   });
 
+  test("folders deleted after install are reported by outdated and restored by update and install", async () => {
+    const { manifestPath, addons, opts } = await setup();
+    const base = serveAddon({ current: { "MyAddon/MyAddon_Forever.toc": "", "MyAddon/core.lua": "v1" } });
+    await ops.init({ manifestPath, path: addons });
+    const added = await ops.add({ ...opts, source: `url:${base}/MyAddon.zip` });
+
+    await rm(join(addons, "MyAddon"), { recursive: true });
+    expect((await ops.outdated(opts)).addons[0]).toMatchObject({ status: "missing", missingFolders: ["MyAddon"] });
+    expect((await ops.update(opts)).addons[0]).toMatchObject({ status: "repaired", version: added.version });
+    expect(await readFile(join(addons, "MyAddon", "core.lua"), "utf8")).toBe("v1");
+    expect((await ops.update(opts)).addons[0]!.status).toBe("current");
+
+    await rm(join(addons, "MyAddon"), { recursive: true });
+    expect((await ops.install(opts)).addons[0]!.status).toBe("repaired");
+    expect(await readFile(join(addons, "MyAddon", "core.lua"), "utf8")).toBe("v1");
+  });
+
+  test("add rejects an entry the manifest would not accept before any download", async () => {
+    const { manifestPath, addons, opts } = await setup();
+    await ops.init({ manifestPath, path: addons });
+    const before = await readFile(manifestPath, "utf8");
+    const fake = fakeFetch({});
+    const source = "url:https://example.invalid/MyAddon.zip";
+
+    const err = await ops.add({ ...opts, fetch: fake.fetch, source, name: "" }).catch((e) => e);
+    expect(err.code).toBe("usage");
+    expect((await ops.add({ ...opts, fetch: fake.fetch, source, prerelease: true }).catch((e) => e)).code).toBe("usage");
+    expect(fake.requests).toEqual([]);
+    expect(await readdir(addons)).toEqual([]);
+    expect(await readFile(manifestPath, "utf8")).toBe(before);
+  });
+
   test("add refuses a name that is already in the manifest, remove an unknown one", async () => {
     const { manifestPath, addons, opts } = await setup();
     await ops.init({ manifestPath, path: addons });
@@ -140,5 +173,11 @@ describe("init", () => {
     expect(result.install.path).toBe(join(gameDir, "_forever_", "Interface", "AddOns"));
     expect(result.createdAddonsDir).toBe(true);
     expect((await ops.init({ manifestPath, gameDir }).catch((e) => e)).code).toBe("manifest_exists");
+  });
+
+  test("rejects an empty path", async () => {
+    const manifestPath = join(await tempDir(), "wowget.toml");
+    expect((await ops.init({ manifestPath, path: "" }).catch((e) => e)).code).toBe("usage");
+    expect(await Bun.file(manifestPath).exists()).toBe(false);
   });
 });

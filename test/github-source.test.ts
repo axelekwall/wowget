@@ -91,6 +91,64 @@ describe("github source", () => {
     expect((await resolve({ pin: "v11.2.1" }).result.catch((e) => e)).code).toBe("source");
   });
 
+  test("a pin outside the newest releases is fetched by tag", async () => {
+    const tagUrl = "https://api.github.com/repos/Questie/Questie/releases/tags/v10.0.0";
+    const old = {
+      tag_name: "v10.0.0",
+      draft: false,
+      prerelease: false,
+      assets: [{ name: "Questie-v10.0.0.zip", browser_download_url: `${DL}/v10.0.0/Questie-v10.0.0.zip` }],
+    };
+    const resolved = await resolve({ pin: "v10.0.0" }, { [API]: () => json(releases), [tagUrl]: () => json(old) }).result;
+    expect(resolved).toMatchObject({ releaseId: "v10.0.0", filename: "Questie-v10.0.0.zip", flavorVerified: false });
+
+    const draft = await resolve({ pin: "v10.0.0" }, { [API]: () => json(releases), [tagUrl]: () => json({ ...old, draft: true }) })
+      .result.catch((e) => e);
+    expect(draft.message).toContain('no release tagged "v10.0.0"');
+  });
+
+  test("a release.json filename matches an asset after normalising, else the zips are chosen by name", async () => {
+    const release = (assetName: string) => ({
+      tag_name: "v1.0.0",
+      draft: false,
+      prerelease: false,
+      assets: [
+        { name: assetName, browser_download_url: `${DL}/v1.0.0/${assetName}` },
+        { name: "release.json", browser_download_url: `${DL}/v1.0.0/release.json` },
+      ],
+    });
+    const meta = { releases: [{ filename: "Questie v1.0.0.zip", nolib: false, metadata: [{ flavor: "forever" }] }] };
+    const routes = (assetName: string) => ({
+      [API]: () => json([release(assetName)]),
+      [`${DL}/v1.0.0/release.json`]: () => json(meta),
+    });
+
+    const normalised = await resolve({}, routes("Questie.v1.0.0.zip")).result;
+    expect(normalised).toMatchObject({ filename: "Questie.v1.0.0.zip", flavorVerified: true });
+
+    const fallback = await resolve({}, routes("Other-1.0.0.zip")).result;
+    expect(fallback).toMatchObject({ filename: "Other-1.0.0.zip", flavorVerified: false });
+  });
+
+  test("pages past a first page of pre-releases, up to 150 releases", async () => {
+    const pre = (i: number) => ({ tag_name: `v2.0.0-beta.${i}`, draft: false, prerelease: true, assets: [] });
+    const firstPage = Array.from({ length: 30 }, (_, i) => pre(i));
+    const stable = {
+      tag_name: "v1.0.0",
+      draft: false,
+      prerelease: false,
+      assets: [{ name: "Questie.zip", browser_download_url: `${DL}/v1.0.0/Questie.zip` }],
+    };
+    const page = (n: number) => `${API}&page=${n}`;
+    const found = await resolve({}, { [API]: () => json(firstPage), [page(2)]: () => json([pre(30), stable]) }).result;
+    expect(found.releaseId).toBe("v1.0.0");
+
+    const allPre = { [API]: () => json(firstPage), ...Object.fromEntries([2, 3, 4, 5].map((n) => [page(n), () => json(firstPage)])) };
+    const { result, requests } = resolve({}, allPre);
+    expect((await result.catch((e) => e)).message).toContain("newest 150");
+    expect(requests.length).toBe(5);
+  });
+
   test("a rate-limited response says to set GITHUB_TOKEN", async () => {
     const limited = () =>
       new Response("{}", { status: 403, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1793491200" } });

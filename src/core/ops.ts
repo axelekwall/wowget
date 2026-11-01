@@ -1,4 +1,4 @@
-import { lstat, mkdir, stat } from "node:fs/promises";
+import { lstat, mkdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { WowgetError } from "./errors.ts";
 import type { OnEvent } from "./events.ts";
@@ -7,8 +7,10 @@ import { HttpClient, type FetchFn } from "./http.ts";
 import { install as installRelease, uninstall } from "./installer.ts";
 import {
   addAddon,
+  appendAddonText,
   createManifest,
   findAddon,
+  parseManifest,
   readManifest,
   removeAddon,
   type AddonEntry,
@@ -93,6 +95,24 @@ async function pathExists(path: string): Promise<boolean> {
   );
 }
 
+/** Folders of the install that are absent from the AddOns directory. */
+async function missingFolders(installPath: string, active: InstallRecord): Promise<string[]> {
+  const missing: string[] = [];
+  for (const folder of active.folders) {
+    if (!(await pathExists(join(installPath, folder)))) missing.push(folder);
+  }
+  return missing;
+}
+
+/** Installs over an existing install, which is a repair when the release is unchanged. */
+async function reinstall(ctx: Context, entry: AddonEntry, resolved: Resolved, active: InstallRecord): Promise<UpdateEntry> {
+  const result = await installEntry(ctx, entry, resolved);
+  if (isCurrent(active, entry, resolved)) {
+    return { name: entry.name, status: "repaired", version: result.version, folders: result.folders };
+  }
+  return { name: entry.name, status: "updated", from: active.version ?? active.releaseId, to: result.version, folders: result.folders };
+}
+
 // init
 
 export interface InitOptions {
@@ -117,6 +137,7 @@ export async function init(opts: InitOptions): Promise<InitResult> {
     throw new WowgetError("manifest_exists", `A manifest already exists at ${opts.manifestPath}.`);
   }
 
+  if (opts.path === "") throw new WowgetError("usage", "--path must not be empty.");
   let path: string;
   if (opts.path !== undefined) {
     path = resolve(expandHome(opts.path));
@@ -163,19 +184,36 @@ export interface AddResult {
 export async function add(opts: AddOptions): Promise<AddResult> {
   const ctx = await context(opts);
   const spec = parseSource(opts.source);
+  if (opts.prerelease && spec.kind !== "github") {
+    throw new WowgetError("usage", "--prerelease only applies to GitHub sources.");
+  }
   const name = opts.name ?? defaultAddonName(spec);
   if (findAddon(ctx.manifest, name)) {
     throw new WowgetError("duplicate", `An addon named "${name}" is already in the manifest.`);
   }
   const entry: AddonEntry = { name, source: opts.source, prerelease: opts.prerelease ?? false };
   if (opts.pin !== undefined) entry.pin = opts.pin;
+  // Catch an entry the manifest would reject before downloading anything.
+  try {
+    parseManifest(appendAddonText(await readFile(opts.manifestPath, "utf8"), entry));
+  } catch (err) {
+    if (!(err instanceof WowgetError && err.code === "manifest")) throw err;
+    throw new WowgetError("usage", `Cannot add "${name}": ${err.message}`, { cause: err });
+  }
 
   const resolved = await resolveEntry(ctx, entry);
   const installed = await installEntry(ctx, entry, resolved);
   try {
     await addAddon(opts.manifestPath, entry);
   } catch (err) {
-    await uninstall({ addon: name, targetDir: ctx.manifest.install.path, state: opts.state });
+    try {
+      await uninstall({ addon: name, targetDir: ctx.manifest.install.path, state: opts.state });
+    } catch (rollbackErr) {
+      const code = err instanceof WowgetError ? err.code : "io";
+      throw new WowgetError(code, `${message(err)} Uninstalling ${name} again also failed: ${message(rollbackErr)}`, {
+        cause: err,
+      });
+    }
     throw err;
   }
   return { name, source: opts.source, releaseId: installed.releaseId, version: installed.version, folders: installed.folders };
@@ -231,17 +269,14 @@ export async function list(opts: Pick<OpsOptions, "manifestPath" | "state">): Pr
       addons.push({ name: entry.name, source: entry.source, version: null, releaseId: null, status: "not installed", missingFolders: [] });
       continue;
     }
-    const missingFolders: string[] = [];
-    for (const folder of active.folders) {
-      if (!(await pathExists(join(manifest.install.path, folder)))) missingFolders.push(folder);
-    }
+    const missing = await missingFolders(manifest.install.path, active);
     addons.push({
       name: entry.name,
       source: entry.source,
       version: active.version ?? active.releaseId,
       releaseId: active.releaseId,
-      status: missingFolders.length ? "missing" : "ok",
-      missingFolders,
+      status: missing.length ? "missing" : "ok",
+      missingFolders: missing,
     });
   }
   return { installPath: manifest.install.path, flavor: manifest.install.flavor, addons };
@@ -253,6 +288,8 @@ export type OutdatedEntry =
   | { name: string; status: "current"; version: string }
   | { name: string; status: "outdated"; installed: string; latest: string }
   | { name: string; status: "not installed"; latest: string }
+  /** Recorded folders are absent on disk; `update` reinstalls. */
+  | { name: string; status: "missing"; installed: string; latest: string; missingFolders: string[] }
   | { name: string; status: "error"; error: string };
 
 export interface OutdatedResult {
@@ -267,9 +304,15 @@ export async function outdated(opts: OpsOptions): Promise<OutdatedResult> {
     try {
       const resolved = await resolveEntry(ctx, entry);
       const active = opts.state.getActiveInstall(name);
-      if (!active) addons.push({ name, status: "not installed", latest: resolved.version });
+      if (!active) {
+        addons.push({ name, status: "not installed", latest: resolved.version });
+        continue;
+      }
+      const installed = active.version ?? active.releaseId;
+      const missing = await missingFolders(ctx.manifest.install.path, active);
+      if (missing.length) addons.push({ name, status: "missing", installed, latest: resolved.version, missingFolders: missing });
       else if (isCurrent(active, entry, resolved)) addons.push({ name, status: "current", version: resolved.version });
-      else addons.push({ name, status: "outdated", installed: active.version ?? active.releaseId, latest: resolved.version });
+      else addons.push({ name, status: "outdated", installed, latest: resolved.version });
     } catch (err) {
       addons.push({ name, status: "error", error: message(err) });
     }
@@ -283,6 +326,8 @@ export type UpdateEntry =
   | { name: string; status: "current"; version: string }
   | { name: string; status: "updated"; from: string; to: string; folders: string[] }
   | { name: string; status: "installed"; version: string; folders: string[] }
+  /** The same release was reinstalled because recorded folders were missing. */
+  | { name: string; status: "repaired"; version: string; folders: string[] }
   | { name: string; status: "skipped"; version: string }
   | { name: string; status: "error"; error: string };
 
@@ -312,16 +357,14 @@ export async function update(opts: UpdateOptions): Promise<UpdateResult> {
     try {
       const resolved = await resolveEntry(ctx, entry);
       const active = opts.state.getActiveInstall(name);
-      if (isCurrent(active, entry, resolved)) {
-        addons.push({ name, status: "current", version: resolved.version });
+      if (active) {
+        const intact = !(await missingFolders(ctx.manifest.install.path, active)).length;
+        if (intact && isCurrent(active, entry, resolved)) addons.push({ name, status: "current", version: resolved.version });
+        else addons.push(await reinstall(ctx, entry, resolved, active));
         continue;
       }
       const result = await installEntry(ctx, entry, resolved);
-      if (active) {
-        addons.push({ name, status: "updated", from: active.version ?? active.releaseId, to: result.version, folders: result.folders });
-      } else {
-        addons.push({ name, status: "installed", version: result.version, folders: result.folders });
-      }
+      addons.push({ name, status: "installed", version: result.version, folders: result.folders });
     } catch (err) {
       addons.push({ name, status: "error", error: message(err) });
     }
@@ -329,19 +372,27 @@ export async function update(opts: UpdateOptions): Promise<UpdateResult> {
   return { addons };
 }
 
-/** Installs every manifest addon without an active install; the rest are skipped without network access. */
+/**
+ * Installs every manifest addon without an active install and reinstalls those with missing
+ * folders; the rest are skipped without network access.
+ */
 export async function install(opts: OpsOptions): Promise<UpdateResult> {
   const ctx = await context(opts);
   const addons: UpdateEntry[] = [];
   for (const entry of ctx.manifest.addons) {
     const name = entry.name;
     const active = opts.state.getActiveInstall(name);
-    if (active) {
+    if (active && !(await missingFolders(ctx.manifest.install.path, active)).length) {
       addons.push({ name, status: "skipped", version: active.version ?? active.releaseId });
       continue;
     }
     try {
-      const result = await installEntry(ctx, entry, await resolveEntry(ctx, entry));
+      const resolved = await resolveEntry(ctx, entry);
+      if (active) {
+        addons.push(await reinstall(ctx, entry, resolved, active));
+        continue;
+      }
+      const result = await installEntry(ctx, entry, resolved);
       addons.push({ name, status: "installed", version: result.version, folders: result.folders });
     } catch (err) {
       addons.push({ name, status: "error", error: message(err) });

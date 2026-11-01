@@ -3,6 +3,7 @@ import { mkdir, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { WowgetError } from "../errors.ts";
 import { cachedZipPath } from "../installer.ts";
+import { decodeSegment } from "./parse.ts";
 import type { ResolveContext, Resolved, Source } from "./types.ts";
 
 interface Pointer {
@@ -12,7 +13,7 @@ interface Pointer {
 
 function filenameFor(url: string, addon: string): string {
   const segments = new URL(url).pathname.split("/").filter(Boolean);
-  const last = segments.length ? decodeURIComponent(segments[segments.length - 1]!) : "";
+  const last = segments.length ? decodeSegment(segments[segments.length - 1]!) : "";
   return last || `${addon}.zip`;
 }
 

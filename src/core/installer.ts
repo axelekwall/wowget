@@ -156,6 +156,7 @@ async function download(addon: string, resolved: Resolved, fetchFn: FetchFn, onE
     throw downloadError(url, err);
   }
   if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
     throw new WowgetError("network", `Download of ${url} failed: HTTP ${response.status}.`);
   }
   const lengthHeader = Number(response.headers.get("content-length"));

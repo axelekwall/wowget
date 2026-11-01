@@ -92,7 +92,10 @@ export class HttpClient implements Http {
     const lastModified = response.headers.get("last-modified");
     const sentValidator = Boolean(validators.etag || validators.lastModified);
     if (response.status === 304 && sentValidator) return { notModified: true, etag, lastModified };
-    if (!response.ok) throw new HttpStatusError(url, response);
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw new HttpStatusError(url, response);
+    }
     return { notModified: false, body: new Uint8Array(await response.arrayBuffer()), etag, lastModified };
   }
 }

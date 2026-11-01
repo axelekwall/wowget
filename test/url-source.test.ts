@@ -56,4 +56,13 @@ describe("url source", () => {
     expect(requests[1]!.headers.has("if-none-match")).toBe(false);
     expect(await Bun.file(first.localPath!).exists()).toBe(true);
   });
+
+  test("a malformed escape in the URL keeps the raw filename", async () => {
+    const url = "https://example.invalid/a%zz.zip";
+    const { fetch } = fakeFetch({ [url]: () => new Response("zip") });
+    const source = urlSource({ raw: `url:${url}`, url });
+    const http = new HttpClient({ fetch, env: {} });
+    const resolved = await source.resolve({ addon: "a", flavor: "forever", prerelease: false, http, cacheDir: await tempDir() });
+    expect(resolved.filename).toBe("a%zz.zip");
+  });
 });

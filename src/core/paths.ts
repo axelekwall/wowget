@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { WowgetError } from "./errors.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -12,6 +13,7 @@ export function expandHome(path: string): string {
 }
 
 export function manifestPath(override?: string, env: Env = process.env): string {
+  if (override === "") throw new WowgetError("usage", "--manifest must not be empty.");
   const chosen = override ?? env.WOWGET_MANIFEST;
   if (chosen) return expandHome(chosen);
   return join(homedir(), ".config", "wowget", "wowget.toml");

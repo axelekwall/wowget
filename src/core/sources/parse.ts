@@ -35,12 +35,21 @@ export function parseSource(raw: string): SourceSpec {
   throw new WowgetError("source", `Unknown source "${raw}"; ${SUPPORTED}.`);
 }
 
+/** Decodes a URL path segment, keeping it as is when it has a malformed escape. */
+export function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 /** Name used on `add` when none is given: the repo name, or the URL's last path segment without ".zip". */
 export function defaultAddonName(spec: SourceSpec): string {
   if (spec.kind === "github") return spec.repo;
   const url = new URL(spec.url);
   const segments = url.pathname.split("/").filter(Boolean);
-  const last = segments.length ? decodeURIComponent(segments[segments.length - 1]!) : "";
+  const last = segments.length ? decodeSegment(segments[segments.length - 1]!) : "";
   const name = last.replace(/\.zip$/i, "");
   return name || url.hostname;
 }

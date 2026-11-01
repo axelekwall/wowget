@@ -124,6 +124,8 @@ function renderUpdate(result: ops.UpdateResult): string {
           return [a.name, "updated", `${a.from} -> ${a.to}`];
         case "installed":
           return [a.name, "installed", a.version];
+        case "repaired":
+          return [a.name, "repaired", `${a.version} reinstalled`];
         case "skipped":
           return [a.name, "skipped", `${a.version} already installed`];
         case "error":
@@ -176,6 +178,8 @@ function render(command: string, result: unknown): string {
               return [a.name, a.installed, a.latest, "outdated"];
             case "not installed":
               return [a.name, "-", a.latest, "not installed"];
+            case "missing":
+              return [a.name, a.installed, a.latest, `missing (${a.missingFolders.join(", ")})`];
             case "error":
               return [a.name, "-", "-", `error: ${a.error}`];
           }
@@ -194,11 +198,13 @@ function hasErrors(result: unknown): boolean {
 
 async function main(argv: string[]): Promise<number> {
   let verbose = argv.includes("--verbose");
+  let json = argv.includes("--json");
   let progress = progressRenderer(verbose);
   let state: State | undefined;
   try {
     const { values, positionals } = parse(argv);
     verbose = values.verbose ?? false;
+    json = values.json ?? false;
     progress = progressRenderer(verbose);
     const [command, ...args] = positionals;
     if (values.help || !command) {
@@ -216,6 +222,7 @@ async function main(argv: string[]): Promise<number> {
     if (args.length < arity[0] || args.length > arity[1]) {
       throw new UsageError(`Wrong number of arguments for "${command}". Run "wowget --help".`);
     }
+    if (values.path === "") throw new UsageError("--path must not be empty.");
     if (values.flavor !== undefined && !isFlavor(values.flavor)) {
       throw new UsageError(`Unknown flavor "${values.flavor}"; expected one of ${FLAVORS.join(", ")}.`);
     }
@@ -241,16 +248,23 @@ async function main(argv: string[]): Promise<number> {
     return hasErrors(result) ? 1 : 0;
   } catch (err) {
     progress.flush();
-    if (err instanceof UsageError || (err instanceof WowgetError && err.code === "usage")) {
-      process.stderr.write(`wowget: ${err.message}\n`);
+    const usage = err instanceof UsageError || (err instanceof WowgetError && err.code === "usage");
+    const text = err instanceof Error ? err.message : String(err);
+    if (json) {
+      const code = usage ? "usage" : err instanceof WowgetError ? err.code : "unexpected";
+      process.stdout.write(`${JSON.stringify({ error: { code, message: text } }, null, 2)}\n`);
+      if (verbose && err instanceof Error && err.stack) process.stderr.write(`${err.stack}\n`);
+      return usage ? 2 : 1;
+    }
+    if (usage) {
+      process.stderr.write(`wowget: ${text}\n`);
       return 2;
     }
     if (err instanceof WowgetError) {
-      process.stderr.write(`wowget: ${err.message}\n`);
+      process.stderr.write(`wowget: ${text}\n`);
       if (verbose && err.stack) process.stderr.write(`${err.stack}\n`);
       return 1;
     }
-    const text = err instanceof Error ? err.message : String(err);
     process.stderr.write(`wowget: unexpected error: ${text}\n`);
     if (verbose && err instanceof Error && err.stack) process.stderr.write(`${err.stack}\n`);
     else process.stderr.write("Run again with --verbose for details.\n");

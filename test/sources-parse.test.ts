@@ -14,6 +14,10 @@ describe("parseSource", () => {
     expect(defaultAddonName(spec)).toBe("Some Addon");
   });
 
+  test("a malformed escape in the URL keeps the raw segment", () => {
+    expect(defaultAddonName(parseSource("url:https://example.invalid/a%zz.zip"))).toBe("a%zz");
+  });
+
   test("invalid forms name the supported ones", () => {
     expect(() => parseSource("curse:12345")).toThrow('"github:owner/repo" and "url:https://..."');
     expect(() => parseSource("Questie/Questie")).toThrow("supported forms");

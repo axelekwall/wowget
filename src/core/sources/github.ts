@@ -47,21 +47,16 @@ function flavorHints(flavor: Flavor): string[] {
   return flavor === "forever" ? ["forever", "camelot"] : [flavor];
 }
 
-function pickRelease(releases: GithubRelease[], ctx: ResolveContext, repo: string): GithubRelease {
-  const published = releases.filter((r) => !r.draft);
-  if (ctx.pin !== undefined) {
-    const pinned = published.find((r) => r.tag_name === ctx.pin);
-    if (!pinned) {
-      throw new WowgetError("source", `${repo}: no release tagged "${ctx.pin}" among the ${releases.length} most recent.`);
-    }
-    return pinned;
-  }
-  const release = published.find((r) => ctx.prerelease || !r.prerelease);
-  if (!release) {
-    const what = ctx.prerelease ? "releases" : "stable releases (use --prerelease to allow pre-releases)";
-    throw new WowgetError("source", `${repo} has no published ${what}.`);
-  }
-  return release;
+const PER_PAGE = 30;
+const MAX_PAGES = 5;
+
+function matchesChannel(release: GithubRelease, ctx: ResolveContext): boolean {
+  return !release.draft && (ctx.prerelease || !release.prerelease);
+}
+
+/** GitHub rewrites some characters in uploaded asset names, for instance spaces to dots. */
+function normaliseAssetName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, ".");
 }
 
 function chooseFromReleaseJson(entries: ReleaseJsonEntry[], flavor: Flavor): ReleaseJsonEntry | undefined {
@@ -93,21 +88,57 @@ export function githubSource(spec: { raw: string; owner: string; repo: string })
     }
   }
 
+  async function listReleases(ctx: ResolveContext, page: number): Promise<GithubRelease[]> {
+    const url = `${API}/repos/${repo}/releases?per_page=${PER_PAGE}${page > 1 ? `&page=${page}` : ""}`;
+    let releases: GithubRelease[];
+    try {
+      releases = await getJson<GithubRelease[]>(ctx, url, API_HEADERS);
+    } catch (err) {
+      if (err instanceof HttpStatusError && err.status === 404) {
+        throw new WowgetError("source", `GitHub repository ${repo} was not found.`, { cause: err });
+      }
+      throw err;
+    }
+    if (!Array.isArray(releases)) throw new WowgetError("source", `Unexpected releases response for ${repo}.`);
+    return releases;
+  }
+
+  async function newestRelease(ctx: ResolveContext): Promise<GithubRelease> {
+    let page = 1;
+    for (; page <= MAX_PAGES; page++) {
+      const releases = await listReleases(ctx, page);
+      const release = releases.find((r) => matchesChannel(r, ctx));
+      if (release) return release;
+      if (releases.length < PER_PAGE) break;
+    }
+    const limit = page > MAX_PAGES ? ` among its newest ${PER_PAGE * MAX_PAGES} (only those are checked)` : "";
+    const hint = ctx.prerelease ? "" : " (use --prerelease to allow pre-releases)";
+    throw new WowgetError("source", `${repo} has no published ${ctx.prerelease ? "" : "stable "}releases${limit}${hint}.`);
+  }
+
+  /** Looks in the newest releases first, then asks for the tag directly, since it may be older. */
+  async function pinnedRelease(ctx: ResolveContext, pin: string): Promise<GithubRelease> {
+    const listed = (await listReleases(ctx, 1)).find((r) => !r.draft && r.tag_name === pin);
+    if (listed) return listed;
+    let release: GithubRelease;
+    try {
+      release = await getJson<GithubRelease>(ctx, `${API}/repos/${repo}/releases/tags/${encodeURIComponent(pin)}`, API_HEADERS);
+    } catch (err) {
+      if (err instanceof HttpStatusError && err.status === 404) {
+        throw new WowgetError("source", `${repo}: no release tagged "${pin}".`, { cause: err });
+      }
+      throw err;
+    }
+    if (!release || typeof release !== "object" || release.tag_name !== pin || release.draft) {
+      throw new WowgetError("source", `${repo}: no release tagged "${pin}".`);
+    }
+    return release;
+  }
+
   return {
     kind: "github",
     async resolve(ctx: ResolveContext): Promise<Resolved> {
-      let releases: GithubRelease[];
-      try {
-        releases = await getJson<GithubRelease[]>(ctx, `${API}/repos/${repo}/releases?per_page=30`, API_HEADERS);
-      } catch (err) {
-        if (err instanceof HttpStatusError && err.status === 404) {
-          throw new WowgetError("source", `GitHub repository ${repo} was not found.`, { cause: err });
-        }
-        throw err;
-      }
-      if (!Array.isArray(releases)) throw new WowgetError("source", `Unexpected releases response for ${repo}.`);
-
-      const release = pickRelease(releases, ctx, repo);
+      const release = ctx.pin !== undefined ? await pinnedRelease(ctx, ctx.pin) : await newestRelease(ctx);
       const releaseUrl = release.html_url ?? `https://github.com/${repo}/releases/tag/${release.tag_name}`;
       const assets = release.assets ?? [];
 
@@ -119,18 +150,17 @@ export function githubSource(spec: { raw: string; owner: string; repo: string })
         const data = await getJson<{ version?: unknown; releases?: ReleaseJsonEntry[] }>(ctx, releaseJson.browser_download_url);
         const entry = chooseFromReleaseJson(Array.isArray(data?.releases) ? data.releases : [], ctx.flavor);
         if (entry) {
-          asset = assets.find((a) => a.name === entry.filename);
-          if (!asset) {
-            throw new WowgetError("source", `Release ${releaseUrl} lists ${entry.filename} in release.json but has no such asset.`);
-          }
-          flavorVerified = true;
+          const wanted = typeof entry.filename === "string" ? normaliseAssetName(entry.filename) : undefined;
+          asset =
+            assets.find((a) => a.name === entry.filename) ?? assets.find((a) => normaliseAssetName(a.name) === wanted);
+          flavorVerified = asset !== undefined;
           // Tags can be odd ("bundle/v12.3.1+v1.0.9"); the packager's version reads better.
           const named = typeof entry.version === "string" && entry.version ? entry.version : data.version;
           if (typeof named === "string" && named) version = named;
         }
       }
-      // Without a release.json entry for the flavor, fall back to the zips and let the installer
-      // check the TOC files.
+      // Without a release.json entry for the flavor, or when its filename matches no asset, fall
+      // back to the zips and let the installer check the TOC files.
       asset ??= chooseByName(
         assets.filter((a) => a.name.toLowerCase().endsWith(".zip")),
         ctx.flavor,

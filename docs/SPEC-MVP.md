@@ -231,13 +231,18 @@ Anything else is an error naming the supported forms.
 - `GET https://api.github.com/repos/{owner}/{repo}/releases?per_page=30`, with
   `Accept: application/vnd.github+json` and `Authorization: Bearer $GITHUB_TOKEN`
   when set. Do not use `/releases/latest`; it hides pre-releases.
-- Skip drafts. Skip pre-releases unless `prerelease` is true. If `pin` is set,
-  pick the release whose `tag_name` equals it, else error.
+- Skip drafts. Skip pre-releases unless `prerelease` is true; when a page has
+  no match, read further pages, up to 5 pages (150 releases). If `pin` is set,
+  pick the release whose `tag_name` equals it from the first page, else
+  `GET /repos/{owner}/{repo}/releases/tags/{pin}`; a 404 or a draft is an error.
 - If the release has a `release.json` asset, fetch it. Its shape is
   `{ releases: [{ filename, nolib, metadata: [{ flavor, interface }] }] }`
   (extra keys exist and are ignored). Choose the entry whose `metadata` includes
   the wanted flavor, preferring `nolib: false`. Match the entry's `filename`
-  to the asset with that name. `flavorVerified = true`.
+  to the asset with that name, or failing that, compared lower-cased with runs
+  of non-alphanumeric characters replaced by `.` (GitHub rewrites some
+  characters on upload). `flavorVerified = true`. With no matching asset, fall
+  through to the zip-name rules below.
 - Without `release.json`: consider assets ending in `.zip`. One zip: use it
   with `flavorVerified = false`. Several: prefer a filename containing the
   flavor name (case-insensitive; for forever also accept `camelot`), else
@@ -264,16 +269,18 @@ a `fetch` function in its constructor so tests inject a fake.
 | Command | Behaviour |
 |---|---|
 | `init [--path P] [--flavor F]` | Create the manifest. Default path: the first existing of `/Applications/World of Warcraft/_forever_/Interface/AddOns` (creating `Interface/AddOns` if `_forever_` exists). Error if the manifest exists. |
-| `add <source> [--name N] [--prerelease] [--pin ID]` | Error if the name exists. Resolve, install, then append to the manifest. If install fails nothing is written. |
+| `add <source> [--name N] [--prerelease] [--pin ID]` | Error if the name exists, if the entry would not parse as part of the manifest, or if `--prerelease` is given for a non-GitHub source; all before any download. Resolve, install, then append to the manifest. If install fails nothing is written. |
 | `remove <name>` | Uninstall, then splice from the manifest. Unknown name is an error. |
 | `list` | No network. For each manifest addon: name, source, installed version or `not installed`, and status `ok`, `missing` (recorded folders absent on disk), or `not installed`. |
-| `outdated` | For each addon: resolve and compare `releaseId` with the active install. Report `current`, `outdated` (with both versions), `not installed`, or `error` (with the message, and keep going). |
-| `update [name...]` | Resolve and install when the release differs; no names means all. Pinned addons update only to the pin. Report per addon. |
-| `install` | Install every manifest addon that has no active install. Skip the rest. |
+| `outdated` | For each addon: resolve and compare `releaseId` with the active install. Report `current`, `outdated` (with both versions), `not installed`, `missing` (recorded folders absent on disk), or `error` (with the message, and keep going). |
+| `update [name...]` | Resolve and install when the release differs or recorded folders are missing; no names means all. Pinned addons update only to the pin. Report per addon: `current`, `updated`, `installed`, `repaired` (same release reinstalled over missing folders), or `error`. |
+| `install` | Install every manifest addon that has no active install, and reinstall those with missing folders (`repaired`, or `updated` if the release changed). Skip the rest. |
 
 Global flags: `--manifest <path>`, `--json`, `--force`, `--verbose`. Exit code
-0 on success, 1 on any error, 2 on usage errors. `--json` prints the result
-object; otherwise a compact aligned table or one line per addon.
+0 on success, 1 on any error, 2 on usage errors (including an empty `--path`
+or `--manifest`). `--json` prints the result object, or on failure
+`{"error": {"code", "message"}}`, as the only output on stdout; otherwise a
+compact aligned table or one line per addon.
 
 Errors reach the CLI as `WowgetError` with a `code` and a message meant for a
 person. Unexpected errors print the stack only with `--verbose`.
