@@ -369,15 +369,35 @@ function sameAddons(a: AddonEntry[], b: AddonEntry[]): boolean {
   return norm(a) === norm(b);
 }
 
+/** Why `parsed` is not `expected`, or undefined when they match. */
+function mismatch(parsed: Manifest, expected: Manifest): string | undefined {
+  if (!sameTargets(parsed.targets, expected.targets)) return "the targets did not match the expected result";
+  if (!sameAddons(parsed.addons, expected.addons)) return "the addon list did not match the expected result";
+  return undefined;
+}
+
+/** Throws unless `next` parses back to `expected`; nothing is written. */
+function checkPlanned(path: string, next: string, expected: Manifest): void {
+  let reason: string | undefined;
+  try {
+    reason = mismatch(parseManifest(next, path), expected);
+  } catch (err) {
+    reason = err instanceof Error ? err.message : String(err);
+  }
+  if (reason !== undefined) {
+    throw new WowgetError("manifest", `Updating ${path} failed (${reason}); the file was left unchanged.`);
+  }
+}
+
 /** Writes `next`, re-parses the file, and restores `previous` if the result is not `expected`. */
 async function writeChecked(path: string, previous: string, next: string, expected: Manifest): Promise<Manifest> {
   await writeAtomic(path, next);
   let reason: string;
   try {
     const parsed = parseManifest(await readFile(path, "utf8"), path);
-    const targetsMatch = sameTargets(parsed.targets, expected.targets);
-    if (targetsMatch && sameAddons(parsed.addons, expected.addons)) return parsed;
-    reason = targetsMatch ? "the addon list did not match the expected result" : "the targets did not match the expected result";
+    const why = mismatch(parsed, expected);
+    if (why === undefined) return parsed;
+    reason = why;
   } catch (err) {
     reason = err instanceof Error ? err.message : String(err);
   }
@@ -404,13 +424,41 @@ export async function addAddon(path: string, entry: AddonEntry): Promise<Manifes
   return writeChecked(path, text, appendAddonText(text, entry), expected);
 }
 
-export async function removeAddon(path: string, name: string): Promise<Manifest> {
+/** The manifest file's text and its parsed form. */
+export async function readManifestText(path: string): Promise<{ text: string; manifest: Manifest }> {
   const text = await readText(path);
+  return { text, manifest: parseManifest(text, path) };
+}
+
+/**
+ * Writes `next`, which a plan function computed from `previous`, unless the file no longer holds
+ * `previous`.
+ */
+export async function writePlanned(path: string, previous: string, next: string): Promise<Manifest> {
+  if ((await readText(path)) !== previous) {
+    throw new WowgetError("manifest", `${path} changed while wowget was running, so it was not updated.`);
+  }
+  return writePlannedText(path, previous, next);
+}
+
+/** Returns `text` without the addon named `name`, checked to parse back to the expected manifest. */
+export function planRemoveAddon(text: string, name: string, path = "the manifest"): string {
   const manifest = parseManifest(text, path);
   const entry = findAddon(manifest, name);
   if (!entry) throw new WowgetError("not_found", `No addon named "${name}" in the manifest.`);
-  const expected = { ...manifest, addons: manifest.addons.filter((a) => a !== entry) };
-  return writeChecked(path, text, spliceAddonText(text, entry.name), expected);
+  const next = spliceAddonText(text, entry.name);
+  checkPlanned(path, next, { ...manifest, addons: manifest.addons.filter((a) => a !== entry) });
+  return next;
+}
+
+/** Writes `next`, already checked by a plan function, then checks the file again. */
+function writePlannedText(path: string, previous: string, next: string): Promise<Manifest> {
+  return writeChecked(path, previous, next, parseManifest(next, path));
+}
+
+export async function removeAddon(path: string, name: string): Promise<Manifest> {
+  const text = await readText(path);
+  return writePlannedText(path, text, planRemoveAddon(text, name, path));
 }
 
 export async function addTarget(path: string, name: string, target: Target): Promise<Manifest> {
@@ -434,11 +482,11 @@ export interface RemoveTargetResult {
 }
 
 /**
- * Removes the `[targets.<name>]` table and the name from every addon's `targets` list. Addons
- * that would be left with an empty list are removed.
+ * Returns `text` without the `[targets.<name>]` table and with the name dropped from every addon's
+ * `targets` list, checked to parse back to the expected manifest. Addons that would be left with
+ * an empty list are removed.
  */
-export async function removeTarget(path: string, name: string): Promise<RemoveTargetResult> {
-  const text = await readText(path);
+export function planRemoveTarget(text: string, name: string, path = "the manifest"): { text: string; removedAddons: string[] } {
   const manifest = parseManifest(text, path);
   if (!findTarget(manifest, name)) throw new WowgetError("not_found", `No target named "${name}" in the manifest.`);
   let next = spliceTargetText(text, name);
@@ -458,19 +506,35 @@ export async function removeTarget(path: string, name: string): Promise<RemoveTa
       removedAddons.push(entry.name);
     }
   }
-  const expected = { targets: manifest.targets.filter((t) => t.name !== name), addons };
-  return { manifest: await writeChecked(path, text, next, expected), removedAddons };
+  checkPlanned(path, next, { targets: manifest.targets.filter((t) => t.name !== name), addons });
+  return { text: next, removedAddons };
 }
 
-/** Sets the addon's `targets` list; `undefined` removes the key, meaning every target. */
-export async function setAddonTargets(path: string, name: string, targets: string[] | undefined): Promise<Manifest> {
+/** Removes the target as planRemoveTarget describes. */
+export async function removeTarget(path: string, name: string): Promise<RemoveTargetResult> {
   const text = await readText(path);
+  const { text: next, removedAddons } = planRemoveTarget(text, name, path);
+  return { manifest: await writePlannedText(path, text, next), removedAddons };
+}
+
+/**
+ * Returns `text` with the addon's `targets` list set, checked to parse back to the expected
+ * manifest; `undefined` removes the key, meaning every target.
+ */
+export function planSetAddonTargets(text: string, name: string, targets: string[] | undefined, path = "the manifest"): string {
   const manifest = parseManifest(text, path);
   const entry = findAddon(manifest, name);
   if (!entry) throw new WowgetError("not_found", `No addon named "${name}" in the manifest.`);
   const updated: AddonEntry = { ...entry };
   if (targets === undefined) delete updated.targets;
   else updated.targets = [...targets];
-  const expected = { ...manifest, addons: manifest.addons.map((a) => (a === entry ? updated : a)) };
-  return writeChecked(path, text, setAddonTargetsText(text, entry.name, targets), expected);
+  const next = setAddonTargetsText(text, entry.name, targets);
+  checkPlanned(path, next, { ...manifest, addons: manifest.addons.map((a) => (a === entry ? updated : a)) });
+  return next;
+}
+
+/** Sets the addon's `targets` list; `undefined` removes the key, meaning every target. */
+export async function setAddonTargets(path: string, name: string, targets: string[] | undefined): Promise<Manifest> {
+  const text = await readText(path);
+  return writePlannedText(path, text, planSetAddonTargets(text, name, targets, path));
 }

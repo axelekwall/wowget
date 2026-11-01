@@ -64,6 +64,8 @@ shared between targets of the same flavor within one run.
 
 Manifests from before targets (with an `[install]` table) are rejected; move
 the old file aside, run `wowget init` and add the addons again.
+A state database from before targets is upgraded in place and assigns its
+installs to the `forever` target.
 
 ### Options
 

@@ -222,6 +222,14 @@ export class State {
   }
 
   /**
+   * Makes an inactive install active again, for rolling back a newer install of the same addon.
+   * Throws if the addon already has an active install on that target.
+   */
+  reactivateInstall(id: number): void {
+    this.db.query("UPDATE installs SET active = 1 WHERE id = ?").run(id);
+  }
+
+  /**
    * Addon names (lower-case) whose active install on `target` recorded `folder`, compared
    * case-insensitively. Displaced folders do not count.
    */

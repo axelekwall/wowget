@@ -247,7 +247,7 @@ function render(command: string, result: unknown): string {
   }
 }
 
-/** Holding directories the installer could not delete, from the rows of an add or update-style result. */
+/** Holding directories that could not be deleted, from the rows of an add, remove or update-style result. */
 function leftoverDirs(result: unknown): { name: string; target: string; dir: string }[] {
   const addons = (result as { addons?: { name: string; target: string; leftoverDir?: string }[] }).addons;
   if (!Array.isArray(addons)) return [];
@@ -338,7 +338,7 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(`${values.json ? JSON.stringify(result, null, 2) : render(key, result)}\n`);
     for (const { name, target, dir } of leftoverDirs(result)) {
       process.stderr.write(
-        `wowget: warning: ${name} (${target}): could not delete the previous copies in ${dir}; remove it by hand.\n`,
+        `wowget: warning: ${name} (${target}): could not delete the old folders moved to ${dir}; remove it by hand.\n`,
       );
     }
     return hasErrors(result) ? 1 : 0;

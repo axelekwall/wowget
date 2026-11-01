@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { zipSync } from "fflate";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { addAddon, readManifest } from "../src/core/manifest.ts";
+import { addAddon, readManifest, removeAddon } from "../src/core/manifest.ts";
 import * as ops from "../src/core/ops.ts";
 import { openState, type State } from "../src/core/state.ts";
 import { fakeFetch, json } from "./helpers/fetch.ts";
@@ -299,6 +299,12 @@ describe("init", () => {
     expect((await ops.init({ manifestPath: join(root, "c.toml"), flavor: "classic" }).catch((e) => e)).code).toBe("usage");
   });
 
+  test("--game-dir together with --path is a usage error", async () => {
+    const root = await tempDir();
+    const err = await ops.init({ manifestPath: join(root, "a.toml"), path: join(root, "A"), gameDir: root }).catch((e) => e);
+    expect(err.code).toBe("usage");
+  });
+
   test("rejects an empty path", async () => {
     const manifestPath = join(await tempDir(), "wowget.toml");
     expect((await ops.init({ manifestPath, path: "" }).catch((e) => e)).code).toBe("usage");
@@ -441,5 +447,82 @@ describe("targets", () => {
     expect(fake.requests.filter((r) => r.url === releases)).toHaveLength(1);
     expect(fake.requests.filter((r) => r.url === zipUrl)).toHaveLength(1);
     expect(await readdir(second)).toEqual(["Example"]);
+  });
+
+  test("a failed forced add puts back the folders it replaced and reactivates the previous install", async () => {
+    const { manifestPath, opts, forever, era } = await twoTargets();
+    const zips = { "C.zip": { "C/C_Vanilla.toc": "", "C/core.lua": "v1" } };
+    const base = serveZips(zips);
+    await mkdir(join(era, "C"));
+    await writeFile(join(era, "C", "user.lua"), "mine");
+
+    // era installs over the unmanaged folder, then forever has no matching TOC.
+    const err = await ops.add({ ...opts, force: true, source: `url:${base}/C.zip` }).catch((e) => e);
+    expect(err.code).toBe("flavor");
+    expect(await readdir(era)).toEqual(["C"]);
+    expect(await readdir(join(era, "C"))).toEqual(["user.lua"]);
+    expect(await readFile(join(era, "C", "user.lua"), "utf8")).toBe("mine");
+    expect(opts.state.listActiveInstalls()).toEqual([]);
+
+    // An install the manifest no longer lists is the previous install for the next add.
+    await rm(join(era, "C"), { recursive: true });
+    const first = await ops.add({ ...opts, targets: ["era"], source: `url:${base}/C.zip` });
+    await removeAddon(manifestPath, "C");
+    zips["C.zip"] = { "C/C_Vanilla.toc": "", "C/core.lua": "v2" };
+    expect((await ops.add({ ...opts, source: `url:${base}/C.zip` }).catch((e) => e)).code).toBe("flavor");
+    expect(await readFile(join(era, "C", "core.lua"), "utf8")).toBe("v1");
+    expect(opts.state.getActiveInstall("era", "C")?.releaseId).toBe(first.addons[0]!.releaseId);
+    expect(await readdir(forever)).toEqual([]);
+  });
+
+  test("add checks that every target directory exists before installing anything", async () => {
+    const { opts, forever, era } = await twoTargets();
+    const base = serveZips({ "A.zip": both });
+    await rm(forever, { recursive: true });
+    const err = await ops.add({ ...opts, source: `url:${base}/A.zip` }).catch((e) => e);
+    expect(err.code).toBe("io");
+    expect(err.message).toContain('"forever"');
+    expect(await readdir(era)).toEqual([]);
+  });
+
+  test("target remove and remove -t uninstall nothing when the manifest edit cannot be made", async () => {
+    const { manifestPath, opts, forever, era } = await twoTargets();
+    const base = serveZips({ "A.zip": both });
+    await ops.add({ ...opts, source: `url:${base}/A.zip` });
+    // Inline target tables cannot be located for splicing.
+    const inline = `[targets]\nforever = { path = ${JSON.stringify(forever)}, flavor = "forever" }\nera = { path = ${JSON.stringify(era)}, flavor = "classic" }\n\n[[addon]]\nname = "A"\nsource = "url:${base}/A.zip"\n"targets" = ["forever", "era"]\n`;
+    await writeFile(manifestPath, inline);
+
+    expect((await ops.targetRemove({ ...opts, name: "era" }).catch((e) => e)).code).toBe("manifest");
+    // A quoted key is not found, so a second targets key would be added.
+    expect((await ops.remove({ ...opts, name: "A", targets: ["era"] }).catch((e) => e)).code).toBe("manifest");
+    expect(await readdir(era)).toEqual(["A"]);
+    expect(opts.state.listActiveInstalls().map((r) => r.target)).toEqual(["era", "forever"]);
+    expect(await readFile(manifestPath, "utf8")).toBe(inline);
+  });
+
+  test("target add rejects a path another target already uses", async () => {
+    const { manifestPath, era } = await twoTargets();
+    const err = await ops.targetAdd({ manifestPath, name: "other", path: join(era, "..", "AddOns"), flavor: "classic" }).catch((e) => e);
+    expect(err.code).toBe("usage");
+    expect(err.message).toContain('"era"');
+  });
+
+  test("remove -t and update -t for an addon not on that target are usage errors", async () => {
+    const { manifestPath, opts } = await twoTargets();
+    await addAddon(manifestPath, { name: "B", source: "url:https://example.invalid/B.zip", prerelease: false, targets: ["era"] });
+    expect((await ops.remove({ ...opts, name: "B", targets: ["forever"] }).catch((e) => e)).code).toBe("usage");
+    expect((await ops.update({ ...opts, names: ["B"], targets: ["forever"] }).catch((e) => e)).code).toBe("usage");
+    expect((await readManifest(manifestPath)).addons[0]?.targets).toEqual(["era"]);
+  });
+
+  test("URL addons sharing a URL resolve separately, each with its own cache record", async () => {
+    const { manifestPath, opts } = await twoTargets();
+    const base = serveZips({ "A.zip": both });
+    await addAddon(manifestPath, { name: "One", source: `url:${base}/A.zip`, prerelease: false });
+    await addAddon(manifestPath, { name: "Two", source: `url:${base}/A.zip`, prerelease: false });
+    await ops.outdated(opts);
+    expect(opts.state.getCache(`wowget:url-source:one:${base}/A.zip`)).toBeDefined();
+    expect(opts.state.getCache(`wowget:url-source:two:${base}/A.zip`)).toBeDefined();
   });
 });

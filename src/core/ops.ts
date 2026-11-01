@@ -1,11 +1,17 @@
-import { lstat, mkdir, readFile, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { detectInstalls, type DetectedInstall } from "./detect.ts";
 import { WowgetError } from "./errors.ts";
 import type { OnEvent } from "./events.ts";
 import type { Flavor } from "./flavor.ts";
 import { HttpClient, type FetchFn } from "./http.ts";
-import { install as installRelease, uninstall, type UninstallResult } from "./installer.ts";
+import {
+  install as installRelease,
+  removeBestEffort,
+  uninstall,
+  type InstallOptions,
+  type UninstallResult,
+} from "./installer.ts";
 import {
   addAddon,
   addonTargets,
@@ -16,10 +22,12 @@ import {
   findTarget,
   isTargetName,
   parseManifest,
+  planRemoveAddon,
+  planRemoveTarget,
+  planSetAddonTargets,
   readManifest,
-  removeAddon,
-  removeTarget,
-  setAddonTargets,
+  readManifestText,
+  writePlanned,
   type AddonEntry,
   type Manifest,
   type NamedTarget,
@@ -54,7 +62,7 @@ interface Context extends Loaded {
   http: Http;
   cacheDir: string;
   opts: OpsOptions;
-  /** Resolutions of this run, keyed by source, flavor, prerelease and pin. */
+  /** Resolutions of this run, keyed by source, flavor, prerelease, pin and, for URL sources, addon. */
   resolutions: Map<string, Promise<Resolved>>;
 }
 
@@ -111,10 +119,13 @@ function rowsFor(loaded: Loaded, entries: AddonEntry[]): Row[] {
 }
 
 function resolveRow(ctx: Context, { entry, target }: Row): Promise<Resolved> {
-  const key = JSON.stringify([entry.source, target.flavor, entry.prerelease, entry.pin ?? null]);
+  const spec = parseSource(entry.source);
+  // The URL source keeps its cache record per addon, so addons sharing a URL each resolve.
+  const addon = spec.kind === "url" ? entry.name.toLowerCase() : null;
+  const key = JSON.stringify([entry.source, target.flavor, entry.prerelease, entry.pin ?? null, addon]);
   let pending = ctx.resolutions.get(key);
   if (!pending) {
-    pending = sourceFor(parseSource(entry.source)).resolve({
+    pending = sourceFor(spec).resolve({
       addon: entry.name,
       flavor: target.flavor,
       prerelease: entry.prerelease,
@@ -128,8 +139,9 @@ function resolveRow(ctx: Context, { entry, target }: Row): Promise<Resolved> {
   return pending;
 }
 
-function installRow(ctx: Context, { entry, target }: Row, resolved: Resolved) {
+function installRow(ctx: Context, { entry, target }: Row, resolved: Resolved, extra?: Pick<InstallOptions, "keepOld">) {
   return installRelease({
+    ...extra,
     target: target.name,
     addon: entry.name,
     resolved,
@@ -250,6 +262,7 @@ export async function init(opts: InitOptions): Promise<InitResult> {
 
   let targets: NamedTarget[];
   if (opts.path !== undefined) {
+    if (opts.gameDir !== undefined) throw new WowgetError("usage", "--game-dir does not apply together with --path.");
     const path = absolutePath(opts.path, "--path");
     const flavor = opts.flavor ?? "forever";
     const name = opts.name ?? flavor;
@@ -329,6 +342,8 @@ export async function targetAdd(opts: TargetAddOptions): Promise<TargetAddResult
   if (findTarget(manifest, opts.name)) {
     throw new WowgetError("duplicate", `A target named "${opts.name}" is already in the manifest.`);
   }
+  const clash = manifest.targets.find((t) => resolve(expandHome(t.path)) === path);
+  if (clash) throw new WowgetError("usage", `${path} is already the path of target "${clash.name}".`);
   const createdAddonsDir = await ensureDir(path);
   const updated = await addTarget(opts.manifestPath, opts.name, { path, flavor: opts.flavor });
   return { target: findTarget(updated, opts.name)!, createdAddonsDir };
@@ -339,10 +354,24 @@ export interface RemoveEntry {
   target: string;
   wasInstalled: boolean;
   removedFolders: string[];
+  /** The removed folders, which could not be deleted. */
+  leftoverDir?: string;
 }
 
 function removeEntry(name: string, target: string, result: UninstallResult): RemoveEntry {
-  return { name, target, wasInstalled: result.wasInstalled, removedFolders: result.removedFolders };
+  return { name, target, wasInstalled: result.wasInstalled, removedFolders: result.removedFolders, ...leftover(result) };
+}
+
+/** Names what was already uninstalled in an error that stops a removal before the manifest is written. */
+function stoppedAfter(err: unknown, done: RemoveEntry[]): unknown {
+  const uninstalled = done.filter((r) => r.wasInstalled).map((r) => `${r.name} from ${r.target}`);
+  if (!uninstalled.length) return err;
+  const code = err instanceof WowgetError ? err.code : "io";
+  return new WowgetError(
+    code,
+    `${message(err)} Already uninstalled: ${uninstalled.join(", ")}; the manifest was not changed.`,
+    { cause: err },
+  );
 }
 
 export interface TargetRemoveOptions extends Pick<OpsOptions, "manifestPath" | "state"> {
@@ -357,19 +386,27 @@ export interface TargetRemoveResult {
   addons: RemoveEntry[];
 }
 
-/** Uninstalls everything wowget installed on the target, then removes it from the manifest. */
+/**
+ * Uninstalls everything wowget installed on the target, then removes it from the manifest. The
+ * manifest edit is computed and checked first, so an edit that cannot be made uninstalls nothing.
+ */
 export async function targetRemove(opts: TargetRemoveOptions): Promise<TargetRemoveResult> {
-  const manifest = await readManifest(opts.manifestPath);
+  const { text, manifest } = await readManifestText(opts.manifestPath);
   const target = findTarget(manifest, opts.name);
   if (!target) throw new WowgetError("not_found", `No target named "${opts.name}" in the manifest.`);
+  const plan = planRemoveTarget(text, target.name, opts.manifestPath);
   const addons: RemoveEntry[] = [];
-  for (const active of opts.state.listActiveInstalls(target.name)) {
-    const name = findAddon(manifest, active.addon)?.name ?? active.addon;
-    const result = await uninstall({ target: target.name, addon: name, targetDir: target.path, state: opts.state });
-    addons.push(removeEntry(name, target.name, result));
+  try {
+    for (const active of opts.state.listActiveInstalls(target.name)) {
+      const name = findAddon(manifest, active.addon)?.name ?? active.addon;
+      const result = await uninstall({ target: target.name, addon: name, targetDir: target.path, state: opts.state });
+      addons.push(removeEntry(name, target.name, result));
+    }
+    await writePlanned(opts.manifestPath, text, plan.text);
+  } catch (err) {
+    throw stoppedAfter(err, addons);
   }
-  const { removedAddons } = await removeTarget(opts.manifestPath, target.name);
-  return { name: target.name, removedAddons, addons };
+  return { name: target.name, removedAddons: plan.removedAddons, addons };
 }
 
 // add
@@ -405,6 +442,31 @@ function onTarget(target: string, err: unknown): unknown {
   return new WowgetError(err.code, `${target}: ${err.message}`, { cause: err });
 }
 
+/** A target `add` installed on, with what is needed to undo it. */
+interface AddDone {
+  target: NamedTarget;
+  entry: AddEntry;
+  /** The addon's active install on the target before this one, if any. */
+  previous?: InstallRecord;
+  /** Previous copies of the folders the install replaced. */
+  oldDir?: string;
+}
+
+/** Removes what `add` installed on one target and puts back the folders it replaced. */
+async function undoAdd(state: State, name: string, done: AddDone): Promise<void> {
+  const { target, oldDir } = done;
+  await uninstall({ target: target.name, addon: name, targetDir: target.path, state });
+  if (oldDir) {
+    const unrestored: string[] = [];
+    for (const folder of await readdir(oldDir)) {
+      await rename(join(oldDir, folder), join(target.path, folder)).catch(() => unrestored.push(folder));
+    }
+    if (unrestored.length) throw new WowgetError("io", `restoring ${unrestored.join(", ")} failed`);
+    await removeBestEffort(oldDir);
+  }
+  if (done.previous) state.reactivateInstall(done.previous.id);
+}
+
 export async function add(opts: AddOptions): Promise<AddResult> {
   const ctx = await context(opts);
   const spec = parseSource(opts.source);
@@ -426,20 +488,31 @@ export async function add(opts: AddOptions): Promise<AddResult> {
     throw new WowgetError("usage", `Cannot add "${name}": ${err.message}`, { cause: err });
   }
 
-  const addons: AddEntry[] = [];
-  const done: NamedTarget[] = [];
+  // A missing target would only fail after the others were installed.
+  for (const target of ctx.targets) {
+    if (!(await stat(target.path).then((s) => s.isDirectory(), () => false))) {
+      throw new WowgetError("io", `Target "${target.name}": ${target.path} does not exist or is not a directory.`);
+    }
+  }
+
+  // Replaced folders are kept until the manifest is written, so a failure can put them back.
+  const done: AddDone[] = [];
   try {
     for (const row of rowsFor(ctx, [entry])) {
       try {
-        const installed = await installRow(ctx, row, await resolveRow(ctx, row));
-        done.push(row.target);
-        addons.push({
-          name,
-          target: row.target.name,
-          releaseId: installed.releaseId,
-          version: installed.version,
-          folders: installed.folders,
-          ...leftover(installed),
+        const previous = opts.state.getActiveInstall(row.target.name, name);
+        const installed = await installRow(ctx, row, await resolveRow(ctx, row), { keepOld: true });
+        done.push({
+          target: row.target,
+          previous,
+          oldDir: installed.oldDir,
+          entry: {
+            name,
+            target: row.target.name,
+            releaseId: installed.releaseId,
+            version: installed.version,
+            folders: installed.folders,
+          },
         });
       } catch (err) {
         throw ctx.targets.length > 1 ? onTarget(row.target.name, err) : err;
@@ -448,22 +521,26 @@ export async function add(opts: AddOptions): Promise<AddResult> {
     await addAddon(opts.manifestPath, entry);
   } catch (err) {
     const failed: string[] = [];
-    for (const target of done) {
+    for (const d of [...done].reverse()) {
       try {
-        await uninstall({ target: target.name, addon: name, targetDir: target.path, state: opts.state });
+        await undoAdd(opts.state, name, d);
       } catch (rollbackErr) {
-        failed.push(`${target.name}: ${message(rollbackErr)}`);
+        const kept = d.oldDir ? `; the replaced folders are in ${d.oldDir}` : "";
+        failed.push(`${d.target.name}: ${message(rollbackErr)}${kept}`);
       }
     }
     if (failed.length) {
       const code = err instanceof WowgetError ? err.code : "io";
-      throw new WowgetError(code, `${message(err)} Uninstalling ${name} again also failed (${failed.join("; ")}).`, {
+      throw new WowgetError(code, `${message(err)} Undoing the install of ${name} also failed (${failed.join("; ")}).`, {
         cause: err,
       });
     }
     throw err;
   }
-  const result: AddResult = { name, source: opts.source, addons };
+  for (const d of done) {
+    if (d.oldDir && !(await removeBestEffort(d.oldDir))) d.entry.leftoverDir = d.oldDir;
+  }
+  const result: AddResult = { name, source: opts.source, addons: done.map((d) => d.entry) };
   if (entry.targets) result.targets = entry.targets;
   return result;
 }
@@ -489,28 +566,37 @@ export interface RemoveResult {
  * when none are left.
  */
 export async function remove(opts: RemoveOptions): Promise<RemoveResult> {
-  const loaded = await load(opts);
-  const { manifest } = loaded;
+  const { text, manifest } = await readManifestText(opts.manifestPath);
+  const selected = selectTargets(manifest, opts.manifestPath, opts.targets);
   const entry = findAddon(manifest, opts.name);
   if (!entry) throw new WowgetError("not_found", `No addon named "${opts.name}" in the manifest.`);
   const filtered = Boolean(opts.targets?.length);
   const on = addonTargets(manifest, entry);
+  const notOn = selected.filter((t) => !on.includes(t.name)).map((t) => t.name);
+  if (filtered && notOn.length) {
+    throw new WowgetError("usage", `${entry.name} is not on target ${notOn.join(", ")}; it is on ${on.join(", ")}.`);
+  }
+
+  // The manifest edit is computed and checked first, so an edit that cannot be made uninstalls nothing.
+  const dropped = new Set(selected.map((t) => t.name));
+  const remaining = filtered ? on.filter((t) => !dropped.has(t)) : [];
+  const next = remaining.length
+    ? planSetAddonTargets(text, entry.name, remaining, opts.manifestPath)
+    : planRemoveAddon(text, entry.name, opts.manifestPath);
 
   const addons: RemoveEntry[] = [];
   // Without a filter every target is checked, so installs left behind by a hand edit go too.
-  const targets = [...(filtered ? loaded.targets : manifest.targets)].sort((a, b) => byName(a.name, b.name));
-  for (const target of targets) {
-    const result = await uninstall({ target: target.name, addon: entry.name, targetDir: target.path, state: opts.state });
-    if (filtered || on.includes(target.name) || result.wasInstalled) addons.push(removeEntry(entry.name, target.name, result));
+  const targets = [...(filtered ? selected : manifest.targets)].sort((a, b) => byName(a.name, b.name));
+  try {
+    for (const target of targets) {
+      const result = await uninstall({ target: target.name, addon: entry.name, targetDir: target.path, state: opts.state });
+      if (filtered || on.includes(target.name) || result.wasInstalled) addons.push(removeEntry(entry.name, target.name, result));
+    }
+    await writePlanned(opts.manifestPath, text, next);
+  } catch (err) {
+    throw stoppedAfter(err, addons);
   }
-
-  const dropped = new Set(loaded.targets.map((t) => t.name));
-  const remaining = filtered ? on.filter((t) => !dropped.has(t)) : [];
-  if (!remaining.length) {
-    await removeAddon(opts.manifestPath, entry.name);
-    return { name: entry.name, removedEntry: true, addons };
-  }
-  if (remaining.length !== on.length) await setAddonTargets(opts.manifestPath, entry.name, remaining);
+  if (!remaining.length) return { name: entry.name, removedEntry: true, addons };
   return { name: entry.name, removedEntry: false, remainingTargets: remaining, addons };
 }
 
@@ -631,6 +717,13 @@ export async function update(opts: UpdateOptions): Promise<UpdateResult> {
         return entry;
       })
     : ctx.manifest.addons;
+  if (names.length) {
+    for (const entry of entries) {
+      if (rowsFor(ctx, [entry]).length) continue;
+      const on = addonTargets(ctx.manifest, entry).join(", ");
+      throw new WowgetError("usage", `${entry.name} is not on target ${ctx.targets.map((t) => t.name).join(", ")}; it is on ${on}.`);
+    }
+  }
 
   const addons: UpdateEntry[] = [];
   for (const row of rowsFor(ctx, [...new Set(entries)])) {

@@ -247,17 +247,40 @@ describe("install", () => {
     }
   });
 
-  test.skipIf(process.platform === "win32")("a folder that cannot be deleted on uninstall is a locked error (POSIX permissions)", async () => {
+  test.skipIf(process.platform === "win32")("a folder that cannot be moved on uninstall is a locked error and nothing is removed (POSIX permissions)", async () => {
     const env = await setup();
     const opts = { addon: "Details", target: "forever", targetDir: env.addons, flavor: "forever" as const, state: env.state, cacheDir: env.cache };
-    await install({ ...opts, resolved: await localRelease(env, "v1", { "Details/Details_Forever.toc": "", "Details/sub/x.lua": "" }) });
-    await chmod(join(env.addons, "Details", "sub"), 0o555);
+    await install({ ...opts, resolved: await localRelease(env, "v1", { "Details/Details_Forever.toc": "", "Details/a.lua": "", "Details_Extra/Details_Extra_Forever.toc": "", "Details_Extra/sub/x.lua": "" }) });
+    // Details moves aside first; Details_Extra cannot, so Details must come back.
+    await chmod(join(env.addons, "Details_Extra"), 0o555);
     try {
       const err = await uninstall({ addon: "Details", target: "forever", targetDir: env.addons, state: env.state }).catch((e) => e);
       expect(err.code).toBe("locked");
+      expect(await readdir(env.addons)).toEqual(["Details", "Details_Extra"]);
+      expect((await readdir(join(env.addons, "Details"))).sort()).toEqual(["Details_Forever.toc", "a.lua"]);
+      expect(await readdir(join(env.addons, "Details_Extra", "sub"))).toEqual(["x.lua"]);
       expect(env.state.getActiveInstall("forever", "Details")?.releaseId).toBe("v1");
     } finally {
-      await chmod(join(env.addons, "Details", "sub"), 0o755);
+      await chmod(join(env.addons, "Details_Extra"), 0o755);
+    }
+  });
+
+  test.skipIf(process.platform === "win32")("uninstalled folders that cannot be deleted are reported, not thrown (POSIX permissions)", async () => {
+    const env = await setup();
+    const opts = { addon: "Details", target: "forever", targetDir: env.addons, flavor: "forever" as const, state: env.state, cacheDir: env.cache };
+    await install({ ...opts, resolved: await localRelease(env, "v1", { "Details/Details_Forever.toc": "", "Details/sub/x.lua": "" }) });
+    // A read-only subdirectory keeps its file from being deleted, but the folder can still move.
+    await chmod(join(env.addons, "Details", "sub"), 0o555);
+    let leftoverDir: string | undefined;
+    try {
+      const result = await uninstall({ addon: "Details", target: "forever", targetDir: env.addons, state: env.state });
+      leftoverDir = result.leftoverDir;
+      expect(result.removedFolders).toEqual(["Details"]);
+      expect(leftoverDir).toStartWith(join(env.addons, ".wowget-old-"));
+      expect(await visible(env.addons)).toEqual([]);
+      expect(env.state.getActiveInstall("forever", "Details")).toBeUndefined();
+    } finally {
+      if (leftoverDir) await chmod(join(leftoverDir, "Details", "sub"), 0o755);
     }
   });
 
