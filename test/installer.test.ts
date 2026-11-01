@@ -106,7 +106,7 @@ describe("install", () => {
 
     expect(result.removedFolders).toEqual(["Details_Old"]);
     expect(await visible(env.addons)).toEqual(["Details"]);
-    expect(await readdir(join(env.addons, "Details"))).toEqual(["Details_Forever.toc", "new.lua"]);
+    expect((await readdir(join(env.addons, "Details"))).sort()).toEqual(["Details_Forever.toc", "new.lua"]);
     expect(await leftovers(env.addons)).toEqual([]);
     expect(env.state.getActiveInstall("Details")?.releaseId).toBe("v2");
     expect(env.state.listActiveInstalls()).toHaveLength(1);
