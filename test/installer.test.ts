@@ -9,7 +9,6 @@ import type { Resolved } from "../src/core/sources/types.ts";
 import { openState, State, type NewInstall } from "../src/core/state.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
 
-const tempDir = useTempDirs();
 const text = (s: string) => new TextEncoder().encode(s);
 
 let state: State | undefined;
@@ -17,6 +16,8 @@ afterEach(() => {
   state?.close();
   state = undefined;
 });
+
+const tempDir = useTempDirs();
 
 interface Env {
   root: string;
@@ -228,7 +229,39 @@ describe("install", () => {
     expect(await visible(env.addons)).toEqual(["Shared"]);
   });
 
-  test("previous copies that cannot be deleted after a swap are reported, not thrown", async () => {
+  test.skipIf(process.platform === "win32")("a folder that cannot be moved during the swap is a locked error and is rolled back (POSIX permissions)", async () => {
+    const env = await setup();
+    const opts = { addon: "Details", target: "forever", targetDir: env.addons, flavor: "forever" as const, state: env.state, cacheDir: env.cache };
+    await install({ ...opts, resolved: await localRelease(env, "v1", { "Details/Details_Forever.toc": "", "Details/core.lua": "v1" }) });
+    // Moving a directory to another parent needs write permission on the directory itself.
+    await chmod(join(env.addons, "Details"), 0o555);
+    try {
+      const err = await install({ ...opts, resolved: await localRelease(env, "v2", { "Details/Details_Forever.toc": "", "Details/core.lua": "v2" }) }).catch((e) => e);
+      expect(err.code).toBe("locked");
+      expect(err.message).toContain("close World of Warcraft");
+      expect(await visible(env.addons)).toEqual(["Details"]);
+      expect(await readFile(join(env.addons, "Details", "core.lua"), "utf8")).toBe("v1");
+      expect(env.state.getActiveInstall("forever", "Details")?.releaseId).toBe("v1");
+    } finally {
+      await chmod(join(env.addons, "Details"), 0o755);
+    }
+  });
+
+  test.skipIf(process.platform === "win32")("a folder that cannot be deleted on uninstall is a locked error (POSIX permissions)", async () => {
+    const env = await setup();
+    const opts = { addon: "Details", target: "forever", targetDir: env.addons, flavor: "forever" as const, state: env.state, cacheDir: env.cache };
+    await install({ ...opts, resolved: await localRelease(env, "v1", { "Details/Details_Forever.toc": "", "Details/sub/x.lua": "" }) });
+    await chmod(join(env.addons, "Details", "sub"), 0o555);
+    try {
+      const err = await uninstall({ addon: "Details", target: "forever", targetDir: env.addons, state: env.state }).catch((e) => e);
+      expect(err.code).toBe("locked");
+      expect(env.state.getActiveInstall("forever", "Details")?.releaseId).toBe("v1");
+    } finally {
+      await chmod(join(env.addons, "Details", "sub"), 0o755);
+    }
+  });
+
+  test.skipIf(process.platform === "win32")("previous copies that cannot be deleted after a swap are reported, not thrown (POSIX permissions)", async () => {
     const env = await setup();
     const opts = { addon: "Details", target: "forever", targetDir: env.addons, flavor: "forever" as const, state: env.state, cacheDir: env.cache };
     await install({ ...opts, resolved: await localRelease(env, "v1", { "Details/Details_Forever.toc": "", "Details/locked/x.lua": "v1" }) });
@@ -307,7 +340,7 @@ describe("install", () => {
     expect(err.message).toContain("ended after 5 of 100 bytes");
   });
 
-  test("when rollback cannot restore a folder, the error names the directory holding it", async () => {
+  test.skipIf(process.platform === "win32")("when rollback cannot restore a folder, the error names the directory holding it (POSIX permissions)", async () => {
     const env = await setup();
     const opts = { addon: "Details", target: "forever", targetDir: env.addons, flavor: "forever" as const, cacheDir: env.cache };
     await install({ ...opts, state: env.state, resolved: await localRelease(env, "v1", { "Details/Details_Forever.toc": "", "Details/core.lua": "v1" }) });

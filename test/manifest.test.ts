@@ -129,7 +129,7 @@ describe("addAddon", () => {
     expect(m.addons).toEqual([entry]);
   });
 
-  test("writes through a symlink to its target and keeps the file mode", async () => {
+  test.skipIf(process.platform === "win32")("writes through a symlink to its target and keeps the file mode (symlinks and POSIX modes)", async () => {
     const dir = await tempDir();
     const target = join(dir, "real.toml");
     await writeFile(target, VALID);

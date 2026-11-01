@@ -1,6 +1,6 @@
 import { lstat, mkdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { detectInstalls } from "./detect.ts";
+import { detectInstalls, type DetectedInstall } from "./detect.ts";
 import { WowgetError } from "./errors.ts";
 import type { OnEvent } from "./events.ts";
 import type { Flavor } from "./flavor.ts";
@@ -24,7 +24,7 @@ import {
   type Manifest,
   type NamedTarget,
 } from "./manifest.ts";
-import { cacheDir as defaultCacheDir, expandHome, GAME_DIR } from "./paths.ts";
+import { cacheDir as defaultCacheDir, expandHome, gameDirCandidates } from "./paths.ts";
 import { sourceFor } from "./sources/index.ts";
 import { defaultAddonName, parseSource } from "./sources/parse.ts";
 import type { Http, Resolved } from "./sources/types.ts";
@@ -227,8 +227,10 @@ export interface InitOptions {
   flavor?: Flavor;
   /** With `path`; defaults to the flavor name. */
   name?: string;
-  /** Scanned for version folders when `path` is absent. Defaults to paths.GAME_DIR. */
+  /** Scanned for version folders when `path` is absent, instead of `gameDirs`. */
   gameDir?: string;
+  /** Tried in order when neither `path` nor `gameDir` is given; the first with an install is used. Defaults to paths.gameDirCandidates(). */
+  gameDirs?: string[];
 }
 
 export interface InitTarget extends NamedTarget {
@@ -257,13 +259,20 @@ export async function init(opts: InitOptions): Promise<InitResult> {
     if (opts.name !== undefined || opts.flavor !== undefined) {
       throw new WowgetError("usage", "--name and --flavor only apply together with --path.");
     }
-    const gameDir = absolutePath(opts.gameDir ?? GAME_DIR, "--game-dir");
-    const found = await detectInstalls(gameDir);
+    const candidates =
+      opts.gameDir !== undefined
+        ? [absolutePath(opts.gameDir, "--game-dir")]
+        : (opts.gameDirs ?? gameDirCandidates()).map((d) => resolve(expandHome(d)));
+    let found: DetectedInstall[] = [];
+    for (const gameDir of candidates) {
+      found = await detectInstalls(gameDir);
+      if (found.length) break;
+    }
     if (!found.length) {
-      throw new WowgetError(
-        "not_found",
-        `No World of Warcraft installs found in ${gameDir}; pass --game-dir, or --path to an AddOns directory.`,
-      );
+      const tried = candidates.length
+        ? `No World of Warcraft installs found in ${candidates.join(", ")}`
+        : "No default game directory on this platform";
+      throw new WowgetError("not_found", `${tried}; pass --game-dir, or --path to an AddOns directory.`);
     }
     targets = found.map((d) => ({ name: d.name, path: d.addonsDir, flavor: d.flavor }));
   }

@@ -1,0 +1,3 @@
+* text=auto eol=lf
+# Real-world TOC fixtures keep their CRLF line endings byte for byte.
+test/fixtures/*.toc -text

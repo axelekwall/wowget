@@ -33,7 +33,7 @@ Flavors: ${FLAVORS.join(", ")}
 
 Options:
   -t, --target <name> act on this target only (repeatable)
-  --manifest <path>   manifest file (default ~/.config/wowget/wowget.toml, or $WOWGET_MANIFEST)
+  --manifest <path>   manifest file (default $WOWGET_MANIFEST, else ${manifestPath(undefined, { ...process.env, WOWGET_MANIFEST: undefined })})
   --json              print the result as JSON
   --force             install over unmanaged folders and unverifiable flavors
   --verbose           show every progress step and stack traces

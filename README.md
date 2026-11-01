@@ -1,8 +1,8 @@
 # wowget
 
-A small command-line addon manager for World of Warcraft on macOS. Keeps your
-addon list in a plain TOML manifest, installs from open sources (GitHub
-releases, WoWInterface, direct URLs) and updates them in place. No CurseForge
+A small command-line addon manager for World of Warcraft on macOS and Windows.
+Keeps your addon list in a plain TOML manifest, installs from open sources
+(GitHub releases, WoWInterface, direct URLs) and updates them in place. No CurseForge
 client, no ads, no browsing UI.
 
 Status: MVP. See [docs/PLAN.md](docs/PLAN.md) for the roadmap,
@@ -49,11 +49,15 @@ source = "github:Questie/Questie"
 targets = ["era"]   # optional; absent means every target
 ```
 
-`init` without `--path` scans `/Applications/World of Warcraft` (or
-`--game-dir`) for `_forever_`, `_classic_era_`, `_classic_` and `_retail_` and
-adds a target for each one that holds a game. `add`, `remove`, `list`,
-`outdated`, `update` and `install` act on every target unless filtered with
-`--target <name>` (`-t`), which can be repeated. `add -t` writes the chosen
+`init` without `--path` scans the game directory for `_forever_`,
+`_classic_era_`, `_classic_` and `_retail_` and adds a target for each one that
+holds a game. It tries `/Applications/World of Warcraft` on macOS, and
+`%PROGRAMFILES(X86)%\World of Warcraft` then `%PROGRAMFILES%\World of Warcraft`
+on Windows, using the first that has an install. Linux has no default; pass
+`--game-dir`, which (like `WOWGET_GAME_DIR`) replaces the list.
+
+`add`, `remove`, `list`, `outdated`, `update` and `install` act on every target
+unless filtered with `--target <name>` (`-t`), which can be repeated. `add -t` writes the chosen
 targets to the entry; `remove -t` uninstalls from those targets and removes
 them from the entry, removing the entry when none are left. Release lookups are
 shared between targets of the same flavor within one run.
@@ -66,13 +70,36 @@ the old file aside, run `wowget init` and add the addons again.
 `add` also takes `--prerelease` and `--pin <tag>`. Global flags: `--manifest
 <path>`, `--json`, `--force` (replace unmanaged folders, skip an inconclusive
 flavor check), `--verbose`. Set `GITHUB_TOKEN` to raise the GitHub API rate
-limit. `WOWGET_MANIFEST`, `WOWGET_STATE_DIR` and `WOWGET_CACHE_DIR` override the
-default locations.
+limit.
+
+### Locations
+
+| Platform | Manifest | State | Cache |
+|---|---|---|---|
+| macOS | `~/.config/wowget/wowget.toml` | `~/Library/Application Support/wowget/state.db` | `~/Library/Caches/wowget` |
+| Windows | `%APPDATA%\wowget\wowget.toml` | `%LOCALAPPDATA%\wowget\state.db` | `%LOCALAPPDATA%\wowget\cache` |
+| Linux | `$XDG_CONFIG_HOME/wowget/wowget.toml` | `$XDG_STATE_HOME/wowget/state.db` | `$XDG_CACHE_HOME/wowget` |
+
+On Linux the XDG variables default to `~/.config`, `~/.local/state` and
+`~/.cache`. `WOWGET_MANIFEST`, `WOWGET_STATE_DIR` and `WOWGET_CACHE_DIR`
+override these on every platform.
+
+### Windows
+
+Windows locks the files of a running game, so close World of Warcraft before
+`update`, `install`, `remove` or `target remove`. A folder that is in use fails
+with a `locked` error; an update that hits one restores the previous version.
 
 ## Stack
 
 Bun + TypeScript, compiled to a single binary. SQLite (`bun:sqlite`) for local
 state; the manifest stays a text file you can keep in your dotfiles.
+
+```
+bun run build       # dist/wowget for this machine
+bun run build:mac   # dist/wowget for Apple silicon
+bun run build:win   # dist/wowget.exe for 64-bit Windows, cross-compiled from any host
+```
 
 ## License
 

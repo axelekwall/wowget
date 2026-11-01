@@ -5,12 +5,13 @@ import { openState, type State } from "../src/core/state.ts";
 import { fakeFetch, json } from "./helpers/fetch.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
 
-const tempDir = useTempDirs();
 let state: State | undefined;
 afterEach(() => {
   state?.close();
   state = undefined;
 });
+
+const tempDir = useTempDirs();
 
 async function tempState(): Promise<State> {
   state = openState(join(await tempDir(), "state.db"));

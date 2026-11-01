@@ -8,7 +8,6 @@ import { openState, type State } from "../src/core/state.ts";
 import { fakeFetch, json } from "./helpers/fetch.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
 
-const tempDir = useTempDirs();
 
 async function fakeVersionFolder(gameDir: string, folder: string): Promise<void> {
   await mkdir(join(gameDir, folder), { recursive: true });
@@ -24,6 +23,8 @@ afterEach(() => {
   server?.stop(true);
   server = undefined;
 });
+
+const tempDir = useTempDirs();
 
 /** Serves `/MyAddon.zip` with whatever `files` currently holds, honouring If-None-Match. */
 function serveAddon(files: { current: Record<string, string> }) {
@@ -268,6 +269,25 @@ describe("init", () => {
     ]);
     expect((await readManifest(manifestPath)).targets.map((t) => t.name)).toEqual(["forever", "era"]);
     expect((await ops.init({ manifestPath, gameDir }).catch((e) => e)).code).toBe("manifest_exists");
+  });
+
+  test("tries each candidate game dir in order, and --game-dir overrides them", async () => {
+    const root = await tempDir();
+    const first = join(root, "first");
+    const second = join(root, "second");
+    await mkdir(join(first, "_forever_"), { recursive: true });
+    await fakeVersionFolder(second, "_classic_era_");
+
+    const result = await ops.init({ manifestPath: join(root, "a.toml"), gameDirs: [first, second] });
+    expect(result.targets.map((t) => [t.name, t.path])).toEqual([["era", join(second, "_classic_era_", "Interface", "AddOns")]]);
+
+    const none = await ops.init({ manifestPath: join(root, "b.toml"), gameDirs: [first, join(root, "missing")] }).catch((e) => e);
+    expect(none.code).toBe("not_found");
+    expect(none.message).toContain(`${first}, ${join(root, "missing")}`);
+
+    const overridden = await ops.init({ manifestPath: join(root, "c.toml"), gameDir: first, gameDirs: [second] }).catch((e) => e);
+    expect(overridden.code).toBe("not_found");
+    expect((await ops.init({ manifestPath: join(root, "d.toml"), gameDirs: [] }).catch((e) => e)).code).toBe("not_found");
   });
 
   test("with --path adds one target named after the flavor unless named", async () => {

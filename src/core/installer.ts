@@ -260,11 +260,14 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
     const oldDir = await mkdtemp(join(targetDir, ".wowget-old-"));
     const movedOld: string[] = [];
     const placed: string[] = [];
+    // The folder being moved when a rename fails, for the error message.
+    let moving = targetDir;
     let record: InstallRecord;
     const removedFolders: string[] = [];
     try {
       for (const folder of extracted) {
         const dest = join(targetDir, folder.name);
+        moving = dest;
         if (await exists(dest)) {
           await rename(dest, join(oldDir, folder.name));
           movedOld.push(folder.name);
@@ -276,6 +279,7 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
         // Another addon may have taken the folder over with --force; leave it alone then.
         if (state.folderOwners(targetName, name).some((o) => o !== addonKey)) continue;
         if (!(await exists(join(targetDir, name)))) continue;
+        moving = join(targetDir, name);
         await rename(join(targetDir, name), join(oldDir, name));
         movedOld.push(name);
         removedFolders.push(name);
@@ -305,6 +309,7 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
         );
       }
       await rm(oldDir, { recursive: true, force: true }).catch(() => {});
+      if (isLockedError(err, LOCKED_CODES)) throw lockedError(addon, moving, err);
       throw err;
     }
     // The install is recorded, so failing to delete the previous copies must not fail it.
@@ -331,6 +336,23 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
   }
 }
 
+/** Errors that renaming or deleting a folder raises on Windows while the game has files in it open. */
+const LOCKED_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+/** Bun's recursive rm reports a child it could not delete as ENOTEMPTY on the parent. */
+const LOCKED_RM_CODES = new Set([...LOCKED_CODES, "ENOTEMPTY"]);
+
+function isLockedError(err: unknown, codes: Set<string>): boolean {
+  return codes.has((err as NodeJS.ErrnoException | undefined)?.code ?? "");
+}
+
+function lockedError(addon: string, path: string, err: unknown): WowgetError {
+  return new WowgetError(
+    "locked",
+    `${addon}: ${path} is in use or not writable (${(err as NodeJS.ErrnoException).code}); close World of Warcraft and try again.`,
+    { cause: err },
+  );
+}
+
 function isPlainName(folder: string): boolean {
   return folder !== "" && folder !== "." && folder !== ".." && !/[/\\]/.test(folder);
 }
@@ -347,7 +369,12 @@ export async function uninstall(opts: UninstallOptions): Promise<UninstallResult
     if (state.folderOwners(target, folder).some((o) => o !== addonKey)) continue;
     const path = join(targetDir, folder);
     if (!(await exists(path))) continue;
-    await rm(path, { recursive: true, force: true });
+    try {
+      await rm(path, { recursive: true, force: true });
+    } catch (err) {
+      if (isLockedError(err, LOCKED_RM_CODES)) throw lockedError(addon, path, err);
+      throw err;
+    }
     removedFolders.push(folder);
   }
   state.deactivateInstall(target, addon);
