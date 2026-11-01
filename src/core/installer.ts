@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { copyFile, lstat, mkdir, mkdtemp, readFile, rename, rm, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { WowgetError } from "./errors.ts";
 import type { OnEvent } from "./events.ts";
 import { folderSupportsFlavor, type Flavor } from "./flavor.ts";
@@ -62,6 +62,11 @@ function safeSegment(value: string): string {
   return cleaned === "" || cleaned === "." || cleaned === ".." ? "_" : cleaned;
 }
 
+/** Where a release's zip lives in the cache: `<cacheDir>/<addon>/<releaseId>/<filename>`. */
+export function cachedZipPath(cacheDir: string, addon: string, releaseId: string, filename: string): string {
+  return join(cacheDir, safeSegment(addon.toLowerCase()), safeSegment(releaseId), safeSegment(basename(filename)));
+}
+
 async function exists(path: string): Promise<boolean> {
   try {
     await lstat(path);
@@ -82,8 +87,8 @@ export async function fetchToCache(opts: {
   onEvent?: OnEvent;
 }): Promise<{ zipPath: string; bytes: Uint8Array; sha256: string }> {
   const { addon, resolved, onEvent } = opts;
-  const dir = join(opts.cacheDir, safeSegment(addon.toLowerCase()), safeSegment(resolved.releaseId));
-  const zipPath = join(dir, safeSegment(basename(resolved.filename)));
+  const zipPath = cachedZipPath(opts.cacheDir, addon, resolved.releaseId, resolved.filename);
+  const dir = dirname(zipPath);
   const expected = opts.sha256?.toLowerCase();
 
   if (await exists(zipPath)) {

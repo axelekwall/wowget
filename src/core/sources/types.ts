@@ -1,3 +1,4 @@
+import type { OnEvent } from "../events.ts";
 import type { Flavor } from "../flavor.ts";
 
 export interface Resolved {
@@ -20,9 +21,35 @@ export interface HttpRequestOptions {
   headers?: Record<string, string>;
 }
 
+export interface Validators {
+  etag?: string | null;
+  lastModified?: string | null;
+}
+
+export interface ConditionalResult {
+  /** True on a 304 answer to the validators that were sent; `body` is then absent. */
+  notModified: boolean;
+  body?: Uint8Array;
+  etag: string | null;
+  lastModified: string | null;
+}
+
+export interface CacheRecord {
+  etag: string | null;
+  lastModified: string | null;
+  body: Uint8Array;
+}
+
 export interface Http {
+  /** GET through the ETag cache, parsed as JSON. */
   getJson<T = unknown>(url: string, options?: HttpRequestOptions): Promise<T>;
+  /** GET through the ETag cache. */
   getBytes(url: string, options?: HttpRequestOptions): Promise<Uint8Array>;
+  /** Conditional GET with caller-held validators; the body is never cached. */
+  getConditional(url: string, validators: Validators, options?: HttpRequestOptions): Promise<ConditionalResult>;
+  /** Small records in the same cache table, for callers that keep large bodies elsewhere. */
+  readRecord(key: string): CacheRecord | undefined;
+  writeRecord(key: string, record: CacheRecord): void;
 }
 
 export interface ResolveContext {
@@ -33,6 +60,8 @@ export interface ResolveContext {
   pin?: string;
   http: Http;
   cacheDir: string;
+  /** For sources that download during resolve (URL). */
+  onEvent?: OnEvent;
 }
 
 export interface Source {
