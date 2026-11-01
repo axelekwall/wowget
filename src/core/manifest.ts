@@ -4,9 +4,14 @@ import { WowgetError } from "./errors.ts";
 import { FLAVORS, isFlavor, type Flavor } from "./flavor.ts";
 import { parseSource } from "./sources/parse.ts";
 
-export interface InstallConfig {
+export interface Target {
+  /** Absolute path of the AddOns directory, kept verbatim. */
   path: string;
   flavor: Flavor;
+}
+
+export interface NamedTarget extends Target {
+  name: string;
 }
 
 export interface AddonEntry {
@@ -14,16 +19,24 @@ export interface AddonEntry {
   source: string;
   prerelease: boolean;
   pin?: string;
+  /** Target names the addon is installed on; absent means every target. */
+  targets?: string[];
 }
 
 export interface Manifest {
-  install: InstallConfig;
+  /** In file order. */
+  targets: NamedTarget[];
   addons: AddonEntry[];
 }
 
-const TOP_KEYS = ["install", "addon"];
-const INSTALL_KEYS = ["path", "flavor"];
-const ADDON_KEYS = ["name", "source", "prerelease", "pin"];
+const TOP_KEYS = ["targets", "addon"];
+const TARGET_KEYS = ["path", "flavor"];
+const ADDON_KEYS = ["name", "source", "prerelease", "pin", "targets"];
+const TARGET_NAME = /^[a-z0-9][a-z0-9_-]*$/;
+
+export function isTargetName(name: string): boolean {
+  return TARGET_NAME.test(name);
+}
 
 function fail(file: string | undefined, message: string): never {
   throw new WowgetError("manifest", file ? `${file}: ${message}` : message);
@@ -45,6 +58,23 @@ function requireString(table: Record<string, unknown>, key: string, where: strin
   return value;
 }
 
+function parseTargets(data: Record<string, unknown>, file?: string): NamedTarget[] {
+  const raw = data.targets ?? {};
+  if (!isTable(raw)) fail(file, "targets must be a table of [targets.<name>] tables");
+  return Object.entries(raw).map(([name, value]) => {
+    const where = `targets.${name}`;
+    if (!isTargetName(name)) {
+      fail(file, `target name "${name}" must start with a-z or 0-9 and contain only a-z, 0-9, "_" and "-"`);
+    }
+    if (!isTable(value)) fail(file, `${where} must be a table ([${where}])`);
+    checkKeys(value, TARGET_KEYS, `[${where}]`, file);
+    const path = requireString(value, "path", where, file);
+    const flavor = requireString(value, "flavor", where, file);
+    if (!isFlavor(flavor)) fail(file, `${where}.flavor "${flavor}" is not one of ${FLAVORS.join(", ")}`);
+    return { name, path, flavor };
+  });
+}
+
 export function parseManifest(text: string, file?: string): Manifest {
   let data: unknown;
   try {
@@ -53,14 +83,15 @@ export function parseManifest(text: string, file?: string): Manifest {
     fail(file, `invalid TOML: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!isTable(data)) fail(file, "invalid TOML");
+  if ("install" in data) {
+    fail(
+      file,
+      'the manifest format changed: the [install] table was replaced by named [targets.<name>] tables. Move this file aside and run "wowget init" to create a new one, then add your addons again.',
+    );
+  }
   checkKeys(data, TOP_KEYS, "the top level", file);
-
-  const install = data.install;
-  if (!isTable(install)) fail(file, "missing [install] table");
-  checkKeys(install, INSTALL_KEYS, "[install]", file);
-  const path = requireString(install, "path", "install", file);
-  const flavor = requireString(install, "flavor", "install", file);
-  if (!isFlavor(flavor)) fail(file, `install.flavor "${flavor}" is not one of ${FLAVORS.join(", ")}`);
+  const targets = parseTargets(data, file);
+  const targetNames = new Set(targets.map((t) => t.name));
 
   const rawAddons = data.addon ?? [];
   if (!Array.isArray(rawAddons)) fail(file, "addon must be an array of tables ([[addon]])");
@@ -89,10 +120,22 @@ export function parseManifest(text: string, file?: string): Manifest {
     seen.add(key);
     const entry: AddonEntry = { name, source, prerelease: raw.prerelease === true };
     if (typeof raw.pin === "string") entry.pin = raw.pin;
+    if (raw.targets !== undefined) {
+      const list = raw.targets;
+      if (!Array.isArray(list) || list.some((t) => typeof t !== "string")) {
+        fail(file, `${where} (${name}): targets must be an array of target names`);
+      }
+      if (list.length === 0) fail(file, `${where} (${name}): targets must not be empty; remove the key to mean every target`);
+      for (const t of list as string[]) {
+        if (!targetNames.has(t)) fail(file, `${where} (${name}): unknown target "${t}"`);
+      }
+      if (new Set(list).size !== list.length) fail(file, `${where} (${name}): targets lists a target twice`);
+      entry.targets = [...(list as string[])];
+    }
     addons.push(entry);
   });
 
-  return { install: { path, flavor }, addons };
+  return { targets, addons };
 }
 
 export async function readManifest(path: string): Promise<Manifest> {
@@ -104,31 +147,55 @@ export function findAddon(manifest: Manifest, name: string): AddonEntry | undefi
   return manifest.addons.find((a) => a.name.toLowerCase() === key);
 }
 
+export function findTarget(manifest: Manifest, name: string): NamedTarget | undefined {
+  return manifest.targets.find((t) => t.name === name);
+}
+
+/** The names of the targets `entry` is on, in manifest order. */
+export function addonTargets(manifest: Manifest, entry: AddonEntry): string[] {
+  const names = manifest.targets.map((t) => t.name);
+  return entry.targets ? names.filter((n) => entry.targets!.includes(n)) : names;
+}
+
 function tomlString(value: string): string {
   // JSON string escapes are a subset of TOML basic-string escapes.
   return JSON.stringify(value);
 }
 
-export function renderManifest(install: InstallConfig): string {
-  return `[install]\npath = ${tomlString(install.path)}\nflavor = ${tomlString(install.flavor)}\n`;
+function renderTarget(name: string, target: Target): string {
+  return `[targets.${name}]\npath = ${tomlString(target.path)}\nflavor = ${tomlString(target.flavor)}\n`;
+}
+
+export function renderManifest(targets: NamedTarget[]): string {
+  return targets.map((t) => renderTarget(t.name, t)).join("\n");
+}
+
+function renderTargetsLine(targets: string[]): string {
+  return `targets = [${targets.map(tomlString).join(", ")}]`;
 }
 
 function renderAddon(entry: AddonEntry): string {
   let block = `[[addon]]\nname = ${tomlString(entry.name)}\nsource = ${tomlString(entry.source)}\n`;
+  if (entry.targets !== undefined) block += `${renderTargetsLine(entry.targets)}\n`;
   if (entry.prerelease) block += "prerelease = true\n";
   if (entry.pin !== undefined) block += `pin = ${tomlString(entry.pin)}\n`;
   return block;
 }
 
-/** Returns `text` with a blank line and an `[[addon]]` block appended. */
-export function appendAddonText(text: string, entry: AddonEntry): string {
+function appendBlock(text: string, block: string): string {
   let out = text;
   if (out !== "" && !out.endsWith("\n")) out += "\n";
   if (out !== "" && !out.endsWith("\n\n")) out += "\n";
-  return out + renderAddon(entry);
+  return out + block;
+}
+
+/** Returns `text` with a blank line and an `[[addon]]` block appended. */
+export function appendAddonText(text: string, entry: AddonEntry): string {
+  return appendBlock(text, renderAddon(entry));
 }
 
 const ADDON_HEADER = /^\s*\[\[\s*addon\s*\]\]\s*(#.*)?$/;
+const TARGET_HEADER = /^\s*\[\s*targets\s*\.\s*(?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*\]\s*(#.*)?$/;
 
 function isBlankOrComment(line: string): boolean {
   const t = line.trim();
@@ -145,6 +212,37 @@ function blockName(lines: string[]): string | undefined {
   }
 }
 
+/** Index of the line after the block whose header is at `header`: the next line starting with "[". */
+function blockEnd(lines: string[], header: number): number {
+  let next = header + 1;
+  while (next < lines.length && !lines[next]!.trimStart().startsWith("[")) next++;
+  return next;
+}
+
+/**
+ * The line range to remove for the block whose header is at `header`: up to its last key line,
+ * plus the blank and comment lines directly above the header.
+ */
+function blockRange(lines: string[], header: number): [start: number, end: number] {
+  let end = blockEnd(lines, header);
+  while (end > header + 1 && isBlankOrComment(lines[end - 1]!)) end--;
+  let start = header;
+  while (start > 0 && isBlankOrComment(lines[start - 1]!)) start--;
+  return [start, end];
+}
+
+/** Header line index of the `[[addon]]` block named `name` (case-insensitive). */
+function findAddonHeader(lines: string[], name: string): number {
+  const key = name.toLowerCase();
+  for (let header = 0; header < lines.length; header++) {
+    if (!ADDON_HEADER.test(lines[header]!)) continue;
+    const next = blockEnd(lines, header);
+    if (blockName(lines.slice(header, next))?.toLowerCase() === key) return header;
+    header = next - 1;
+  }
+  throw new WowgetError("manifest", `Could not locate the [[addon]] block for "${name}"; edit the manifest by hand.`);
+}
+
 /**
  * Returns `text` without the `[[addon]]` block named `name`. The block runs from its header to
  * the last key line before the next line starting with "[". Blank and comment lines directly
@@ -153,22 +251,77 @@ function blockName(lines: string[]): string | undefined {
  */
 export function spliceAddonText(text: string, name: string): string {
   const lines = text.split("\n");
-  const key = name.toLowerCase();
-  for (let header = 0; header < lines.length; header++) {
-    if (!ADDON_HEADER.test(lines[header]!)) continue;
-    let next = header + 1;
-    while (next < lines.length && !lines[next]!.trimStart().startsWith("[")) next++;
-    if (blockName(lines.slice(header, next))?.toLowerCase() !== key) {
-      header = next - 1;
-      continue;
-    }
-    let end = next;
-    while (end > header + 1 && isBlankOrComment(lines[end - 1]!)) end--;
-    let start = header;
-    while (start > 0 && isBlankOrComment(lines[start - 1]!)) start--;
-    return [...lines.slice(0, start), ...lines.slice(end)].join("\n");
+  const [start, end] = blockRange(lines, findAddonHeader(lines, name));
+  return [...lines.slice(0, start), ...lines.slice(end)].join("\n");
+}
+
+/** Returns `text` without the `[targets.<name>]` table, located and cut like an addon block. */
+export function spliceTargetText(text: string, name: string): string {
+  const lines = text.split("\n");
+  const header = lines.findIndex((line) => {
+    const m = TARGET_HEADER.exec(line);
+    return m !== null && (m[1] ?? m[2] ?? m[3]) === name;
+  });
+  if (header < 0) {
+    throw new WowgetError("manifest", `Could not locate the [targets.${name}] table; edit the manifest by hand.`);
   }
-  throw new WowgetError("manifest", `Could not locate the [[addon]] block for "${name}"; edit the manifest by hand.`);
+  const [start, end] = blockRange(lines, header);
+  return [...lines.slice(0, start), ...lines.slice(end)].join("\n");
+}
+
+/**
+ * Returns `text` with a `[targets.<name>]` table inserted before the first `[[addon]]` block and
+ * the comments that introduce it, or appended when there is no addon block.
+ */
+export function insertTargetText(text: string, name: string, target: Target): string {
+  const block = renderTarget(name, target).replace(/\n$/, "").split("\n");
+  const lines = text.split("\n");
+  const first = lines.findIndex((line) => ADDON_HEADER.test(line));
+  if (first < 0) return appendBlock(text, renderTarget(name, target));
+  let start = first;
+  while (start > 0 && isBlankOrComment(lines[start - 1]!)) start--;
+  const before = lines.slice(0, start);
+  const after = lines.slice(start);
+  const out = [...before, ...(before.length ? [""] : []), ...block, ...(after[0]?.trim() === "" ? [] : [""]), ...after];
+  return out.join("\n");
+}
+
+/** Index after the last line of the key/value pair that starts at `start`, which may span lines. */
+function valueEnd(lines: string[], start: number, stop: number): number {
+  for (let end = start + 1; end <= stop; end++) {
+    try {
+      Bun.TOML.parse(lines.slice(start, end).join("\n"));
+      return end;
+    } catch {
+      // Not complete yet; a multi-line array or string continues on the next line.
+    }
+  }
+  return start + 1;
+}
+
+/**
+ * Returns `text` with the `targets =` line of the addon block named `name` replaced, inserted
+ * after its `source =` line, or deleted when `targets` is undefined.
+ */
+export function setAddonTargetsText(text: string, name: string, targets: string[] | undefined): string {
+  const lines = text.split("\n");
+  const header = findAddonHeader(lines, name);
+  const end = blockEnd(lines, header);
+  const keyLine = (key: string) => {
+    const re = new RegExp(`^\\s*${key}\\s*=`);
+    for (let i = header + 1; i < end; i++) if (re.test(lines[i]!)) return i;
+    return -1;
+  };
+  const existing = keyLine("targets");
+  if (existing >= 0) {
+    const stop = valueEnd(lines, existing, end);
+    const replacement = targets === undefined ? [] : [renderTargetsLine(targets)];
+    return [...lines.slice(0, existing), ...replacement, ...lines.slice(stop)].join("\n");
+  }
+  if (targets === undefined) return text;
+  const source = keyLine("source");
+  const at = source >= 0 ? valueEnd(lines, source, end) : header + 1;
+  return [...lines.slice(0, at), renderTargetsLine(targets), ...lines.slice(at)].join("\n");
 }
 
 async function readText(path: string): Promise<string> {
@@ -198,10 +351,19 @@ async function writeAtomic(path: string, text: string): Promise<void> {
   await rename(tmp, real);
 }
 
+function sameTargets(a: NamedTarget[], b: NamedTarget[]): boolean {
+  const norm = (list: NamedTarget[]) =>
+    list
+      .map((t) => JSON.stringify([t.name, t.path, t.flavor]))
+      .sort()
+      .join("\n");
+  return norm(a) === norm(b);
+}
+
 function sameAddons(a: AddonEntry[], b: AddonEntry[]): boolean {
   const norm = (list: AddonEntry[]) =>
     list
-      .map((e) => JSON.stringify([e.name.toLowerCase(), e.source, e.prerelease, e.pin ?? null]))
+      .map((e) => JSON.stringify([e.name.toLowerCase(), e.source, e.prerelease, e.pin ?? null, e.targets ?? null]))
       .sort()
       .join("\n");
   return norm(a) === norm(b);
@@ -213,10 +375,9 @@ async function writeChecked(path: string, previous: string, next: string, expect
   let reason: string;
   try {
     const parsed = parseManifest(await readFile(path, "utf8"), path);
-    const sameInstall =
-      parsed.install.path === expected.install.path && parsed.install.flavor === expected.install.flavor;
-    if (sameInstall && sameAddons(parsed.addons, expected.addons)) return parsed;
-    reason = sameInstall ? "the addon list did not match the expected result" : "the [install] table changed";
+    const targetsMatch = sameTargets(parsed.targets, expected.targets);
+    if (targetsMatch && sameAddons(parsed.addons, expected.addons)) return parsed;
+    reason = targetsMatch ? "the addon list did not match the expected result" : "the targets did not match the expected result";
   } catch (err) {
     reason = err instanceof Error ? err.message : String(err);
   }
@@ -224,12 +385,12 @@ async function writeChecked(path: string, previous: string, next: string, expect
   throw new WowgetError("manifest", `Updating ${path} failed (${reason}); the file was left unchanged.`);
 }
 
-export async function createManifest(path: string, install: InstallConfig): Promise<Manifest> {
+export async function createManifest(path: string, targets: NamedTarget[]): Promise<Manifest> {
   if (await Bun.file(path).exists()) {
     throw new WowgetError("manifest_exists", `A manifest already exists at ${path}.`);
   }
   await mkdir(dirname(path), { recursive: true });
-  await writeAtomic(path, renderManifest(install));
+  await writeAtomic(path, renderManifest(targets));
   return readManifest(path);
 }
 
@@ -250,4 +411,66 @@ export async function removeAddon(path: string, name: string): Promise<Manifest>
   if (!entry) throw new WowgetError("not_found", `No addon named "${name}" in the manifest.`);
   const expected = { ...manifest, addons: manifest.addons.filter((a) => a !== entry) };
   return writeChecked(path, text, spliceAddonText(text, entry.name), expected);
+}
+
+export async function addTarget(path: string, name: string, target: Target): Promise<Manifest> {
+  if (!isTargetName(name)) {
+    throw new WowgetError(
+      "usage",
+      `Target name "${name}" must start with a-z or 0-9 and contain only a-z, 0-9, "_" and "-".`,
+    );
+  }
+  const text = await readText(path);
+  const manifest = parseManifest(text, path);
+  if (findTarget(manifest, name)) throw new WowgetError("duplicate", `A target named "${name}" is already in the manifest.`);
+  const expected = { ...manifest, targets: [...manifest.targets, { name, ...target }] };
+  return writeChecked(path, text, insertTargetText(text, name, target), expected);
+}
+
+export interface RemoveTargetResult {
+  manifest: Manifest;
+  /** Addons whose entries were removed because the target was the last one they were on. */
+  removedAddons: string[];
+}
+
+/**
+ * Removes the `[targets.<name>]` table and the name from every addon's `targets` list. Addons
+ * that would be left with an empty list are removed.
+ */
+export async function removeTarget(path: string, name: string): Promise<RemoveTargetResult> {
+  const text = await readText(path);
+  const manifest = parseManifest(text, path);
+  if (!findTarget(manifest, name)) throw new WowgetError("not_found", `No target named "${name}" in the manifest.`);
+  let next = spliceTargetText(text, name);
+  const addons: AddonEntry[] = [];
+  const removedAddons: string[] = [];
+  for (const entry of manifest.addons) {
+    if (!entry.targets?.includes(name)) {
+      addons.push(entry);
+      continue;
+    }
+    const remaining = entry.targets.filter((t) => t !== name);
+    if (remaining.length) {
+      next = setAddonTargetsText(next, entry.name, remaining);
+      addons.push({ ...entry, targets: remaining });
+    } else {
+      next = spliceAddonText(next, entry.name);
+      removedAddons.push(entry.name);
+    }
+  }
+  const expected = { targets: manifest.targets.filter((t) => t.name !== name), addons };
+  return { manifest: await writeChecked(path, text, next, expected), removedAddons };
+}
+
+/** Sets the addon's `targets` list; `undefined` removes the key, meaning every target. */
+export async function setAddonTargets(path: string, name: string, targets: string[] | undefined): Promise<Manifest> {
+  const text = await readText(path);
+  const manifest = parseManifest(text, path);
+  const entry = findAddon(manifest, name);
+  if (!entry) throw new WowgetError("not_found", `No addon named "${name}" in the manifest.`);
+  const updated: AddonEntry = { ...entry };
+  if (targets === undefined) delete updated.targets;
+  else updated.targets = [...targets];
+  const expected = { ...manifest, addons: manifest.addons.map((a) => (a === entry ? updated : a)) };
+  return writeChecked(path, text, setAddonTargetsText(text, entry.name, targets), expected);
 }

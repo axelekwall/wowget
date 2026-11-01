@@ -12,6 +12,8 @@ import { extractAddons, readZip } from "./zip.ts";
 type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface InstallOptions {
+  /** Target name, for the state rows. */
+  target: string;
   addon: string;
   resolved: Resolved;
   targetDir: string;
@@ -41,6 +43,7 @@ export interface InstallResult {
 }
 
 export interface UninstallOptions {
+  target: string;
   addon: string;
   targetDir: string;
   state: State;
@@ -196,7 +199,7 @@ async function download(addon: string, resolved: Resolved, fetchFn: FetchFn, onE
 }
 
 export async function install(opts: InstallOptions): Promise<InstallResult> {
-  const { addon, resolved, targetDir, flavor, state, onEvent } = opts;
+  const { target: targetName, addon, resolved, targetDir, flavor, state, onEvent } = opts;
   const force = opts.force ?? false;
   const addonKey = addon.toLowerCase();
 
@@ -214,7 +217,7 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
     onEvent,
   });
 
-  const previous = state.getActiveInstall(addon);
+  const previous = state.getActiveInstall(targetName, addon);
   const tmpDir = await mkdtemp(join(targetDir, ".wowget-tmp-"));
   try {
     onEvent?.({ type: "extract", addon });
@@ -240,7 +243,7 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
     if (!force) {
       for (const name of folders) {
         if (!(await exists(join(targetDir, name)))) continue;
-        const owners = state.folderOwners(name);
+        const owners = state.folderOwners(targetName, name);
         if (owners.includes(addonKey)) continue;
         const owner = owners[0] ? `belongs to "${owners[0]}"` : "is not managed by wowget";
         throw new WowgetError(
@@ -271,13 +274,14 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
       }
       for (const name of stale) {
         // Another addon may have taken the folder over with --force; leave it alone then.
-        if (state.folderOwners(name).some((o) => o !== addonKey)) continue;
+        if (state.folderOwners(targetName, name).some((o) => o !== addonKey)) continue;
         if (!(await exists(join(targetDir, name)))) continue;
         await rename(join(targetDir, name), join(oldDir, name));
         movedOld.push(name);
         removedFolders.push(name);
       }
       record = state.recordInstall({
+        target: targetName,
         addon,
         source: resolved.source,
         releaseId: resolved.releaseId,
@@ -332,20 +336,20 @@ function isPlainName(folder: string): boolean {
 }
 
 export async function uninstall(opts: UninstallOptions): Promise<UninstallResult> {
-  const { addon, targetDir, state } = opts;
+  const { target, addon, targetDir, state } = opts;
   const addonKey = addon.toLowerCase();
-  const active = state.getActiveInstall(addon);
+  const active = state.getActiveInstall(target, addon);
   if (!active) return { addon, removedFolders: [], wasInstalled: false };
 
   const removedFolders: string[] = [];
   for (const folder of active.folders) {
     if (!isPlainName(folder)) continue;
-    if (state.folderOwners(folder).some((o) => o !== addonKey)) continue;
+    if (state.folderOwners(target, folder).some((o) => o !== addonKey)) continue;
     const path = join(targetDir, folder);
     if (!(await exists(path))) continue;
     await rm(path, { recursive: true, force: true });
     removedFolders.push(folder);
   }
-  state.deactivateInstall(addon);
+  state.deactivateInstall(target, addon);
   return { addon, removedFolders, wasInstalled: true };
 }

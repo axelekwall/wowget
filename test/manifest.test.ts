@@ -2,13 +2,22 @@ import { describe, expect, test } from "bun:test";
 import { chmod, lstat, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { WowgetError } from "../src/core/errors.ts";
-import { addAddon, createManifest, parseManifest, readManifest, removeAddon } from "../src/core/manifest.ts";
+import {
+  addAddon,
+  addTarget,
+  createManifest,
+  parseManifest,
+  readManifest,
+  removeAddon,
+  removeTarget,
+  setAddonTargets,
+} from "../src/core/manifest.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
 
 const tempDir = useTempDirs();
 
 const VALID = `# My addons
-[install]
+[targets.forever]
 path = "/tmp/AddOns"
 flavor = "forever"
 
@@ -44,9 +53,9 @@ function errorOf(fn: () => unknown): WowgetError {
 }
 
 describe("parseManifest", () => {
-  test("parses install and addons with defaults", () => {
+  test("parses targets and addons with defaults", () => {
     const m = parseManifest(VALID);
-    expect(m.install).toEqual({ path: "/tmp/AddOns", flavor: "forever" });
+    expect(m.targets).toEqual([{ name: "forever", path: "/tmp/AddOns", flavor: "forever" }]);
     expect(m.addons).toEqual([
       { name: "Questie", source: "github:Questie/Questie", prerelease: false },
       { name: "SomeAddon", source: "url:https://example.com/SomeAddon.zip", prerelease: true, pin: "v1.2.3" },
@@ -55,7 +64,32 @@ describe("parseManifest", () => {
   });
 
   test("a manifest without addons is valid", () => {
-    expect(parseManifest(`[install]\npath = "/x"\nflavor = "classic"\n`).addons).toEqual([]);
+    expect(parseManifest(`[targets.era]\npath = "/x"\nflavor = "classic"\n`).addons).toEqual([]);
+    expect(parseManifest("").targets).toEqual([]);
+  });
+
+  test("the old [install] table is rejected with a pointer to wowget init", () => {
+    const err = errorOf(() => parseManifest(`[install]\npath = "/x"\nflavor = "forever"\n`));
+    expect(err.code).toBe("manifest");
+    expect(err.message).toContain("format changed");
+    expect(err.message).toContain("wowget init");
+  });
+
+  test("addon targets must name existing targets and must not be empty", () => {
+    const two = `${VALID.replace("# My addons\n", '[targets.era]\npath = "/era"\nflavor = "classic"\n\n')}\ntargets = ["era"]\n`;
+    expect(parseManifest(two).addons.at(-1)).toEqual({
+      name: "Details",
+      source: "github:Tercioo/Details-Damage-Meter",
+      prerelease: false,
+      targets: ["era"],
+    });
+    const unknown = errorOf(() => parseManifest(two.replace('targets = ["era"]', 'targets = ["era", "retail"]')));
+    expect(unknown.message).toContain("Details");
+    expect(unknown.message).toContain('unknown target "retail"');
+    expect(errorOf(() => parseManifest(two.replace('targets = ["era"]', "targets = []"))).message).toContain("must not be empty");
+    expect(errorOf(() => parseManifest(`[targets.Era]\npath = "/x"\nflavor = "classic"\n`)).message).toContain(
+      'target name "Era"',
+    );
   });
 
   test("unknown keys are errors naming the key", () => {
@@ -69,7 +103,9 @@ describe("parseManifest", () => {
     expect(errorOf(() => parseManifest(`${VALID}\n\n[[addon]]\nname = "questie"\nsource = "github:a/b"\n`)).message).toContain(
       "duplicate",
     );
-    expect(errorOf(() => parseManifest(VALID.replace('"forever"', '"retail"'))).message).toContain("install.flavor");
+    expect(errorOf(() => parseManifest(VALID.replace('flavor = "forever"', 'flavor = "retail"'))).message).toContain(
+      "targets.forever.flavor",
+    );
     expect(errorOf(() => parseManifest(VALID.replace("github:Questie/Questie", "curse:123"))).message).toContain(
       "github:owner/repo",
     );
@@ -87,7 +123,7 @@ describe("addAddon", () => {
   });
 
   test("writes prerelease and pin when set, and escapes strings", async () => {
-    const path = await manifestFile(`[install]\npath = "/x"\nflavor = "forever"\n`);
+    const path = await manifestFile(`[targets.forever]\npath = "/x"\nflavor = "forever"\n`);
     const entry = { name: 'Odd "Name" \\ here', source: "github:a/b", prerelease: true, pin: "v2" };
     const m = await addAddon(path, entry);
     expect(m.addons).toEqual([entry]);
@@ -122,7 +158,7 @@ describe("removeAddon", () => {
     const m = await removeAddon(path, "someaddon");
     expect(m.addons.map((a) => a.name)).toEqual(["Questie", "Details"]);
     expect(await readFile(path, "utf8")).toBe(`# My addons
-[install]
+[targets.forever]
 path = "/tmp/AddOns"
 flavor = "forever"
 
@@ -139,7 +175,7 @@ source = "github:Tercioo/Details-Damage-Meter"`);
     const path = await manifestFile(VALID);
     await removeAddon(path, "Questie");
     const text = await readFile(path, "utf8");
-    expect(text).toStartWith(`# My addons\n[install]\npath = "/tmp/AddOns"\nflavor = "forever"\n\n# Pinned until the next patch\n[[addon]]\nname = "SomeAddon"`);
+    expect(text).toStartWith(`# My addons\n[targets.forever]\npath = "/tmp/AddOns"\nflavor = "forever"\n\n# Pinned until the next patch\n[[addon]]\nname = "SomeAddon"`);
     expect(parseManifest(text).addons.map((a) => a.name)).toEqual(["SomeAddon", "Details"]);
   });
 
@@ -152,19 +188,19 @@ source = "github:Tercioo/Details-Damage-Meter"`);
   });
 
   test("removes the only addon", async () => {
-    const original = `[install]\npath = "/x"\nflavor = "forever"\n\n[[addon]]\nname = "A"\nsource = "github:a/a"\n`;
+    const original = `[targets.forever]\npath = "/x"\nflavor = "forever"\n\n[[addon]]\nname = "A"\nsource = "github:a/a"\n`;
     const path = await manifestFile(original);
     const m = await removeAddon(path, "A");
     expect(m.addons).toEqual([]);
-    expect(await readFile(path, "utf8")).toBe(`[install]\npath = "/x"\nflavor = "forever"\n`);
+    expect(await readFile(path, "utf8")).toBe(`[targets.forever]\npath = "/x"\nflavor = "forever"\n`);
   });
 
   test("keeps a section that follows the removed block", async () => {
-    const original = `[[addon]]\nname = "A"\nsource = "github:a/a"\n\n[[addon]]\nname = "B"\nsource = "github:b/b"\n\n[install]\npath = "/x"\nflavor = "forever"\n`;
+    const original = `[[addon]]\nname = "A"\nsource = "github:a/a"\n\n[[addon]]\nname = "B"\nsource = "github:b/b"\n\n[targets.forever]\npath = "/x"\nflavor = "forever"\n`;
     const path = await manifestFile(original);
     await removeAddon(path, "B");
     expect(await readFile(path, "utf8")).toBe(
-      `[[addon]]\nname = "A"\nsource = "github:a/a"\n\n[install]\npath = "/x"\nflavor = "forever"\n`,
+      `[[addon]]\nname = "A"\nsource = "github:a/a"\n\n[targets.forever]\npath = "/x"\nflavor = "forever"\n`,
     );
   });
 
@@ -179,19 +215,19 @@ source = "github:Tercioo/Details-Damage-Meter"`);
   test("restores the file when the spliced result does not parse back to the expected set", async () => {
     // A's multi-line pin contains lines that look like a "B" block, so the line scan splices
     // inside the string; the re-parse must notice and restore the original.
-    const original = `[install]\npath = "/x"\nflavor = "forever"\n\n[[addon]]\nname = "A"\nsource = "github:a/a"\npin = """\n[[addon]]\nname = "B"\nsource = "github:b/b"\n[x]"""\n\n[[addon]]\nname = "B"\nsource = "github:b/b"\n`;
+    const original = `[targets.forever]\npath = "/x"\nflavor = "forever"\n\n[[addon]]\nname = "A"\nsource = "github:a/a"\npin = """\n[[addon]]\nname = "B"\nsource = "github:b/b"\n[x]"""\n\n[[addon]]\nname = "B"\nsource = "github:b/b"\n`;
     const path = await manifestFile(original);
     expect(parseManifest(original).addons.map((a) => a.name)).toEqual(["A", "B"]);
     await expect(removeAddon(path, "B")).rejects.toThrow("left unchanged");
     expect(await readFile(path, "utf8")).toBe(original);
   });
 
-  test("restores the file when the splice changes the [install] table", async () => {
-    // The fake "B" block inside install.path is spliced out, which leaves the path string open
-    // until the comment in the real B block: B disappears as expected, but install.path changes.
-    const original = `[[addon]]\nname = "A"\nsource = "github:a/a"\n\n[install]\nflavor = "forever"\npath = """/x\n[[addon]]\nname = "B"\nsource = "github:b/b"\nz = [\n] # """\n\n[[addon]]\nname = "B"\nsource = "github:b/b"\n# """\n`;
+  test("restores the file when the splice changes a target", async () => {
+    // The fake "B" block inside the target's path is spliced out, which leaves the path string open
+    // until the comment in the real B block: B disappears as expected, but the path changes.
+    const original = `[[addon]]\nname = "A"\nsource = "github:a/a"\n\n[targets.forever]\nflavor = "forever"\npath = """/x\n[[addon]]\nname = "B"\nsource = "github:b/b"\nz = [\n] # """\n\n[[addon]]\nname = "B"\nsource = "github:b/b"\n# """\n`;
     const path = await manifestFile(original);
-    await expect(removeAddon(path, "B")).rejects.toThrow("[install] table changed");
+    await expect(removeAddon(path, "B")).rejects.toThrow("targets did not match");
     expect(await readFile(path, "utf8")).toBe(original);
   });
 });
@@ -199,12 +235,128 @@ source = "github:Tercioo/Details-Damage-Meter"`);
 describe("createManifest", () => {
   test("creates the file and directories, and refuses to overwrite", async () => {
     const path = join(await tempDir(), "nested", "wowget.toml");
-    const m = await createManifest(path, { path: "/Applications/World of Warcraft/_forever_/Interface/AddOns", flavor: "forever" });
-    expect(m).toEqual({
-      install: { path: "/Applications/World of Warcraft/_forever_/Interface/AddOns", flavor: "forever" },
-      addons: [],
-    });
-    const err = await createManifest(path, { path: "/y", flavor: "classic" }).catch((e) => e);
+    const targets = [
+      { name: "forever", path: "/Applications/World of Warcraft/_forever_/Interface/AddOns", flavor: "forever" as const },
+      { name: "era", path: "/Applications/World of Warcraft/_classic_era_/Interface/AddOns", flavor: "classic" as const },
+    ];
+    expect(await createManifest(path, targets)).toEqual({ targets, addons: [] });
+    const err = await createManifest(path, [{ name: "x", path: "/y", flavor: "classic" }]).catch((e) => e);
     expect(err.code).toBe("manifest_exists");
+  });
+});
+
+const TWO_TARGETS = `# Game installs
+[targets.forever]
+path = "/wow/_forever_/Interface/AddOns"
+flavor = "forever"
+
+[targets.era]
+path = "/wow/_classic_era_/Interface/AddOns"
+flavor = "classic"
+
+# Quest helper
+[[addon]]
+name = "Questie"
+source = "github:Questie/Questie"
+targets = ["forever", "era"]
+pin = "v1"
+
+[[addon]]
+name = "EraOnly"
+source = "github:a/era-only"
+targets = [
+  "era",
+]
+
+[[addon]]
+name = "Everywhere"
+source = "github:a/everywhere"
+`;
+
+describe("addTarget", () => {
+  test("inserts the table before the first addon block and its introducing comment", async () => {
+    const path = await manifestFile(TWO_TARGETS);
+    const m = await addTarget(path, "retail", { path: "/wow/_retail_/Interface/AddOns", flavor: "mainline" });
+    expect(m.targets.map((t) => t.name)).toEqual(["forever", "era", "retail"]);
+    expect(await readFile(path, "utf8")).toBe(
+      TWO_TARGETS.replace(
+        "\n\n# Quest helper",
+        '\n\n[targets.retail]\npath = "/wow/_retail_/Interface/AddOns"\nflavor = "mainline"\n\n# Quest helper',
+      ),
+    );
+  });
+
+  test("appends when there are no addons, and refuses duplicate or invalid names", async () => {
+    const path = await manifestFile("");
+    await addTarget(path, "era", { path: "/era", flavor: "classic" });
+    await addTarget(path, "forever", { path: "/forever", flavor: "forever" });
+    expect(await readFile(path, "utf8")).toBe(
+      '[targets.era]\npath = "/era"\nflavor = "classic"\n\n[targets.forever]\npath = "/forever"\nflavor = "forever"\n',
+    );
+    expect((await addTarget(path, "era", { path: "/x", flavor: "classic" }).catch((e) => e)).code).toBe("duplicate");
+    expect((await addTarget(path, "Bad Name", { path: "/x", flavor: "classic" }).catch((e) => e)).code).toBe("usage");
+  });
+});
+
+describe("removeTarget", () => {
+  test("removes the table, drops the name from addon lists and removes addons left without targets", async () => {
+    const path = await manifestFile(TWO_TARGETS);
+    const { manifest, removedAddons } = await removeTarget(path, "era");
+    expect(removedAddons).toEqual(["EraOnly"]);
+    expect(manifest.targets.map((t) => t.name)).toEqual(["forever"]);
+    expect(manifest.addons.map((a) => [a.name, a.targets])).toEqual([
+      ["Questie", ["forever"]],
+      ["Everywhere", undefined],
+    ]);
+    expect(await readFile(path, "utf8")).toBe(`# Game installs
+[targets.forever]
+path = "/wow/_forever_/Interface/AddOns"
+flavor = "forever"
+
+# Quest helper
+[[addon]]
+name = "Questie"
+source = "github:Questie/Questie"
+targets = ["forever"]
+pin = "v1"
+
+[[addon]]
+name = "Everywhere"
+source = "github:a/everywhere"
+`);
+  });
+
+  test("an unknown target throws and leaves the file untouched", async () => {
+    const path = await manifestFile(TWO_TARGETS);
+    expect((await removeTarget(path, "retail").catch((e) => e)).code).toBe("not_found");
+    expect(await readFile(path, "utf8")).toBe(TWO_TARGETS);
+  });
+});
+
+describe("setAddonTargets", () => {
+  test("inserts after source, replaces a multi-line list, and deletes the line", async () => {
+    const path = await manifestFile(TWO_TARGETS);
+
+    await setAddonTargets(path, "everywhere", ["forever"]);
+    expect(await readFile(path, "utf8")).toEndWith('name = "Everywhere"\nsource = "github:a/everywhere"\ntargets = ["forever"]\n');
+
+    const m = await setAddonTargets(path, "EraOnly", ["forever", "era"]);
+    expect(m.addons.find((a) => a.name === "EraOnly")?.targets).toEqual(["forever", "era"]);
+    expect(await readFile(path, "utf8")).toContain('source = "github:a/era-only"\ntargets = ["forever", "era"]\n\n[[addon]]');
+
+    await setAddonTargets(path, "Questie", undefined);
+    expect(await readFile(path, "utf8")).toContain('source = "github:Questie/Questie"\npin = "v1"\n');
+    expect((await readManifest(path)).addons.find((a) => a.name === "Questie")).toEqual({
+      name: "Questie",
+      source: "github:Questie/Questie",
+      prerelease: false,
+      pin: "v1",
+    });
+  });
+
+  test("an unknown target name is rejected and the file restored", async () => {
+    const path = await manifestFile(TWO_TARGETS);
+    await expect(setAddonTargets(path, "Questie", ["retail"])).rejects.toThrow("left unchanged");
+    expect(await readFile(path, "utf8")).toBe(TWO_TARGETS);
   });
 });
