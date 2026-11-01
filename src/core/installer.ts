@@ -7,7 +7,7 @@ import { folderSupportsFlavor, type Flavor } from "./flavor.ts";
 import { cacheDir as defaultCacheDir } from "./paths.ts";
 import type { Resolved } from "./sources/types.ts";
 import type { InstallRecord, State } from "./state.ts";
-import { extractAddons } from "./zip.ts";
+import { extractAddons, readZip } from "./zip.ts";
 
 type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -67,6 +67,15 @@ export function cachedZipPath(cacheDir: string, addon: string, releaseId: string
   return join(cacheDir, safeSegment(addon.toLowerCase()), safeSegment(releaseId), safeSegment(basename(filename)));
 }
 
+function isReadableZip(bytes: Uint8Array): boolean {
+  try {
+    readZip(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function exists(path: string): Promise<boolean> {
   try {
     await lstat(path);
@@ -77,7 +86,10 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** Returns the cache path for a release and its bytes, downloading or copying it there if needed. */
+/**
+ * Returns the cache path for a release and its bytes, downloading or copying it there if needed.
+ * Only readable zips are stored; a cached file that is not one is deleted and fetched again.
+ */
 export async function fetchToCache(opts: {
   addon: string;
   resolved: Resolved;
@@ -94,18 +106,22 @@ export async function fetchToCache(opts: {
   if (await exists(zipPath)) {
     const bytes = new Uint8Array(await readFile(zipPath));
     const hash = sha256Hex(bytes);
-    if (!expected || hash === expected) {
+    const readable = isReadableZip(bytes);
+    if ((!expected || hash === expected) && readable) {
       onEvent?.({ type: "download:done", addon, bytes: bytes.length, sha256: hash, cached: true });
       return { zipPath, bytes, sha256: hash };
     }
+    if (!readable) await rm(zipPath, { force: true });
   }
+  // The local file may be the cached copy that was just deleted; download it again then.
+  const localPath = resolved.localPath && (await exists(resolved.localPath)) ? resolved.localPath : undefined;
 
   await mkdir(dir, { recursive: true });
   const part = `${zipPath}.part-${randomBytes(4).toString("hex")}`;
   let bytes: Uint8Array;
   try {
-    if (resolved.localPath) {
-      await copyFile(resolved.localPath, part);
+    if (localPath) {
+      await copyFile(localPath, part);
       bytes = new Uint8Array(await readFile(part));
     } else {
       bytes = await download(addon, resolved, opts.fetch ?? globalThis.fetch, onEvent);
@@ -115,12 +131,19 @@ export async function fetchToCache(opts: {
     if (expected && hash !== expected) {
       throw new WowgetError("network", `Checksum mismatch for ${resolved.filename}: expected ${expected}, got ${hash}.`);
     }
+    readZip(bytes);
     await rename(part, zipPath);
     onEvent?.({ type: "download:done", addon, bytes: bytes.length, sha256: hash, cached: false });
     return { zipPath, bytes, sha256: hash };
   } finally {
     await rm(part, { force: true });
   }
+}
+
+function downloadError(url: string, err: unknown): WowgetError {
+  return new WowgetError("network", `Download of ${url} failed: ${err instanceof Error ? err.message : String(err)}`, {
+    cause: err,
+  });
 }
 
 async function download(addon: string, resolved: Resolved, fetchFn: FetchFn, onEvent?: OnEvent): Promise<Uint8Array> {
@@ -130,23 +153,35 @@ async function download(addon: string, resolved: Resolved, fetchFn: FetchFn, onE
   try {
     response = await fetchFn(url, { redirect: "follow" });
   } catch (err) {
-    throw new WowgetError("network", `Download of ${url} failed: ${err instanceof Error ? err.message : String(err)}`, {
-      cause: err,
-    });
+    throw downloadError(url, err);
   }
   if (!response.ok) {
     throw new WowgetError("network", `Download of ${url} failed: HTTP ${response.status}.`);
   }
   const lengthHeader = Number(response.headers.get("content-length"));
   const total = Number.isFinite(lengthHeader) && lengthHeader > 0 ? lengthHeader : undefined;
-  if (!response.body) return new Uint8Array(await response.arrayBuffer());
+  if (!response.body) {
+    try {
+      return new Uint8Array(await response.arrayBuffer());
+    } catch (err) {
+      throw downloadError(url, err);
+    }
+  }
 
   const chunks: Uint8Array[] = [];
   let received = 0;
-  for await (const chunk of response.body) {
-    chunks.push(chunk);
-    received += chunk.length;
-    onEvent?.({ type: "download:progress", addon, received, total });
+  try {
+    for await (const chunk of response.body) {
+      chunks.push(chunk);
+      received += chunk.length;
+      onEvent?.({ type: "download:progress", addon, received, total });
+    }
+  } catch (err) {
+    throw downloadError(url, err);
+  }
+  // With a content encoding the declared length is that of the encoded body.
+  if (total !== undefined && !response.headers.has("content-encoding") && received < total) {
+    throw new WowgetError("network", `Download of ${url} ended after ${received} of ${total} bytes.`);
   }
   const out = new Uint8Array(received);
   let offset = 0;
@@ -248,11 +283,21 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
         sha256,
         zipPath,
         folders,
-      });
+      }, { releaseFromOthers: true });
     } catch (err) {
-      for (const name of placed) await rm(join(targetDir, name), { recursive: true, force: true });
-      for (const name of movedOld) await rename(join(oldDir, name), join(targetDir, name));
-      await rm(oldDir, { recursive: true, force: true });
+      const unrestored: string[] = [];
+      for (const name of placed) await rm(join(targetDir, name), { recursive: true, force: true }).catch(() => {});
+      for (const name of movedOld) {
+        await rename(join(oldDir, name), join(targetDir, name)).catch(() => unrestored.push(name));
+      }
+      if (unrestored.length) {
+        throw new WowgetError(
+          "io",
+          `${addon}: install failed (${err instanceof Error ? err.message : String(err)}) and restoring ${unrestored.join(", ")} also failed; the previous copies are in ${oldDir}.`,
+          { cause: err },
+        );
+      }
+      await rm(oldDir, { recursive: true, force: true }).catch(() => {});
       throw err;
     }
     await rm(oldDir, { recursive: true, force: true });
@@ -269,7 +314,8 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
       record,
     };
   } finally {
-    await rm(tmpDir, { recursive: true, force: true });
+    // Best effort, so that a cleanup failure does not hide the error that got here.
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 

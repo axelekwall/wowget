@@ -2,7 +2,6 @@
   "releases": [
     {
       "name": "Questie",
-      "version": "v11.2.0",
       "filename": "Questie-v11.2.0-nolib.zip",
       "nolib": true,
       "metadata": [
@@ -21,7 +20,6 @@
     },
     {
       "name": "Questie",
-      "version": "v11.2.0",
       "filename": "Questie-v11.2.0-classic.zip",
       "nolib": false,
       "metadata": [

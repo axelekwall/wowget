@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFile, writeFile } from "node:fs/promises";
+import { chmod, lstat, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { WowgetError } from "../src/core/errors.ts";
 import { addAddon, createManifest, parseManifest, readManifest, removeAddon } from "../src/core/manifest.ts";
@@ -93,6 +93,20 @@ describe("addAddon", () => {
     expect(m.addons).toEqual([entry]);
   });
 
+  test("writes through a symlink to its target and keeps the file mode", async () => {
+    const dir = await tempDir();
+    const target = join(dir, "real.toml");
+    await writeFile(target, VALID);
+    await chmod(target, 0o600);
+    const link = join(dir, "wowget.toml");
+    await symlink(target, link);
+
+    await addAddon(link, { name: "WeakAuras", source: "github:WeakAuras/WeakAuras2", prerelease: false });
+    expect((await lstat(link)).isSymbolicLink()).toBe(true);
+    expect(await readFile(target, "utf8")).toContain('name = "WeakAuras"');
+    expect((await stat(target)).mode & 0o777).toBe(0o600);
+  });
+
   test("duplicate name throws and leaves the file untouched", async () => {
     const path = await manifestFile(VALID);
     await expect(addAddon(path, { name: "QUESTIE", source: "github:x/y", prerelease: false })).rejects.toThrow(
@@ -169,6 +183,15 @@ source = "github:Tercioo/Details-Damage-Meter"`);
     const path = await manifestFile(original);
     expect(parseManifest(original).addons.map((a) => a.name)).toEqual(["A", "B"]);
     await expect(removeAddon(path, "B")).rejects.toThrow("left unchanged");
+    expect(await readFile(path, "utf8")).toBe(original);
+  });
+
+  test("restores the file when the splice changes the [install] table", async () => {
+    // The fake "B" block inside install.path is spliced out, which leaves the path string open
+    // until the comment in the real B block: B disappears as expected, but install.path changes.
+    const original = `[[addon]]\nname = "A"\nsource = "github:a/a"\n\n[install]\nflavor = "forever"\npath = """/x\n[[addon]]\nname = "B"\nsource = "github:b/b"\nz = [\n] # """\n\n[[addon]]\nname = "B"\nsource = "github:b/b"\n# """\n`;
+    const path = await manifestFile(original);
+    await expect(removeAddon(path, "B")).rejects.toThrow("[install] table changed");
     expect(await readFile(path, "utf8")).toBe(original);
   });
 });

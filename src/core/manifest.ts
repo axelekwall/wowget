@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { WowgetError } from "./errors.ts";
 import { FLAVORS, isFlavor, type Flavor } from "./flavor.ts";
@@ -182,10 +182,20 @@ async function readText(path: string): Promise<string> {
   }
 }
 
+/** Replaces the file at `path`, or at its symlink target, keeping the file's mode. */
 async function writeAtomic(path: string, text: string): Promise<void> {
-  const tmp = `${path}.tmp`;
+  const real = await realpath(path).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") return path;
+    throw err;
+  });
+  const mode = await stat(real).then(
+    (s) => s.mode & 0o7777,
+    () => undefined,
+  );
+  const tmp = `${real}.tmp`;
   await writeFile(tmp, text);
-  await rename(tmp, path);
+  if (mode !== undefined) await chmod(tmp, mode);
+  await rename(tmp, real);
 }
 
 function sameAddons(a: AddonEntry[], b: AddonEntry[]): boolean {
@@ -203,8 +213,10 @@ async function writeChecked(path: string, previous: string, next: string, expect
   let reason: string;
   try {
     const parsed = parseManifest(await readFile(path, "utf8"), path);
-    if (sameAddons(parsed.addons, expected.addons)) return parsed;
-    reason = "the addon list did not match the expected result";
+    const sameInstall =
+      parsed.install.path === expected.install.path && parsed.install.flavor === expected.install.flavor;
+    if (sameInstall && sameAddons(parsed.addons, expected.addons)) return parsed;
+    reason = sameInstall ? "the addon list did not match the expected result" : "the [install] table changed";
   } catch (err) {
     reason = err instanceof Error ? err.message : String(err);
   }

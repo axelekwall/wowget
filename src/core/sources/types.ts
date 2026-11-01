@@ -6,7 +6,7 @@ export interface Resolved {
   source: string;
   /** GitHub: tag_name. URL: sha256 of the file. */
   releaseId: string;
-  /** GitHub: tag_name without a leading "v". URL: first 12 hex of sha256. */
+  /** GitHub: the release.json version, else tag_name, without a leading "v". URL: first 12 hex of sha256. */
   version: string;
   filename: string;
   downloadUrl: string;

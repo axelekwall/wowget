@@ -144,11 +144,15 @@ export class State {
     return rows.map((r) => this.toRecord(r));
   }
 
-  /** Inserts the install and its folders and deactivates the previous active row, in one transaction. */
-  recordInstall(install: NewInstall): InstallRecord {
+  /**
+   * Inserts the install and its folders and deactivates the previous active row, in one
+   * transaction. With `releaseFromOthers`, other active installs stop owning its folders.
+   */
+  recordInstall(install: NewInstall, options?: { releaseFromOthers?: boolean }): InstallRecord {
     const addon = install.addon.toLowerCase();
     const id = this.db.transaction(() => {
       this.db.query("UPDATE installs SET active = 0 WHERE addon = ? AND active = 1").run(addon);
+      if (options?.releaseFromOthers) this.releaseFolders(install.folders, addon);
       const result = this.db
         .query(
           `INSERT INTO installs (addon, source, release_id, version, filename, sha256, zip_path, installed_at, active)
@@ -169,6 +173,17 @@ export class State {
       return Number(result.lastInsertRowid);
     })();
     return this.toRecord(this.db.query("SELECT * FROM installs WHERE id = ?").get(id) as InstallRow);
+  }
+
+  /** Removes `folders` (case-insensitively) from every active install except `exceptAddon`'s. */
+  releaseFolders(folders: string[], exceptAddon: string): void {
+    const remove = this.db.query(
+      `DELETE FROM install_folders WHERE folder = ? COLLATE NOCASE
+         AND install_id IN (SELECT id FROM installs WHERE active = 1 AND addon != ?)`,
+    );
+    this.db.transaction(() => {
+      for (const folder of folders) remove.run(folder, exceptAddon.toLowerCase());
+    })();
   }
 
   /** Returns true when there was an active install to deactivate. */

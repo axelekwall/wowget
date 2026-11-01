@@ -14,21 +14,33 @@ export function flavorFamily(flavor: Flavor): FlavorFamily {
   return flavor === "forever" || flavor === "mainline" ? "mainline" : "classic";
 }
 
+/** TOC suffixes that name exactly this flavor. */
 const OWN_SUFFIXES: Record<Flavor, string[]> = {
-  forever: ["Forever", "Camelot", "Mainline"],
-  mainline: ["Standard", "Mainline"],
-  classic: ["Vanilla", "Classic"],
-  bcc: ["TBC", "BCC", "Classic"],
-  wrath: ["Wrath", "WOTLKC", "Classic"],
-  cata: ["Cata", "Classic"],
-  mists: ["Mists", "Classic"],
+  forever: ["Forever", "Camelot"],
+  mainline: ["Mainline", "Standard"],
+  classic: ["Vanilla"],
+  bcc: ["TBC", "BCC"],
+  wrath: ["Wrath", "WOTLKC"],
+  cata: ["Cata"],
+  mists: ["Mists"],
 };
 
-const KNOWN_SUFFIXES = [...new Set(Object.values(OWN_SUFFIXES).flat())];
+/** TOC suffixes shared by several flavors; they count only when their interface list is in range. */
+const FAMILY_SUFFIXES: Record<Flavor, string[]> = {
+  forever: ["Mainline"],
+  mainline: [],
+  classic: ["Classic"],
+  bcc: ["Classic"],
+  wrath: ["Classic"],
+  cata: ["Classic"],
+  mists: ["Classic"],
+};
 
-/** TOC suffixes that satisfy a flavor, in priority order. "" is the unsuffixed TOC. */
+const KNOWN_SUFFIXES = [...new Set([...Object.values(OWN_SUFFIXES).flat(), ...Object.values(FAMILY_SUFFIXES).flat()])];
+
+/** TOC suffixes that may satisfy a flavor, in priority order. "" is the unsuffixed TOC. */
 export function tocSuffixes(flavor: Flavor): string[] {
-  return [...OWN_SUFFIXES[flavor], ""];
+  return [...OWN_SUFFIXES[flavor], ...FAMILY_SUFFIXES[flavor], ""];
 }
 
 /** Splits "Questie-Classic.toc" into base "Questie" and suffix "Classic". */
@@ -42,6 +54,19 @@ export function splitTocName(fileName: string): { base: string; suffix: string }
   return { base: stem, suffix: "" };
 }
 
+/**
+ * The flavor suffix of a TOC file in folder `folderName`, or undefined when the TOC does not
+ * belong to the folder. A TOC whose whole stem is the folder name counts as unsuffixed, so
+ * "BigWigs_Classic/BigWigs_Classic.toc" belongs to its folder.
+ */
+export function tocSuffixFor(fileName: string, folderName: string): string | undefined {
+  if (!/\.toc$/i.test(fileName)) return undefined;
+  const folder = folderName.toLowerCase();
+  if (fileName.replace(/\.toc$/i, "").toLowerCase() === folder) return "";
+  const { base, suffix } = splitTocName(fileName);
+  return base.toLowerCase() === folder ? suffix : undefined;
+}
+
 export function interfaceMatchesFlavor(iface: number, flavor: Flavor): Support {
   switch (flavor) {
     case "forever":
@@ -50,6 +75,14 @@ export function interfaceMatchesFlavor(iface: number, flavor: Flavor): Support {
       return iface >= 11000 && iface <= 11999 ? "yes" : "no";
     case "mainline":
       return iface >= 100000 ? "yes" : "no";
+    case "bcc":
+      return iface >= 20000 && iface <= 29999 ? "yes" : "no";
+    case "wrath":
+      return iface >= 30000 && iface <= 39999 ? "yes" : "no";
+    case "cata":
+      return iface >= 40000 && iface <= 49999 ? "yes" : "no";
+    case "mists":
+      return iface >= 50000 && iface <= 59999 ? "yes" : "no";
     default:
       return "unknown";
   }
@@ -86,38 +119,51 @@ export function parseToc(text: string): Toc {
   return toc;
 }
 
-/** TOC file names in `dir` that belong to the folder (base name equals the folder name). */
+/** TOC file names in `dir` that belong to the folder (see tocSuffixFor). */
 export async function addonTocs(dir: string): Promise<string[]> {
-  const name = basename(dir).toLowerCase();
+  const name = basename(dir);
   const entries = await readdir(dir, { withFileTypes: true });
-  return entries
-    .filter((e) => e.isFile() && /\.toc$/i.test(e.name))
-    .map((e) => e.name)
-    .filter((f) => splitTocName(f).base.toLowerCase() === name);
+  return entries.filter((e) => e.isFile() && tocSuffixFor(e.name, name) !== undefined).map((e) => e.name);
 }
 
-export async function folderSupportsFlavor(dir: string, flavor: Flavor): Promise<Support> {
-  const tocs = await addonTocs(dir);
-  const wanted = OWN_SUFFIXES[flavor];
-  if (tocs.some((f) => wanted.includes(splitTocName(f).suffix))) return "yes";
+const sameSuffix = (list: string[], suffix: string) => list.some((s) => s.toLowerCase() === suffix.toLowerCase());
 
-  let result: Support = "no";
-  for (const file of tocs.filter((f) => splitTocName(f).suffix === "")) {
+/**
+ * A TOC with the flavor's own suffix means yes. A family-suffixed or unsuffixed TOC, and each
+ * `## Interface-<Suffix>:` line, counts by its interface list: yes when a number is in the
+ * flavor's range, no when every list is entirely outside it, unknown otherwise.
+ */
+export async function folderSupportsFlavor(dir: string, flavor: Flavor): Promise<Support> {
+  const name = basename(dir);
+  const tocs = (await addonTocs(dir)).map((file) => ({ file, suffix: tocSuffixFor(file, name)! }));
+  if (tocs.length === 0) return "unknown";
+  const own = OWN_SUFFIXES[flavor];
+  const family = FAMILY_SUFFIXES[flavor];
+  if (tocs.some((t) => sameSuffix(own, t.suffix))) return "yes";
+
+  const lists: number[][] = [];
+  for (const { file, suffix } of tocs) {
+    if (suffix !== "" && !sameSuffix(family, suffix)) continue;
     const toc = parseToc(await readFile(join(dir, file), "utf8"));
+    lists.push(toc.interface);
     for (const [key, value] of Object.entries(toc.fields)) {
       const typed = /^interface-(.+)$/i.exec(key);
-      if (typed && wanted.some((s) => s.toLowerCase() === typed[1]!.toLowerCase()) && parseInterfaceList(value).length) {
-        return "yes";
-      }
+      if (!typed) continue;
+      const parsed = parseInterfaceList(value);
+      if (sameSuffix(own, typed[1]!) && parsed.length) return "yes";
+      if (sameSuffix(family, typed[1]!)) lists.push(parsed);
     }
-    if (toc.interface.length === 0) {
+  }
+
+  let result: Support = "no";
+  for (const list of lists) {
+    if (list.length === 0) {
       result = "unknown";
       continue;
     }
-    const matches = toc.interface.map((n) => interfaceMatchesFlavor(n, flavor));
+    const matches = list.map((n) => interfaceMatchesFlavor(n, flavor));
     if (matches.includes("yes")) return "yes";
     if (matches.includes("unknown")) result = "unknown";
   }
-  if (tocs.length === 0) return "unknown";
   return result;
 }

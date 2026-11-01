@@ -35,6 +35,16 @@ describe("extractAddons", () => {
     expect(folders).toEqual([{ name: "Questie", path: join(dest, "Questie-v11.2.0", "Questie") }]);
   });
 
+  test("folders whose name ends in a flavor word are recognised", async () => {
+    const zip = zipSync({
+      "BigWigs/BigWigs.toc": text(""),
+      "BigWigs_Classic/BigWigs_Classic.toc": text(""),
+      "Foo-Classic/Foo-Classic_Vanilla.toc": text(""),
+    });
+    const folders = await extractAddons(zip, await tempDir());
+    expect(folders.map((f) => f.name)).toEqual(["BigWigs", "BigWigs_Classic", "Foo-Classic"]);
+  });
+
   test("zip without a matching TOC is an error", async () => {
     const zip = zipSync({ "Foo/Bar.toc": text(""), "Foo/foo.lua": text("") });
     await expect(extractAddons(zip, await tempDir())).rejects.toThrow("no addon folder");

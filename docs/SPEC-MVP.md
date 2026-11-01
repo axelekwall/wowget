@@ -140,30 +140,35 @@ transaction), `deactivateInstall(addon)`, `folderOwner(folder)`,
 
 - `Flavor` union as listed above. Family: `forever` and `mainline` are
   Mainline-family; the rest are Classic-family.
-- TOC suffixes that satisfy a flavor, in priority order:
-  - forever: `_Forever`, `_Camelot`, `_Mainline`, none
-  - mainline: `_Standard`, `_Mainline`, none
-  - classic: `_Vanilla`, `_Classic`, none
-  - others: their own suffix, `_Classic`, none
+- TOC suffixes that may satisfy a flavor, in priority order: the flavor's own
+  suffixes, then its family suffix, then none:
+  - forever: `_Forever`, `_Camelot`; family `_Mainline`
+  - mainline: `_Mainline`, `_Standard`
+  - classic: `_Vanilla`; family `_Classic`
+  - others: their own suffix; family `_Classic`
   Both `_` and `-` separators are accepted.
 - Interface number ranges: forever `16000..16999`, classic `11000..11999`,
-  mainline `>= 100000`. Others are not needed for the MVP; return `unknown`.
+  bcc `20000..29999`, wrath `30000..39999`, cata `40000..49999`,
+  mists `50000..59999`, mainline `>= 100000`.
 - `parseToc(text)` returns `{ interface: number[], title?, version?, fields }`.
   `## Interface:` may be a comma-separated list. Also read
   `## Interface-<Type>:` lines into `fields`.
 - `folderSupportsFlavor(dir, flavor)` returns `"yes" | "no" | "unknown"`:
-  `yes` if a suffixed TOC for the flavor exists, or an unsuffixed TOC lists an
-  interface in the flavor's range; `no` if the only TOCs are for other
-  flavors; `unknown` if there is an unsuffixed TOC without an interface line.
+  `yes` if a TOC with the flavor's own suffix exists. Otherwise family-suffixed
+  and unsuffixed TOCs, and `## Interface-<Type>:` lines (counted as a TOC with
+  that suffix), decide by their interface lists: `yes` if one lists an
+  interface in the flavor's range, `unknown` if one has no interface list,
+  else `no`. A TOC whose whole stem equals the folder name is unsuffixed
+  (`BigWigs_Classic/BigWigs_Classic.toc`).
 
 ## Zip handling
 
 - Use `fflate` (`unzipSync` or the streaming API). Reject entries with
   absolute paths or `..` segments.
 - After extraction into a temp directory, normalise to a set of addon folders:
-  a directory is an addon folder when it directly contains a `.toc` whose base
-  name (before any flavor suffix) equals the directory name. Look at the top
-  level first; if the top level is a single directory that is not an addon
+  a directory is an addon folder when it directly contains a `.toc` whose full
+  stem, or base name before a flavor suffix, equals the directory name. Look
+  at the top level first; if the top level is a single directory that is not an addon
   folder, descend one level. Error if nothing qualifies.
 - Return the list of addon folder names and their paths.
 
@@ -172,8 +177,10 @@ transaction), `deactivateInstall(addon)`, `folderOwner(folder)`,
 `install({ addon, resolved, zipBytesOrPath, targetDir, flavor, force, state, onEvent })`:
 
 1. Download goes through the cache dir: `<cache>/<addon>/<releaseId>/<filename>`.
-   Skip the download if the file exists and the sha256 matches when a hash is
-   known. Compute sha256 after download.
+   Skip the download if the file exists, is a readable zip, and the sha256
+   matches when a hash is known; a cached file that is not a readable zip is
+   deleted and fetched again. Compute sha256 after download, and store only
+   readable zips. A body shorter than its Content-Length is a network error.
 2. Extract into `<targetDir>/.wowget-tmp-<random>/` so the final move is a
    rename on the same filesystem. Always remove the temp dir on exit.
 3. Normalise to addon folders.
@@ -183,10 +190,12 @@ transaction), `deactivateInstall(addon)`, `folderOwner(folder)`,
    not owned by this addon's active install, fail unless `force`.
 6. Swap: for each folder, rename the existing one to
    `<targetDir>/.wowget-old-<random>/<folder>`, rename the new one in. If any
-   rename fails, move the old ones back before rethrowing. Remove the old set
+   rename fails, move the old ones back before rethrowing; if a folder cannot
+   be moved back, keep the old directory and name it in the error. Remove the old set
    after success. Also remove folders from the previous active install that
    are not in the new set.
-7. `state.recordInstall(...)`.
+7. `state.recordInstall(...)`, which also removes the folders from any other
+   active install, so a forced takeover leaves one owner.
 
 `uninstall({ addon, targetDir, state })` removes the active install's folders
 if they exist and calls `deactivateInstall`. Missing folders are not an error.
@@ -200,7 +209,7 @@ Emit events: `download:start/progress/done`, `extract`, `verify`, `swap`,
 interface Resolved {
   source: string;          // the manifest source string
   releaseId: string;       // GitHub: tag_name. URL: sha256 of the file.
-  version: string;         // GitHub: tag_name without a leading "v". URL: first 12 hex of sha256.
+  version: string;         // GitHub: release.json version, else tag_name, without a leading "v". URL: first 12 hex of sha256.
   filename: string;
   downloadUrl: string;
   publishedAt?: string;

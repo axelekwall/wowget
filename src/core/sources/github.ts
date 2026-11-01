@@ -19,6 +19,7 @@ interface GithubRelease {
 
 interface ReleaseJsonEntry {
   filename: string;
+  version?: string;
   nolib?: boolean;
   metadata?: { flavor?: string; interface?: number }[];
 }
@@ -112,9 +113,10 @@ export function githubSource(spec: { raw: string; owner: string; repo: string })
 
       let asset: GithubAsset | undefined;
       let flavorVerified = false;
+      let version = release.tag_name;
       const releaseJson = assets.find((a) => a.name === "release.json");
       if (releaseJson) {
-        const data = await getJson<{ releases?: ReleaseJsonEntry[] }>(ctx, releaseJson.browser_download_url);
+        const data = await getJson<{ version?: unknown; releases?: ReleaseJsonEntry[] }>(ctx, releaseJson.browser_download_url);
         const entry = chooseFromReleaseJson(Array.isArray(data?.releases) ? data.releases : [], ctx.flavor);
         if (entry) {
           asset = assets.find((a) => a.name === entry.filename);
@@ -122,6 +124,9 @@ export function githubSource(spec: { raw: string; owner: string; repo: string })
             throw new WowgetError("source", `Release ${releaseUrl} lists ${entry.filename} in release.json but has no such asset.`);
           }
           flavorVerified = true;
+          // Tags can be odd ("bundle/v12.3.1+v1.0.9"); the packager's version reads better.
+          const named = typeof entry.version === "string" && entry.version ? entry.version : data.version;
+          if (typeof named === "string" && named) version = named;
         }
       }
       // Without a release.json entry for the flavor, fall back to the zips and let the installer
@@ -135,7 +140,7 @@ export function githubSource(spec: { raw: string; owner: string; repo: string })
       return {
         source: spec.raw,
         releaseId: release.tag_name,
-        version: release.tag_name.replace(/^v/, ""),
+        version: version.replace(/^v/, ""),
         filename: asset.name,
         downloadUrl: asset.browser_download_url,
         publishedAt: release.published_at ?? undefined,

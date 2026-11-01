@@ -2,7 +2,7 @@ import { unzipSync } from "fflate";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { WowgetError } from "./errors.ts";
-import { splitTocName } from "./flavor.ts";
+import { tocSuffixFor } from "./flavor.ts";
 
 export interface AddonFolder {
   name: string;
@@ -22,16 +22,20 @@ function entrySegments(name: string): string[] {
   return segments;
 }
 
-/** Extracts `bytes` into `destDir`. All entries are checked before anything is written. */
-export async function extractZip(bytes: Uint8Array, destDir: string): Promise<void> {
-  let entries: Record<string, Uint8Array>;
+/** Decompresses every entry of `bytes`, throwing a "zip" error when that fails. */
+export function readZip(bytes: Uint8Array): Record<string, Uint8Array> {
   try {
-    entries = unzipSync(bytes);
+    return unzipSync(bytes);
   } catch (err) {
     throw new WowgetError("zip", `Could not read zip: ${err instanceof Error ? err.message : String(err)}`, {
       cause: err,
     });
   }
+}
+
+/** Extracts `bytes` into `destDir`. All entries are checked before anything is written. */
+export async function extractZip(bytes: Uint8Array, destDir: string): Promise<void> {
+  const entries = readZip(bytes);
   const plan = Object.entries(entries).map(([name, data]) => ({
     segments: entrySegments(name),
     isDir: name.endsWith("/") || name.endsWith("\\"),
@@ -50,11 +54,9 @@ export async function extractZip(bytes: Uint8Array, destDir: string): Promise<vo
 }
 
 export async function isAddonFolder(dir: string): Promise<boolean> {
-  const name = basename(dir).toLowerCase();
+  const name = basename(dir);
   const entries = await readdir(dir, { withFileTypes: true });
-  return entries.some(
-    (e) => e.isFile() && /\.toc$/i.test(e.name) && splitTocName(e.name).base.toLowerCase() === name,
-  );
+  return entries.some((e) => e.isFile() && tocSuffixFor(e.name, name) !== undefined);
 }
 
 async function subdirectories(dir: string): Promise<string[]> {

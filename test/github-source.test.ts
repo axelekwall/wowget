@@ -13,7 +13,14 @@ const releaseJson = await Bun.file(join(fixtures, "release.json")).json();
 const API = "https://api.github.com/repos/Questie/Questie/releases?per_page=30";
 const DL = "https://github.com/Questie/Questie/releases/download";
 const betaReleaseJson = {
-  releases: [{ filename: "Questie-v11.3.0-beta.zip", nolib: false, metadata: [{ flavor: "forever", interface: 16001 }] }],
+  releases: [
+    {
+      version: "11.3.0-beta.2",
+      filename: "Questie-v11.3.0-beta.zip",
+      nolib: false,
+      metadata: [{ flavor: "forever", interface: 16001 }],
+    },
+  ],
 };
 
 const source = githubSource({ raw: "github:Questie/Questie", owner: "Questie", repo: "Questie" });
@@ -63,6 +70,12 @@ describe("github source", () => {
     const err = await resolve({ pin: "v11.1.0", flavor: "mainline" }).result.catch((e) => e);
     expect(err.code).toBe("source");
     expect(err.message).toContain("Questie-v11.1.0-classic.zip, Questie-v11.1.0-camelot.zip, Questie-v11.1.0-wrath.zip");
+  });
+
+  test("version comes from the release.json entry when it has one, else from the tag", async () => {
+    expect((await resolve({ prerelease: true }).result).version).toBe("11.3.0-beta.2");
+    expect((await resolve({ flavor: "classic" }).result).version).toBe("11.2.0");
+    expect((await resolve({ pin: "v11.1.0" }).result).version).toBe("11.1.0");
   });
 
   test("pre-releases are skipped unless allowed, drafts always", async () => {

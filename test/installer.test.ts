@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { zipSync } from "fflate";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmodSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ProgressEvent } from "../src/core/events.ts";
-import { install, uninstall } from "../src/core/installer.ts";
+import { cachedZipPath, install, uninstall } from "../src/core/installer.ts";
 import type { Resolved } from "../src/core/sources/types.ts";
-import { openState, type State } from "../src/core/state.ts";
+import { openState, State, type NewInstall } from "../src/core/state.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
 
 const tempDir = useTempDirs();
@@ -44,6 +45,10 @@ async function localRelease(env: Env, releaseId: string, files: Record<string, s
     flavorVerified: false,
     localPath: zipPath,
   };
+}
+
+function remoteRelease(downloadUrl: string, releaseId = "r1"): Resolved {
+  return { source: "url:x", releaseId, version: releaseId, filename: "Details.zip", downloadUrl, flavorVerified: false };
 }
 
 const visible = async (dir: string) => (await readdir(dir)).filter((n) => !n.startsWith(".")).sort();
@@ -184,6 +189,117 @@ describe("install", () => {
       expect(hits).toBe(1);
     } finally {
       server.stop(true);
+    }
+  });
+
+  test("a folder named with a flavor word installs", async () => {
+    const env = await setup();
+    const resolved = await localRelease(env, "v1", { "Foo-Classic/Foo-Classic.toc": "## Interface: 16001\n" });
+    const result = await install({ addon: "Foo", resolved, targetDir: env.addons, flavor: "forever", state: env.state, cacheDir: env.cache });
+    expect(result.folders).toEqual(["Foo-Classic"]);
+  });
+
+  test("a forced takeover moves folder ownership to the new addon", async () => {
+    const env = await setup();
+    const opts = { targetDir: env.addons, flavor: "forever" as const, state: env.state, cacheDir: env.cache };
+    await install({ ...opts, addon: "A", resolved: await localRelease(env, "a1", { "Shared/Shared_Forever.toc": "" }) });
+    await install({ ...opts, addon: "B", force: true, resolved: await localRelease(env, "b1", { "Shared/Shared_Forever.toc": "" }) });
+    expect(env.state.folderOwners("Shared")).toEqual(["b"]);
+    expect(env.state.getActiveInstall("A")?.folders).toEqual([]);
+
+    const err = await install({ ...opts, addon: "A", resolved: await localRelease(env, "a2", { "Shared/Shared_Forever.toc": "" }) }).catch((e) => e);
+    expect(err.code).toBe("conflict");
+    expect(err.message).toContain('belongs to "b"');
+
+    expect((await uninstall({ addon: "B", targetDir: env.addons, state: env.state })).removedFolders).toEqual(["Shared"]);
+    expect(await visible(env.addons)).toEqual([]);
+  });
+
+  test("a non-zip download is not cached, and a corrupt cached zip is downloaded again", async () => {
+    const env = await setup();
+    const zip = zipSync({ "Details/Details_Forever.toc": text("") });
+    let body: Uint8Array | string = "<html>rate limited</html>";
+    let hits = 0;
+    const fetch = async () => {
+      hits++;
+      return new Response(body);
+    };
+    const resolved = remoteRelease("https://example.invalid/Details.zip");
+    const opts = { addon: "Details", resolved, targetDir: env.addons, flavor: "forever" as const, state: env.state, cacheDir: env.cache, fetch };
+    const cached = cachedZipPath(env.cache, "Details", "r1", "Details.zip");
+
+    expect((await install(opts).catch((e) => e)).code).toBe("zip");
+    expect(await readdir(join(env.cache, "details", "r1"))).toEqual([]);
+
+    await writeFile(cached, zip.subarray(0, zip.length - 10));
+    body = zip;
+    await install(opts);
+    expect(hits).toBe(2);
+    expect(new Uint8Array(await readFile(cached))).toEqual(zip);
+    expect(await visible(env.addons)).toEqual(["Details"]);
+  });
+
+  test("a connection dropped mid-body is a network error and caches nothing", async () => {
+    const env = await setup();
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        let sent = false;
+        const stream = new ReadableStream({
+          pull(controller) {
+            if (sent) return controller.error(new Error("connection lost"));
+            sent = true;
+            controller.enqueue(new Uint8Array(1024));
+          },
+        });
+        return new Response(stream, { headers: { "content-length": "100000" } });
+      },
+    });
+    try {
+      const resolved = remoteRelease(`http://localhost:${server.port}/Details.zip`);
+      const err = await install({ addon: "Details", resolved, targetDir: env.addons, flavor: "forever", state: env.state, cacheDir: env.cache }).catch((e) => e);
+      expect(err.code).toBe("network");
+      expect(await readdir(join(env.cache, "details", "r1"))).toEqual([]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a body shorter than its Content-Length is a network error", async () => {
+    const env = await setup();
+    const fetch = async () => new Response("short", { headers: { "content-length": "100" } });
+    const resolved = remoteRelease("https://example.invalid/Details.zip");
+    const err = await install({ addon: "Details", resolved, targetDir: env.addons, flavor: "forever", state: env.state, cacheDir: env.cache, fetch }).catch((e) => e);
+    expect(err.code).toBe("network");
+    expect(err.message).toContain("ended after 5 of 100 bytes");
+  });
+
+  test("when rollback cannot restore a folder, the error names the directory holding it", async () => {
+    const env = await setup();
+    const opts = { addon: "Details", targetDir: env.addons, flavor: "forever" as const, cacheDir: env.cache };
+    await install({ ...opts, state: env.state, resolved: await localRelease(env, "v1", { "Details/Details_Forever.toc": "", "Details/core.lua": "v1" }) });
+
+    let oldDir = "";
+    class FailingState extends State {
+      override recordInstall(_install: NewInstall): never {
+        // A read-only holding directory makes moving the previous folder back fail.
+        oldDir = join(env.addons, readdirSync(env.addons).find((n) => n.startsWith(".wowget-old-"))!);
+        chmodSync(oldDir, 0o555);
+        throw new Error("disk full");
+      }
+    }
+    try {
+      const err = await install({
+        ...opts,
+        state: new FailingState(env.state.db),
+        resolved: await localRelease(env, "v2", { "Details/Details_Forever.toc": "", "Details/core.lua": "v2" }),
+      }).catch((e) => e);
+      expect(err.code).toBe("io");
+      expect(err.message).toContain("disk full");
+      expect(err.message).toContain(oldDir);
+      expect(await readFile(join(oldDir, "Details", "core.lua"), "utf8")).toBe("v1");
+    } finally {
+      if (oldDir) await chmod(oldDir, 0o755);
     }
   });
 

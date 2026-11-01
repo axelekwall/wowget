@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { folderSupportsFlavor, parseToc, splitTocName, tocSuffixes } from "../src/core/flavor.ts";
+import { folderSupportsFlavor, parseToc, splitTocName, tocSuffixes, tocSuffixFor } from "../src/core/flavor.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
 
 const tempDir = useTempDirs();
@@ -35,6 +35,13 @@ describe("splitTocName", () => {
     expect(splitTocName("Details_TinyThreat.toc")).toEqual({ base: "Details_TinyThreat", suffix: "" });
   });
 
+  test("a TOC whose whole stem is the folder name is unsuffixed", () => {
+    expect(tocSuffixFor("BigWigs_Classic.toc", "BigWigs_Classic")).toBe("");
+    expect(tocSuffixFor("BigWigs_Classic.toc", "BigWigs")).toBe("Classic");
+    expect(tocSuffixFor("Foo-Classic_Vanilla.toc", "foo-classic")).toBe("Vanilla");
+    expect(tocSuffixFor("Other.toc", "Foo")).toBeUndefined();
+  });
+
   test("forever accepts its own suffixes before the unsuffixed TOC", () => {
     expect(tocSuffixes("forever")).toEqual(["Forever", "Camelot", "Mainline", ""]);
   });
@@ -62,5 +69,30 @@ describe("folderSupportsFlavor", () => {
   test("only TOCs for other flavors means no", async () => {
     const dir = await addonDir("Foo", { "Foo_Vanilla.toc": "", "Foo-Wrath.toc": "" });
     expect(await folderSupportsFlavor(dir, "forever")).toBe("no");
+  });
+
+  test("a family suffix counts only by its interface list", async () => {
+    const empty = await addonDir("Foo", { "Foo_Mainline.toc": "" });
+    expect(await folderSupportsFlavor(empty, "forever")).toBe("unknown");
+    expect(await folderSupportsFlavor(empty, "mainline")).toBe("yes");
+    const retail = await addonDir("Foo", { "Foo_Mainline.toc": "## Interface: 110105\n" });
+    expect(await folderSupportsFlavor(retail, "forever")).toBe("no");
+    const both = await addonDir("Foo", { "Foo_Mainline.toc": "## Interface: 110105, 16001\n" });
+    expect(await folderSupportsFlavor(both, "forever")).toBe("yes");
+    const classic = await addonDir("Foo", { "Foo_Classic.toc": "## Interface: 11507\n" });
+    expect(await folderSupportsFlavor(classic, "classic")).toBe("yes");
+    expect(await folderSupportsFlavor(classic, "wrath")).toBe("no");
+  });
+
+  test("typed interface lines count like a TOC with that suffix", async () => {
+    const own = await addonDir("Foo", { "Foo.toc": "## Interface: 110105\n## Interface-Forever: 16001\n" });
+    expect(await folderSupportsFlavor(own, "forever")).toBe("yes");
+    const family = await addonDir("Foo", { "Foo.toc": "## Interface: 110105\n## Interface-Mainline: 110105\n" });
+    expect(await folderSupportsFlavor(family, "forever")).toBe("no");
+  });
+
+  test("a folder named with a suffix word uses its whole-name TOC", async () => {
+    const dir = await addonDir("BigWigs_Classic", { "BigWigs_Classic.toc": "## Interface: 16001\n" });
+    expect(await folderSupportsFlavor(dir, "forever")).toBe("yes");
   });
 });
