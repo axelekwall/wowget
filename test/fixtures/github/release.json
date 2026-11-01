@@ -1,0 +1,30 @@
+{
+  "releases": [
+    {
+      "name": "Questie",
+      "filename": "Questie-v11.2.0-nolib.zip",
+      "nolib": true,
+      "metadata": [
+        { "flavor": "forever", "interface": 16001 },
+        { "flavor": "classic", "interface": 11509 }
+      ]
+    },
+    {
+      "name": "Questie",
+      "version": "v11.2.0",
+      "filename": "Questie-v11.2.0.zip",
+      "nolib": false,
+      "metadata": [
+        { "flavor": "forever", "interface": 16001 }
+      ]
+    },
+    {
+      "name": "Questie",
+      "filename": "Questie-v11.2.0-classic.zip",
+      "nolib": false,
+      "metadata": [
+        { "flavor": "classic", "interface": 11509 }
+      ]
+    }
+  ]
+}
