@@ -2,7 +2,7 @@
 import { parseArgs } from "node:util";
 import { WowgetError } from "./core/errors.ts";
 import type { ProgressEvent } from "./core/events.ts";
-import { FLAVORS, isFlavor } from "./core/flavor.ts";
+import { FLAVORS, isFlavor, type Flavor } from "./core/flavor.ts";
 import * as ops from "./core/ops.ts";
 import { manifestPath, stateDbPath } from "./core/paths.ts";
 import { openState, type State } from "./core/state.ts";
@@ -10,7 +10,12 @@ import { openState, type State } from "./core/state.ts";
 const HELP = `Usage: wowget <command> [options]
 
 Commands:
-  init [--path P] [--flavor F]          create the manifest
+  init [--path P --flavor F --name N] [--game-dir D]
+                                        create the manifest: one target for the AddOns directory P,
+                                        or one per World of Warcraft version found in the game dir
+  target list                           show the targets and whether their AddOns directories exist
+  target add <name> --path P --flavor F add a target
+  target remove <name>                  uninstall everything on a target and remove it
   add <source> [--name N] [--prerelease] [--pin ID]
                                         install an addon and add it to the manifest
   remove <name>                         uninstall an addon and drop it from the manifest
@@ -19,29 +24,43 @@ Commands:
   update [name...]                      install newer releases (all addons by default)
   install                               install manifest addons that are not installed
 
+add, remove, list, outdated, update and install act on every target unless
+filtered with -t/--target, which can be repeated. "add -t" records the targets
+in the manifest; "remove -t" removes the addon from those targets only.
+
 Sources: github:owner/repo, url:https://...
 Flavors: ${FLAVORS.join(", ")}
 
 Options:
-  --manifest <path>   manifest file (default ~/.config/wowget/wowget.toml, or $WOWGET_MANIFEST)
+  -t, --target <name> act on this target only (repeatable)
+  --manifest <path>   manifest file (default $WOWGET_MANIFEST, else ${manifestPath(undefined, { ...process.env, WOWGET_MANIFEST: undefined })})
   --json              print the result as JSON
   --force             install over unmanaged folders and unverifiable flavors
   --verbose           show every progress step and stack traces
   -h, --help          show this help
 `;
 
-const COMMAND_FLAGS: Record<string, string[]> = {
-  init: ["path", "flavor"],
-  add: ["name", "prerelease", "pin"],
-  remove: [],
-  list: [],
-  outdated: [],
-  update: [],
-  install: [],
+type Flag = "path" | "flavor" | "name" | "prerelease" | "pin" | "target" | "game-dir";
+const FLAGS: Flag[] = ["path", "flavor", "name", "prerelease", "pin", "target", "game-dir"];
+
+const COMMAND_FLAGS: Record<string, Flag[]> = {
+  init: ["path", "flavor", "name", "game-dir"],
+  "target list": [],
+  "target add": ["path", "flavor"],
+  "target remove": [],
+  add: ["name", "prerelease", "pin", "target"],
+  remove: ["target"],
+  list: ["target"],
+  outdated: ["target"],
+  update: ["target"],
+  install: ["target"],
 };
 
 const POSITIONALS: Record<string, [min: number, max: number]> = {
   init: [0, 0],
+  "target list": [0, 0],
+  "target add": [1, 1],
+  "target remove": [1, 1],
   add: [1, 1],
   remove: [1, 1],
   list: [0, 0],
@@ -68,6 +87,8 @@ function parse(argv: string[]) {
         name: { type: "string" },
         prerelease: { type: "boolean" },
         pin: { type: "string" },
+        target: { type: "string", short: "t", multiple: true },
+        "game-dir": { type: "string" },
       },
     });
   } catch (err) {
@@ -119,46 +140,81 @@ function renderUpdate(result: ops.UpdateResult): string {
     result.addons.map((a) => {
       switch (a.status) {
         case "current":
-          return [a.name, "current", a.version];
+          return [a.name, a.target, "current", a.version];
         case "updated":
-          return [a.name, "updated", `${a.from} -> ${a.to}`];
+          return [a.name, a.target, "updated", `${a.from} -> ${a.to}`];
         case "installed":
-          return [a.name, "installed", a.version];
+          return [a.name, a.target, "installed", a.version];
         case "repaired":
-          return [a.name, "repaired", `${a.version} reinstalled`];
+          return [a.name, a.target, "repaired", `${a.version} reinstalled`];
         case "skipped":
-          return [a.name, "skipped", `${a.version} already installed`];
+          return [a.name, a.target, "skipped", `${a.version} already installed`];
         case "error":
-          return [a.name, "error", a.error];
+          return [a.name, a.target, "error", a.error];
       }
     }),
   );
+}
+
+function renderRemoved(rows: ops.RemoveEntry[]): string[] {
+  return rows.map((r) => {
+    if (!r.wasInstalled) return `  ${r.target}: was not installed`;
+    return `  ${r.target}: removed${r.removedFolders.length ? ` ${r.removedFolders.join(", ")}` : ""}`;
+  });
 }
 
 function render(command: string, result: unknown): string {
   switch (command) {
     case "init": {
       const r = result as ops.InitResult;
-      const lines = [`Created ${r.manifestPath}`, `  path:   ${r.install.path}`, `  flavor: ${r.install.flavor}`];
-      if (r.createdAddonsDir) lines.push(`Created ${r.install.path}`);
+      return [
+        `Created ${r.manifestPath}`,
+        table([
+          ["TARGET", "FLAVOR", "PATH"],
+          ...r.targets.map((t) => [t.name, t.flavor, `${t.path}${t.createdAddonsDir ? " (created)" : ""}`]),
+        ]),
+      ].join("\n");
+    }
+    case "target list": {
+      const r = result as ops.TargetListResult;
+      if (!r.targets.length) return 'No targets in the manifest. Add one with "wowget target add".';
+      return table([
+        ["TARGET", "FLAVOR", "PATH", "EXISTS"],
+        ...r.targets.map((t) => [t.name, t.flavor, t.path, t.exists ? "yes" : "no"]),
+      ]);
+    }
+    case "target add": {
+      const r = result as ops.TargetAddResult;
+      const lines = [`Added target ${r.target.name} (${r.target.flavor}) at ${r.target.path}`];
+      if (r.createdAddonsDir) lines.push(`Created ${r.target.path}`);
+      return lines.join("\n");
+    }
+    case "target remove": {
+      const r = result as ops.TargetRemoveResult;
+      const lines = [`Removed target ${r.name}`];
+      for (const a of r.addons) lines.push(`  uninstalled ${a.name}${a.removedFolders.length ? ` (${a.removedFolders.join(", ")})` : ""}`);
+      for (const name of r.removedAddons) lines.push(`  removed ${name} from the manifest (it had no other target)`);
       return lines.join("\n");
     }
     case "add": {
       const r = result as ops.AddResult;
-      return `Added ${r.name} ${r.version} (${r.folders.join(", ")})`;
+      return r.addons.map((a) => `Added ${r.name} ${a.version} to ${a.target} (${a.folders.join(", ")})`).join("\n");
     }
     case "remove": {
       const r = result as ops.RemoveResult;
-      if (!r.wasInstalled) return `Removed ${r.name} from the manifest (it was not installed)`;
-      return `Removed ${r.name}${r.removedFolders.length ? ` (${r.removedFolders.join(", ")})` : ""}`;
+      const head = r.removedEntry
+        ? `Removed ${r.name}`
+        : `Removed ${r.name} from ${r.addons.map((a) => a.target).join(", ")}; still on ${r.remainingTargets!.join(", ")}`;
+      return [head, ...renderRemoved(r.addons)].join("\n");
     }
     case "list": {
       const r = result as ops.ListResult;
       if (!r.addons.length) return "No addons in the manifest.";
       return table([
-        ["NAME", "VERSION", "STATUS", "SOURCE"],
+        ["NAME", "TARGET", "VERSION", "STATUS", "SOURCE"],
         ...r.addons.map((a) => [
           a.name,
+          a.target,
           a.version ?? "-",
           a.status === "missing" ? `missing (${a.missingFolders.join(", ")})` : a.status,
           a.source,
@@ -169,19 +225,19 @@ function render(command: string, result: unknown): string {
       const r = result as ops.OutdatedResult;
       if (!r.addons.length) return "No addons in the manifest.";
       return table([
-        ["NAME", "INSTALLED", "LATEST", "STATUS"],
+        ["NAME", "TARGET", "INSTALLED", "LATEST", "STATUS"],
         ...r.addons.map((a) => {
           switch (a.status) {
             case "current":
-              return [a.name, a.version, a.version, "current"];
+              return [a.name, a.target, a.version, a.version, "current"];
             case "outdated":
-              return [a.name, a.installed, a.latest, "outdated"];
+              return [a.name, a.target, a.installed, a.latest, "outdated"];
             case "not installed":
-              return [a.name, "-", a.latest, "not installed"];
+              return [a.name, a.target, "-", a.latest, "not installed"];
             case "missing":
-              return [a.name, a.installed, a.latest, `missing (${a.missingFolders.join(", ")})`];
+              return [a.name, a.target, a.installed, a.latest, `missing (${a.missingFolders.join(", ")})`];
             case "error":
-              return [a.name, "-", "-", `error: ${a.error}`];
+              return [a.name, a.target, "-", "-", `error: ${a.error}`];
           }
         }),
       ]);
@@ -191,11 +247,11 @@ function render(command: string, result: unknown): string {
   }
 }
 
-/** Holding directories the installer could not delete, from an add or an update-style result. */
-function leftoverDirs(result: unknown): { name: string; dir: string }[] {
-  const r = result as { name?: string; leftoverDir?: string; addons?: { name: string; leftoverDir?: string }[] };
-  const entries = Array.isArray(r.addons) ? r.addons : [r];
-  return entries.flatMap((e) => (e.leftoverDir && e.name ? [{ name: e.name, dir: e.leftoverDir }] : []));
+/** Holding directories that could not be deleted, from the rows of an add, remove or update-style result. */
+function leftoverDirs(result: unknown): { name: string; target: string; dir: string }[] {
+  const addons = (result as { addons?: { name: string; target: string; leftoverDir?: string }[] }).addons;
+  if (!Array.isArray(addons)) return [];
+  return addons.flatMap((e) => (e.leftoverDir ? [{ name: e.name, target: e.target, dir: e.leftoverDir }] : []));
 }
 
 function hasErrors(result: unknown): boolean {
@@ -213,47 +269,77 @@ async function main(argv: string[]): Promise<number> {
     verbose = values.verbose ?? false;
     json = values.json ?? false;
     progress = progressRenderer(verbose);
-    const [command, ...args] = positionals;
+    const [command, ...rest] = positionals;
     if (values.help || !command) {
       (command || values.help ? process.stdout : process.stderr).write(HELP);
       return values.help ? 0 : 2;
     }
-    const allowed = COMMAND_FLAGS[command];
-    const arity = POSITIONALS[command];
-    if (!allowed || !arity) throw new UsageError(`Unknown command "${command}". Run "wowget --help".`);
-    for (const flag of ["path", "flavor", "name", "prerelease", "pin"] as const) {
+    let key = command;
+    let args = rest;
+    if (command === "target") {
+      const sub = rest[0];
+      if (!sub) throw new UsageError('"target" needs a subcommand: list, add or remove.');
+      key = `target ${sub}`;
+      args = rest.slice(1);
+    }
+    const allowed = COMMAND_FLAGS[key];
+    const arity = POSITIONALS[key];
+    if (!allowed || !arity) throw new UsageError(`Unknown command "${key}". Run "wowget --help".`);
+    for (const flag of FLAGS) {
       if (values[flag] !== undefined && !allowed.includes(flag)) {
-        throw new UsageError(`--${flag} is not an option of "${command}".`);
+        throw new UsageError(`--${flag} is not an option of "${key}".`);
       }
     }
     if (args.length < arity[0] || args.length > arity[1]) {
-      throw new UsageError(`Wrong number of arguments for "${command}". Run "wowget --help".`);
+      throw new UsageError(`Wrong number of arguments for "${key}". Run "wowget --help".`);
     }
     if (values.path === "") throw new UsageError("--path must not be empty.");
+    if (values["game-dir"] === "") throw new UsageError("--game-dir must not be empty.");
     if (values.flavor !== undefined && !isFlavor(values.flavor)) {
       throw new UsageError(`Unknown flavor "${values.flavor}"; expected one of ${FLAVORS.join(", ")}.`);
     }
+    const flavor = values.flavor as Flavor | undefined;
 
     const manifest = manifestPath(values.manifest);
     let result: unknown;
-    if (command === "init") {
-      result = await ops.init({ manifestPath: manifest, path: values.path, flavor: values.flavor as ops.InitOptions["flavor"] });
+    if (key === "init") {
+      result = await ops.init({
+        manifestPath: manifest,
+        path: values.path,
+        flavor,
+        name: values.name,
+        gameDir: values["game-dir"],
+      });
+    } else if (key === "target list") {
+      result = await ops.targetList({ manifestPath: manifest });
+    } else if (key === "target add") {
+      if (values.path === undefined || flavor === undefined) throw new UsageError('"target add" needs --path and --flavor.');
+      result = await ops.targetAdd({ manifestPath: manifest, name: args[0]!, path: values.path, flavor });
     } else {
       state = openState(stateDbPath());
-      const base: ops.OpsOptions = { manifestPath: manifest, state, force: values.force, onEvent: (e) => progress.onEvent(e) };
-      if (command === "add") {
+      const base: ops.OpsOptions = {
+        manifestPath: manifest,
+        state,
+        targets: values.target,
+        force: values.force,
+        onEvent: (e) => progress.onEvent(e),
+      };
+      if (key === "target remove") result = await ops.targetRemove({ ...base, name: args[0]! });
+      else if (key === "add") {
         result = await ops.add({ ...base, source: args[0]!, name: values.name, prerelease: values.prerelease, pin: values.pin });
-      } else if (command === "remove") result = await ops.remove({ ...base, name: args[0]! });
-      else if (command === "list") result = await ops.list(base);
-      else if (command === "outdated") result = await ops.outdated(base);
-      else if (command === "update") result = await ops.update({ ...base, names: args });
+      } else if (key === "remove") result = await ops.remove({ ...base, name: args[0]! });
+      else if (key === "list") result = await ops.list(base);
+      else if (key === "outdated") result = await ops.outdated(base);
+      else if (key === "update") result = await ops.update({ ...base, names: args });
       else result = await ops.install(base);
     }
 
     progress.flush();
-    process.stdout.write(`${values.json ? JSON.stringify(result, null, 2) : render(command, result)}\n`);
-    for (const { name, dir } of leftoverDirs(result)) {
-      process.stderr.write(`wowget: warning: ${name}: could not delete the previous copies in ${dir}; remove it by hand.\n`);
+    process.stdout.write(`${values.json ? JSON.stringify(result, null, 2) : render(key, result)}\n`);
+    for (const { name, target, dir } of leftoverDirs(result)) {
+      process.stderr.write(
+        `wowget: warning: ${name} (${target}): could not delete the old folders moved to ${dir}; remove it by hand.\n`,
+      );
     }
     return hasErrors(result) ? 1 : 0;
   } catch (err) {

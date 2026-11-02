@@ -10,7 +10,8 @@ export type ErrorCode =
   | "zip"
   | "network"
   | "rate_limited"
-  | "io";
+  | "io"
+  | "locked";
 
 export class WowgetError extends Error {
   readonly code: ErrorCode;

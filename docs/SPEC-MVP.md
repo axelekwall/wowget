@@ -1,5 +1,10 @@
 # wowget MVP specification
 
+> Multiple targets replaced the single `[install]` table: see
+> [SPEC-TARGETS-WINDOWS.md](SPEC-TARGETS-WINDOWS.md), which wins where the two
+> disagree (manifest format, `init`, state schema version 3 with a `target`
+> column, per-target result rows, and the `--target` flag).
+
 Scope: Milestone 1 from PLAN.md. A vertical slice: manifest, state, GitHub and
 URL sources, atomic install, and the commands `init`, `add`, `remove`, `list`,
 `outdated`, `update`, `install`. No TUI, no search, no WoWInterface, no Wago.
@@ -57,9 +62,7 @@ Directories are created on first use.
 ## Manifest
 
 ```toml
-[install]
-path = "/Applications/World of Warcraft/_forever_/Interface/AddOns"
-flavor = "forever"
+# Targets: see SPEC-TARGETS-WINDOWS.md.
 
 [[addon]]
 name = "Questie"

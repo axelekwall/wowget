@@ -12,6 +12,8 @@ import { extractAddons, readZip } from "./zip.ts";
 type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface InstallOptions {
+  /** Target name, for the state rows. */
+  target: string;
   addon: string;
   resolved: Resolved;
   targetDir: string;
@@ -24,6 +26,8 @@ export interface InstallOptions {
   sha256?: string;
   fetch?: FetchFn;
   onEvent?: OnEvent;
+  /** Keep the previous copies of replaced folders in `oldDir` instead of deleting them. */
+  keepOld?: boolean;
 }
 
 export interface InstallResult {
@@ -38,9 +42,12 @@ export interface InstallResult {
   record: InstallRecord;
   /** Set when the previous copies could not be deleted after a successful install; they are still here. */
   leftoverDir?: string;
+  /** With `keepOld`: the holding directory with the previous copies of replaced folders. */
+  oldDir?: string;
 }
 
 export interface UninstallOptions {
+  target: string;
   addon: string;
   targetDir: string;
   state: State;
@@ -52,6 +59,8 @@ export interface UninstallResult {
   removedFolders: string[];
   /** Whether there was an active install. */
   wasInstalled: boolean;
+  /** Set when the removed folders could not be deleted; they are still here. */
+  leftoverDir?: string;
 }
 
 function sha256Hex(bytes: Uint8Array): string {
@@ -196,7 +205,7 @@ async function download(addon: string, resolved: Resolved, fetchFn: FetchFn, onE
 }
 
 export async function install(opts: InstallOptions): Promise<InstallResult> {
-  const { addon, resolved, targetDir, flavor, state, onEvent } = opts;
+  const { target: targetName, addon, resolved, targetDir, flavor, state, onEvent } = opts;
   const force = opts.force ?? false;
   const addonKey = addon.toLowerCase();
 
@@ -214,7 +223,7 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
     onEvent,
   });
 
-  const previous = state.getActiveInstall(addon);
+  const previous = state.getActiveInstall(targetName, addon);
   const tmpDir = await mkdtemp(join(targetDir, ".wowget-tmp-"));
   try {
     onEvent?.({ type: "extract", addon });
@@ -240,7 +249,7 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
     if (!force) {
       for (const name of folders) {
         if (!(await exists(join(targetDir, name)))) continue;
-        const owners = state.folderOwners(name);
+        const owners = state.folderOwners(targetName, name);
         if (owners.includes(addonKey)) continue;
         const owner = owners[0] ? `belongs to "${owners[0]}"` : "is not managed by wowget";
         throw new WowgetError(
@@ -257,11 +266,14 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
     const oldDir = await mkdtemp(join(targetDir, ".wowget-old-"));
     const movedOld: string[] = [];
     const placed: string[] = [];
+    // The folder being moved when a rename fails, for the error message.
+    let moving = targetDir;
     let record: InstallRecord;
     const removedFolders: string[] = [];
     try {
       for (const folder of extracted) {
         const dest = join(targetDir, folder.name);
+        moving = dest;
         if (await exists(dest)) {
           await rename(dest, join(oldDir, folder.name));
           movedOld.push(folder.name);
@@ -271,13 +283,15 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
       }
       for (const name of stale) {
         // Another addon may have taken the folder over with --force; leave it alone then.
-        if (state.folderOwners(name).some((o) => o !== addonKey)) continue;
+        if (state.folderOwners(targetName, name).some((o) => o !== addonKey)) continue;
         if (!(await exists(join(targetDir, name)))) continue;
+        moving = join(targetDir, name);
         await rename(join(targetDir, name), join(oldDir, name));
         movedOld.push(name);
         removedFolders.push(name);
       }
       record = state.recordInstall({
+        target: targetName,
         addon,
         source: resolved.source,
         releaseId: resolved.releaseId,
@@ -301,13 +315,11 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
         );
       }
       await rm(oldDir, { recursive: true, force: true }).catch(() => {});
+      if (isLockedError(err, LOCKED_CODES)) throw lockedError(addon, moving, err);
       throw err;
     }
     // The install is recorded, so failing to delete the previous copies must not fail it.
-    const leftover = await rm(oldDir, { recursive: true, force: true }).then(
-      () => false,
-      () => true,
-    );
+    const leftover = opts.keepOld ? false : !(await removeBestEffort(oldDir));
 
     onEvent?.({ type: "done", addon, releaseId: resolved.releaseId, folders });
     return {
@@ -320,6 +332,7 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
       sha256,
       record,
       ...(leftover ? { leftoverDir: oldDir } : {}),
+      ...(opts.keepOld ? { oldDir } : {}),
     };
   } finally {
     // Best effort, so that a cleanup failure does not hide the error that got here.
@@ -327,25 +340,83 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
   }
 }
 
+/** Deletes `path` recursively; returns false instead of throwing when that fails. */
+export async function removeBestEffort(path: string): Promise<boolean> {
+  return rm(path, { recursive: true, force: true }).then(
+    () => true,
+    () => false,
+  );
+}
+
+/** Errors that renaming or deleting a folder raises on Windows while the game has files in it open. */
+const LOCKED_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+/** Uninstall also treats ENOTEMPTY from moving a folder aside as a folder in use. */
+const LOCKED_UNINSTALL_CODES = new Set([...LOCKED_CODES, "ENOTEMPTY"]);
+
+function isLockedError(err: unknown, codes: Set<string>): boolean {
+  return codes.has((err as NodeJS.ErrnoException | undefined)?.code ?? "");
+}
+
+function lockedError(addon: string, path: string, err: unknown): WowgetError {
+  return new WowgetError(
+    "locked",
+    `${addon}: ${path} is in use or not writable (${(err as NodeJS.ErrnoException).code}); close World of Warcraft and try again.`,
+    { cause: err },
+  );
+}
+
 function isPlainName(folder: string): boolean {
   return folder !== "" && folder !== "." && folder !== ".." && !/[/\\]/.test(folder);
 }
 
 export async function uninstall(opts: UninstallOptions): Promise<UninstallResult> {
-  const { addon, targetDir, state } = opts;
+  const { target, addon, targetDir, state } = opts;
   const addonKey = addon.toLowerCase();
-  const active = state.getActiveInstall(addon);
+  const active = state.getActiveInstall(target, addon);
   if (!active) return { addon, removedFolders: [], wasInstalled: false };
 
-  const removedFolders: string[] = [];
+  const folders: string[] = [];
   for (const folder of active.folders) {
     if (!isPlainName(folder)) continue;
-    if (state.folderOwners(folder).some((o) => o !== addonKey)) continue;
-    const path = join(targetDir, folder);
-    if (!(await exists(path))) continue;
-    await rm(path, { recursive: true, force: true });
-    removedFolders.push(folder);
+    if (state.folderOwners(target, folder).some((o) => o !== addonKey)) continue;
+    if (await exists(join(targetDir, folder))) folders.push(folder);
   }
-  state.deactivateInstall(addon);
-  return { addon, removedFolders, wasInstalled: true };
+  if (!folders.length) {
+    state.deactivateInstall(target, addon);
+    return { addon, removedFolders: [], wasInstalled: true };
+  }
+
+  // Moving every folder aside first means a locked one leaves the install whole, not half deleted.
+  let holdDir: string;
+  try {
+    holdDir = await mkdtemp(join(targetDir, ".wowget-old-"));
+  } catch (err) {
+    if (isLockedError(err, LOCKED_CODES)) throw lockedError(addon, targetDir, err);
+    throw err;
+  }
+  const moved: string[] = [];
+  for (const folder of folders) {
+    try {
+      await rename(join(targetDir, folder), join(holdDir, folder));
+      moved.push(folder);
+    } catch (err) {
+      const unrestored: string[] = [];
+      for (const name of moved) {
+        await rename(join(holdDir, name), join(targetDir, name)).catch(() => unrestored.push(name));
+      }
+      if (unrestored.length) {
+        throw new WowgetError(
+          "io",
+          `${addon}: uninstall failed (${err instanceof Error ? err.message : String(err)}) and restoring ${unrestored.join(", ")} also failed; they are in ${holdDir}.`,
+          { cause: err },
+        );
+      }
+      await rm(holdDir, { recursive: true, force: true }).catch(() => {});
+      if (isLockedError(err, LOCKED_UNINSTALL_CODES)) throw lockedError(addon, join(targetDir, folder), err);
+      throw err;
+    }
+  }
+  state.deactivateInstall(target, addon);
+  const deleted = await removeBestEffort(holdDir);
+  return { addon, removedFolders: moved, wasInstalled: true, ...(deleted ? {} : { leftoverDir: holdDir }) };
 }

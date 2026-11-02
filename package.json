@@ -6,7 +6,9 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "bun build --compile src/cli.ts --outfile dist/wowget"
+    "build": "bun build --compile src/cli.ts --outfile dist/wowget",
+    "build:mac": "bun build --compile --target=bun-darwin-arm64 src/cli.ts --outfile dist/wowget",
+    "build:win": "bun build --compile --target=bun-windows-x64 src/cli.ts --outfile dist/wowget.exe"
   },
   "dependencies": {
     "fflate": "^0.8.3"

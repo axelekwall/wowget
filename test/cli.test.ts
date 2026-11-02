@@ -38,7 +38,39 @@ describe("cli", () => {
     expect((await run(["init", "--path", join(root, "AddOns"), manifest], root)).code).toBe(0);
     const listed = await run(["list", "--json", manifest], root);
     expect(listed.code).toBe(0);
-    expect(JSON.parse(listed.stdout)).toMatchObject({ installPath: join(root, "AddOns"), flavor: "forever", addons: [] });
+    expect(JSON.parse(listed.stdout)).toEqual({
+      targets: [{ name: "forever", path: join(root, "AddOns"), flavor: "forever" }],
+      addons: [],
+    });
+  });
+
+  test("target add and list, and list filtered with -t", async () => {
+    const root = await tempDir();
+    const manifestPath = join(root, "wowget.toml");
+    const manifest = `--manifest=${manifestPath}`;
+    expect((await run(["init", "--path", join(root, "forever"), manifest], root)).code).toBe(0);
+    const added = await run(["target", "add", "era", "--path", join(root, "era"), "--flavor", "classic", manifest], root);
+    expect(added.code).toBe(0);
+    expect(added.stdout).toContain("Added target era (classic)");
+
+    const targets = await run(["target", "list", manifest], root);
+    expect(targets.code).toBe(0);
+    expect(targets.stdout.split("\n")[0]).toMatch(/^TARGET\s+FLAVOR\s+PATH\s+EXISTS$/);
+    expect(targets.stdout).toMatch(/era\s+classic\s+\S+era\s+yes/);
+
+    await Bun.write(
+      manifestPath,
+      `${await Bun.file(manifestPath).text()}\n[[addon]]\nname = "Questie"\nsource = "github:Questie/Questie"\ntargets = ["era"]\n`,
+    );
+    const era = await run(["list", "-t", "era", manifest], root);
+    expect(era.code).toBe(0);
+    expect(era.stdout).toMatch(/^NAME\s+TARGET\s+VERSION\s+STATUS\s+SOURCE\nQuestie\s+era\s+-\s+not installed\s+github:Questie\/Questie\n$/);
+    const forever = await run(["list", "--json", "--target", "forever", manifest], root);
+    expect(JSON.parse(forever.stdout).addons).toEqual([]);
+
+    expect((await run(["list", "-t", "retail", manifest], root)).code).toBe(2);
+    expect((await run(["target", "list", "-t", "era", manifest], root)).code).toBe(2);
+    expect((await run(["target", "frob", manifest], root)).code).toBe(2);
   });
 
   test("a missing manifest exits 1, with a JSON error under --json", async () => {

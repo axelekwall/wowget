@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 
 export interface InstallRecord {
   id: number;
+  target: string;
   addon: string;
   source: string;
   releaseId: string;
@@ -19,6 +20,7 @@ export interface InstallRecord {
 }
 
 export interface NewInstall {
+  target: string;
   addon: string;
   source: string;
   releaseId: string;
@@ -71,12 +73,19 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE install_folders ADD COLUMN displaced INTEGER NOT NULL DEFAULT 0;
   `,
+  // Before targets existed, every install went to the Forever AddOns directory.
+  `
+  ALTER TABLE installs ADD COLUMN target TEXT NOT NULL DEFAULT 'forever';
+  DROP INDEX installs_active;
+  CREATE UNIQUE INDEX installs_active ON installs(target, addon) WHERE active = 1;
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
 interface InstallRow {
   id: number;
+  target: string;
   addon: string;
   source: string;
   release_id: string;
@@ -124,6 +133,7 @@ export class State {
   private toRecord(row: InstallRow): InstallRecord {
     return {
       id: row.id,
+      target: row.target,
       addon: row.addon,
       source: row.source,
       releaseId: row.release_id,
@@ -138,34 +148,41 @@ export class State {
     };
   }
 
-  getActiveInstall(addon: string): InstallRecord | undefined {
+  getActiveInstall(target: string, addon: string): InstallRecord | undefined {
     const row = this.db
-      .query("SELECT * FROM installs WHERE addon = ? AND active = 1")
-      .get(addon.toLowerCase()) as InstallRow | null;
+      .query("SELECT * FROM installs WHERE target = ? AND addon = ? AND active = 1")
+      .get(target, addon.toLowerCase()) as InstallRow | null;
     return row ? this.toRecord(row) : undefined;
   }
 
-  listActiveInstalls(): InstallRecord[] {
-    const rows = this.db.query("SELECT * FROM installs WHERE active = 1 ORDER BY addon").all() as InstallRow[];
+  /** Active installs on `target`, or on every target, ordered by addon then target. */
+  listActiveInstalls(target?: string): InstallRecord[] {
+    const rows = (
+      target === undefined
+        ? this.db.query("SELECT * FROM installs WHERE active = 1 ORDER BY addon, target").all()
+        : this.db.query("SELECT * FROM installs WHERE active = 1 AND target = ? ORDER BY addon").all(target)
+    ) as InstallRow[];
     return rows.map((r) => this.toRecord(r));
   }
 
   /**
-   * Inserts the install and its folders and deactivates the previous active row, in one
-   * transaction. With `releaseFromOthers`, other active installs stop owning its folders and
-   * record them as displaced.
+   * Inserts the install and its folders and deactivates the previous active row on the same
+   * target, in one transaction. With `releaseFromOthers`, other active installs on the target stop
+   * owning its folders and record them as displaced.
    */
   recordInstall(install: NewInstall, options?: { releaseFromOthers?: boolean }): InstallRecord {
     const addon = install.addon.toLowerCase();
+    const { target } = install;
     const id = this.db.transaction(() => {
-      this.db.query("UPDATE installs SET active = 0 WHERE addon = ? AND active = 1").run(addon);
-      if (options?.releaseFromOthers) this.releaseFolders(install.folders, addon);
+      this.db.query("UPDATE installs SET active = 0 WHERE target = ? AND addon = ? AND active = 1").run(target, addon);
+      if (options?.releaseFromOthers) this.releaseFolders(target, install.folders, addon);
       const result = this.db
         .query(
-          `INSERT INTO installs (addon, source, release_id, version, filename, sha256, zip_path, installed_at, active)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+          `INSERT INTO installs (target, addon, source, release_id, version, filename, sha256, zip_path, installed_at, active)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
         )
         .run(
+          target,
           addon,
           install.source,
           install.releaseId,
@@ -182,39 +199,52 @@ export class State {
     return this.toRecord(this.db.query("SELECT * FROM installs WHERE id = ?").get(id) as InstallRow);
   }
 
-  /** Marks `folders` (case-insensitively) as displaced in every active install except `exceptAddon`'s. */
-  releaseFolders(folders: string[], exceptAddon: string): void {
+  /**
+   * Marks `folders` (case-insensitively) as displaced in every active install on `target` except
+   * `exceptAddon`'s.
+   */
+  releaseFolders(target: string, folders: string[], exceptAddon: string): void {
     const displace = this.db.query(
       `UPDATE install_folders SET displaced = 1 WHERE folder = ? COLLATE NOCASE
-         AND install_id IN (SELECT id FROM installs WHERE active = 1 AND addon != ?)`,
+         AND install_id IN (SELECT id FROM installs WHERE active = 1 AND target = ? AND addon != ?)`,
     );
     this.db.transaction(() => {
-      for (const folder of folders) displace.run(folder, exceptAddon.toLowerCase());
+      for (const folder of folders) displace.run(folder, target, exceptAddon.toLowerCase());
     })();
   }
 
   /** Returns true when there was an active install to deactivate. */
-  deactivateInstall(addon: string): boolean {
-    const result = this.db.query("UPDATE installs SET active = 0 WHERE addon = ? AND active = 1").run(addon.toLowerCase());
+  deactivateInstall(target: string, addon: string): boolean {
+    const result = this.db
+      .query("UPDATE installs SET active = 0 WHERE target = ? AND addon = ? AND active = 1")
+      .run(target, addon.toLowerCase());
     return result.changes > 0;
   }
 
   /**
-   * Addon names (lower-case) whose active install recorded `folder`, compared case-insensitively.
-   * Displaced folders do not count.
+   * Makes an inactive install active again, for rolling back a newer install of the same addon.
+   * Throws if the addon already has an active install on that target.
    */
-  folderOwners(folder: string): string[] {
+  reactivateInstall(id: number): void {
+    this.db.query("UPDATE installs SET active = 1 WHERE id = ?").run(id);
+  }
+
+  /**
+   * Addon names (lower-case) whose active install on `target` recorded `folder`, compared
+   * case-insensitively. Displaced folders do not count.
+   */
+  folderOwners(target: string, folder: string): string[] {
     const rows = this.db
       .query(
         `SELECT DISTINCT i.addon FROM installs i JOIN install_folders f ON f.install_id = i.id
-         WHERE i.active = 1 AND f.displaced = 0 AND f.folder = ? COLLATE NOCASE ORDER BY i.addon`,
+         WHERE i.active = 1 AND i.target = ? AND f.displaced = 0 AND f.folder = ? COLLATE NOCASE ORDER BY i.addon`,
       )
-      .all(folder) as { addon: string }[];
+      .all(target, folder) as { addon: string }[];
     return rows.map((r) => r.addon);
   }
 
-  folderOwner(folder: string): string | undefined {
-    return this.folderOwners(folder)[0];
+  folderOwner(target: string, folder: string): string | undefined {
+    return this.folderOwners(target, folder)[0];
   }
 
   getCache(url: string): CacheEntry | undefined {
