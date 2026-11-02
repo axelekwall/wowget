@@ -28,12 +28,14 @@ import {
   planSetAddonTargets,
   readManifest,
   readManifestText,
+  setAddonTargets,
   writePlanned,
   type AddonEntry,
   type Manifest,
   type NamedTarget,
 } from "./manifest.ts";
 import { cacheDir as defaultCacheDir, expandHome, gameDirCandidates } from "./paths.ts";
+import { scanUnmanaged, type UnmanagedAddon } from "./reconcile.ts";
 import { sourceFor } from "./sources/index.ts";
 import { defaultAddonName, parseSource } from "./sources/parse.ts";
 import type { Http, Resolved } from "./sources/types.ts";
@@ -1110,4 +1112,104 @@ export async function rollback(opts: RollbackOptions): Promise<RollbackResult> {
     if (d.oldDir && !(await removeBestEffort(d.oldDir))) d.rollbackEntry.leftoverDir = d.oldDir;
   }
   return { name: entry.name, addons: done.map((d) => d.rollbackEntry) };
+}
+
+// reconcile
+
+export interface ReconcileOptions extends OpsOptions {
+  adopt?: boolean;
+}
+
+export type ReconcileStatus = "unmanaged" | "adopted" | "unmatched" | "error";
+
+export interface ReconcileEntry extends UnmanagedAddon {
+  status: ReconcileStatus;
+  error?: string;
+  leftoverDir?: string;
+}
+
+export interface ReconcileResult {
+  addons: ReconcileEntry[];
+}
+
+export async function reconcile(opts: ReconcileOptions): Promise<ReconcileResult> {
+  const ctx = await context(opts);
+  const targets = [...ctx.targets].sort((a, b) => byName(a.name, b.name));
+  const discovered: { target: NamedTarget; group: UnmanagedAddon }[] = [];
+  for (const target of targets) {
+    for (const group of await scanUnmanaged(target.path, target.name, opts.state)) {
+      discovered.push({ target, group });
+    }
+  }
+  if (!opts.adopt) {
+    return {
+      addons: discovered.map(({ group }) => ({
+        ...group,
+        status: group.source ? "unmanaged" : "unmatched",
+      })),
+    };
+  }
+
+  const addons: ReconcileEntry[] = [];
+  for (const { target, group } of discovered) {
+    if (!group.source) {
+      addons.push({ ...group, status: "unmatched" });
+      continue;
+    }
+    try {
+      const manifest = await readManifest(opts.manifestPath);
+      const bySource = manifest.addons.find((a) => a.source === group.source);
+      const byNameMatch = findAddon(manifest, group.name);
+      if (byNameMatch && byNameMatch.source !== group.source) {
+        throw new WowgetError(
+          "conflict",
+          `Manifest already has "${byNameMatch.name}" with source "${byNameMatch.source}".`,
+        );
+      }
+      const existing = bySource ?? byNameMatch;
+      const addonName = existing?.name ?? group.name;
+      const tempEntry: AddonEntry = existing ?? { name: addonName, source: group.source, prerelease: false };
+      const row: Row = { entry: tempEntry, target };
+      const resolved = await resolveRow(ctx, row);
+      const installed = await installRelease({
+        target: target.name,
+        addon: addonName,
+        resolved,
+        targetDir: target.path,
+        flavor: target.flavor,
+        state: opts.state,
+        force: true,
+        cacheDir: ctx.cacheDir,
+        fetch: opts.fetch,
+        onEvent: opts.onEvent,
+      });
+      if (!existing) {
+        await addAddon(opts.manifestPath, {
+          name: addonName,
+          source: group.source,
+          prerelease: false,
+          ...(manifest.targets.length > 1 ? { targets: [target.name] } : {}),
+        });
+      } else {
+        const on = addonTargets(manifest, existing);
+        if (!on.includes(target.name)) {
+          const combined = manifest.targets.map((t) => t.name).filter((n) => on.includes(n) || n === target.name);
+          const nextTargets = combined.length < manifest.targets.length ? combined : undefined;
+          await setAddonTargets(opts.manifestPath, existing.name, nextTargets);
+        }
+      }
+      addons.push({
+        name: addonName,
+        target: target.name,
+        folders: installed.folders,
+        version: installed.version,
+        source: group.source,
+        status: "adopted",
+        ...leftover(installed),
+      });
+    } catch (err) {
+      addons.push({ ...group, status: "error", error: message(err) });
+    }
+  }
+  return { addons };
 }

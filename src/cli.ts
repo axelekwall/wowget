@@ -27,8 +27,9 @@ Commands:
   pin <name> [release]                  freeze an addon at its installed release or a given release
   unpin <name>                          remove the release pin from an addon
   rollback <name>                       reinstall the previous release of an addon from the cache
+  reconcile [--adopt]                   find hand-installed addons and optionally adopt them
 
-add, remove, list, outdated, update, install and rollback act on every target unless
+add, remove, list, outdated, update, install, rollback and reconcile act on every target unless
 filtered with -t/--target, which can be repeated. "add -t" records the targets
 in the manifest; "remove -t" removes the addon from those targets only.
 
@@ -37,6 +38,7 @@ Flavors: ${FLAVORS.join(", ")}
 
 Options:
   -t, --target <name> act on this target only (repeatable)
+  --adopt             with reconcile: install and add matched addons to the manifest
   --manifest <path>   manifest file (default $WOWGET_MANIFEST, else ${manifestPath(undefined, { ...process.env, WOWGET_MANIFEST: undefined })})
   --json              print the result as JSON
   --force             install over unmanaged folders and unverifiable flavors
@@ -45,8 +47,8 @@ Options:
   --version           show the version
 `;
 
-type Flag = "path" | "flavor" | "name" | "prerelease" | "pin" | "target" | "game-dir";
-const FLAGS: Flag[] = ["path", "flavor", "name", "prerelease", "pin", "target", "game-dir"];
+type Flag = "path" | "flavor" | "name" | "prerelease" | "pin" | "target" | "game-dir" | "adopt";
+const FLAGS: Flag[] = ["path", "flavor", "name", "prerelease", "pin", "target", "game-dir", "adopt"];
 
 const COMMAND_FLAGS: Record<string, Flag[]> = {
   init: ["path", "flavor", "name", "game-dir"],
@@ -62,6 +64,7 @@ const COMMAND_FLAGS: Record<string, Flag[]> = {
   pin: [],
   unpin: [],
   rollback: ["target"],
+  reconcile: ["target", "adopt"],
 };
 
 const POSITIONALS: Record<string, [min: number, max: number]> = {
@@ -78,6 +81,7 @@ const POSITIONALS: Record<string, [min: number, max: number]> = {
   pin: [1, 2],
   unpin: [1, 1],
   rollback: [1, 1],
+  reconcile: [0, 0],
 };
 
 class UsageError extends Error {}
@@ -101,6 +105,7 @@ function parse(argv: string[]) {
         pin: { type: "string" },
         target: { type: "string", short: "t", multiple: true },
         "game-dir": { type: "string" },
+        adopt: { type: "boolean" },
       },
     });
   } catch (err) {
@@ -271,6 +276,21 @@ function render(command: string, result: unknown): string {
         .map((a) => `Rolled back ${a.name} on ${a.target}: ${a.from ?? "none"} -> ${a.to} (${a.folders.join(", ")})`)
         .join("\n");
     }
+    case "reconcile": {
+      const r = result as ops.ReconcileResult;
+      if (!r.addons.length) return "No unmanaged addon folders found.";
+      return table([
+        ["NAME", "TARGET", "VERSION", "STATUS", "SOURCE", "FOLDERS"],
+        ...r.addons.map((a) => [
+          a.name,
+          a.target,
+          a.version ?? "-",
+          a.status === "error" ? `error: ${a.error}` : a.status,
+          a.source ?? "-",
+          a.folders.join(", "),
+        ]),
+      ]);
+    }
     default:
       return renderUpdate(result as ops.UpdateResult);
   }
@@ -368,6 +388,7 @@ async function main(argv: string[]): Promise<number> {
       else if (key === "update") result = await ops.update({ ...base, names: args });
       else if (key === "pin") result = await ops.pin({ ...base, name: args[0]!, pin: args[1] });
       else if (key === "rollback") result = await ops.rollback({ ...base, name: args[0]! });
+      else if (key === "reconcile") result = await ops.reconcile({ ...base, adopt: values.adopt });
       else result = await ops.install(base);
     }
 
