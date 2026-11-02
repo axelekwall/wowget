@@ -187,6 +187,26 @@ export class State {
   }
 
   /**
+   * Zip paths referenced by the active install or the rollback target (`getPreviousInstall`) on any
+   * target, optionally restricted to one addon.
+   */
+  keptZipPaths(addon?: string): Set<string> {
+    const pairs = (
+      addon === undefined
+        ? this.db.query("SELECT DISTINCT target, addon FROM installs").all()
+        : this.db.query("SELECT DISTINCT target, addon FROM installs WHERE addon = ?").all(addon.toLowerCase())
+    ) as { target: string; addon: string }[];
+    const paths = new Set<string>();
+    for (const { target, addon: name } of pairs) {
+      const active = this.getActiveInstall(target, name);
+      if (active) paths.add(active.zipPath);
+      const prev = this.getPreviousInstall(target, name);
+      if (prev) paths.add(prev.zipPath);
+    }
+    return paths;
+  }
+
+  /**
    * Inserts the install and its folders and deactivates the previous active row on the same
    * target, in one transaction. With `releaseFromOthers`, other active installs on the target stop
    * owning its folders and record them as displaced.

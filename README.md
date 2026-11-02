@@ -65,6 +65,11 @@ wowget list                                   # what is installed, per target (n
 wowget outdated                               # check for newer releases
 wowget update [name...]                       # install newer releases
 wowget install                                # install manifest addons not yet installed
+wowget pin Questie [v11.2.0]                  # freeze an addon at its installed or a given release
+wowget unpin Questie                          # remove the pin
+wowget rollback Questie                       # reinstall the previous release from the cache
+wowget reconcile [--adopt]                    # find hand-installed addons and optionally adopt them
+wowget doctor [--clean]                       # verify targets, TOC interfaces and cache health
 wowget remove Questie -t era                  # remove from one target, keep the others
 wowget remove Questie
 ```

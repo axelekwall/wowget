@@ -1,6 +1,13 @@
 import { lstat, mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { detectInstalls, type DetectedInstall } from "./detect.ts";
+import {
+  findStaleCacheDirs,
+  inspectTarget,
+  pruneAddonCache,
+  type DoctorIssue,
+  type DoctorTargetReport,
+} from "./doctor.ts";
 import { WowgetError } from "./errors.ts";
 import type { OnEvent } from "./events.ts";
 import type { Flavor } from "./flavor.ts";
@@ -602,6 +609,7 @@ export async function add(opts: AddOptions): Promise<AddResult> {
   for (const d of done) {
     if (d.oldDir && !(await removeBestEffort(d.oldDir))) d.entry.leftoverDir = d.oldDir;
   }
+  await pruneAddonCache(ctx.cacheDir, opts.state, name);
   const result: AddResult = { name, source: opts.source, addons: done.map((d) => d.entry) };
   if (entry.targets) result.targets = entry.targets;
   return result;
@@ -801,10 +809,14 @@ export async function update(opts: UpdateOptions): Promise<UpdateResult> {
       if (active) {
         const intact = !(await missingFolders(target.path, active)).length;
         if (intact && isCurrent(active, entry, resolved)) addons.push({ ...ids, status: "current", version: resolved.version });
-        else addons.push(await reinstall(ctx, row, resolved, active));
+        else {
+          addons.push(await reinstall(ctx, row, resolved, active));
+          await pruneAddonCache(ctx.cacheDir, opts.state, entry.name);
+        }
         continue;
       }
       const result = await installRow(ctx, row, resolved);
+      await pruneAddonCache(ctx.cacheDir, opts.state, entry.name);
       addons.push({ ...ids, status: "installed", version: result.version, folders: result.folders, ...leftover(result) });
     } catch (err) {
       addons.push({ ...ids, status: "error", error: message(err) });
@@ -843,9 +855,11 @@ export async function install(opts: OpsOptions): Promise<UpdateResult> {
       const resolved = await resolveRow(ctx, row);
       if (active) {
         addons.push(await reinstall(ctx, row, resolved, active));
+        await pruneAddonCache(ctx.cacheDir, opts.state, entry.name);
         continue;
       }
       const result = await installRow(ctx, row, resolved);
+      await pruneAddonCache(ctx.cacheDir, opts.state, entry.name);
       addons.push({ ...ids, status: "installed", version: result.version, folders: result.folders, ...leftover(result) });
     } catch (err) {
       addons.push({ ...ids, status: "error", error: message(err) });
@@ -1212,4 +1226,46 @@ export async function reconcile(opts: ReconcileOptions): Promise<ReconcileResult
     }
   }
   return { addons };
+}
+
+// doctor
+
+export interface DoctorOptions extends Pick<OpsOptions, "manifestPath" | "state" | "targets" | "cacheDir"> {
+  clean?: boolean;
+}
+
+export interface DoctorResult {
+  targets: DoctorTargetReport[];
+  issues: DoctorIssue[];
+  cleaned: string[];
+}
+
+export async function doctor(opts: DoctorOptions): Promise<DoctorResult> {
+  const loaded = await load(opts);
+  const clean = opts.clean ?? false;
+  const cacheDir = opts.cacheDir ?? defaultCacheDir();
+  const targets: DoctorTargetReport[] = [];
+  const issues: DoctorIssue[] = [];
+  const cleaned: string[] = [];
+
+  for (const target of loaded.targets) {
+    const res = await inspectTarget(target, loaded.manifest, opts.state, clean);
+    targets.push(res.report);
+    issues.push(...res.issues);
+    cleaned.push(...res.cleaned);
+  }
+
+  for (const dir of await findStaleCacheDirs(cacheDir, opts.state)) {
+    if (clean && (await removeBestEffort(dir))) {
+      cleaned.push(dir);
+    } else {
+      issues.push({
+        kind: "stale_cache",
+        path: dir,
+        message: `cache: unreferenced release directory ${dir}.`,
+      });
+    }
+  }
+
+  return { targets, issues, cleaned };
 }
