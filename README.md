@@ -6,8 +6,9 @@ Keeps your addon list in a plain TOML manifest, installs from open sources
 client, no ads, no browsing UI.
 
 Status: MVP. See [docs/PLAN.md](docs/PLAN.md) for the roadmap,
-[docs/SPEC-MVP.md](docs/SPEC-MVP.md) for the base behaviour and
-[docs/SPEC-TARGETS-WINDOWS.md](docs/SPEC-TARGETS-WINDOWS.md) for targets.
+[docs/SPEC-MVP.md](docs/SPEC-MVP.md) for the base behaviour,
+[docs/SPEC-TARGETS-WINDOWS.md](docs/SPEC-TARGETS-WINDOWS.md) for targets and
+[docs/SPEC-SEARCH.md](docs/SPEC-SEARCH.md) for the planned search.
 
 ## Install
 
