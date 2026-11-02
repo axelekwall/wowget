@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { addonTocs, folderSupportsFlavor, interfaceMatchesFlavor, parseToc, tocSuffixes, tocSuffixFor, type Flavor } from "./flavor.ts";
-import { removeBestEffort } from "./installer.ts";
+import { addonCacheDir, removeBestEffort } from "./installer.ts";
 import { addonTargets, type Manifest, type NamedTarget } from "./manifest.ts";
 import type { State } from "./state.ts";
 
@@ -127,7 +127,7 @@ async function folderInterfacesForFlavor(dir: string, flavor: Flavor): Promise<n
 /** Removes cached release directories for `addon` that are not in `state.keptZipPaths(addon)`. */
 export async function pruneAddonCache(cacheDir: string, state: State, addon: string): Promise<string[]> {
   const keptDirs = new Set([...state.keptZipPaths(addon)].map((p) => resolve(dirname(p))));
-  const addonDir = join(cacheDir, addon.toLowerCase().replace(/[/\\:\0]/g, "_") || "_");
+  const addonDir = addonCacheDir(cacheDir, addon);
   let entries;
   try {
     entries = await readdir(addonDir, { withFileTypes: true });

@@ -75,6 +75,16 @@ function parseTargets(data: Record<string, unknown>, file?: string): NamedTarget
   });
 }
 
+/**
+ * Why `name` cannot be an addon name, or undefined when it can. Names become cache directory
+ * names, where "." and ".." would point at the cache itself or its parent.
+ */
+export function addonNameProblem(name: string): string | undefined {
+  if (name.trim() === "") return "must not be blank";
+  if (name.trim() === "." || name.trim() === "..") return 'must not be "." or ".."';
+  return undefined;
+}
+
 export function parseManifest(text: string, file?: string): Manifest {
   let data: unknown;
   try {
@@ -103,6 +113,8 @@ export function parseManifest(text: string, file?: string): Manifest {
     if (!isTable(raw)) fail(file, `${where} must be a table`);
     checkKeys(raw, ADDON_KEYS, where, file);
     const name = requireString(raw, "name", where, file);
+    const nameProblem = addonNameProblem(name);
+    if (nameProblem) fail(file, `${where}: name "${name}" ${nameProblem}`);
     const source = requireString(raw, "source", where, file);
     try {
       parseSource(source);

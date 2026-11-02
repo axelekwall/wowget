@@ -1,5 +1,6 @@
 import { WowgetError } from "../errors.ts";
 import { HttpStatusError } from "../http.ts";
+import { addonNameProblem } from "../manifest.ts";
 import type { ResolveContext, Resolved, Source } from "./types.ts";
 
 interface WowiFileDetails {
@@ -60,7 +61,10 @@ export function wowiSource(spec: { raw: string; id: string }): Source {
         typeof entry.UIFileName === "string" && entry.UIFileName ? entry.UIFileName : `wowi-${spec.id}-${version}.zip`;
       const dateNum = Number(entry.UIDate);
       const publishedAt = Number.isFinite(dateNum) && dateNum > 0 ? new Date(dateNum).toISOString() : undefined;
-      const fallbackName = typeof entry.UIName === "string" && entry.UIName ? entry.UIName : `wowi-${spec.id}`;
+      // The file and display names are author-supplied; fall back to the id when neither is usable.
+      const idName = `wowi-${spec.id}`;
+      const displayName = typeof entry.UIName === "string" && !addonNameProblem(entry.UIName) ? entry.UIName : idName;
+      const fileName = cleanAddonName(entry.UIFileName, version, displayName);
 
       return {
         source: spec.raw,
@@ -70,7 +74,7 @@ export function wowiSource(spec: { raw: string; id: string }): Source {
         downloadUrl,
         publishedAt,
         flavorVerified: false,
-        defaultName: cleanAddonName(entry.UIFileName, version, fallbackName),
+        defaultName: addonNameProblem(fileName) ? displayName : fileName,
       };
     },
   };

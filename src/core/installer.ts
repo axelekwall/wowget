@@ -73,9 +73,14 @@ function safeSegment(value: string): string {
   return cleaned === "" || cleaned === "." || cleaned === ".." ? "_" : cleaned;
 }
 
+/** The cache directory holding every cached release of `addon`: `<cacheDir>/<addon>`. */
+export function addonCacheDir(cacheDir: string, addon: string): string {
+  return join(cacheDir, safeSegment(addon.toLowerCase()));
+}
+
 /** Where a release's zip lives in the cache: `<cacheDir>/<addon>/<releaseId>/<filename>`. */
 export function cachedZipPath(cacheDir: string, addon: string, releaseId: string, filename: string): string {
-  return join(cacheDir, safeSegment(addon.toLowerCase()), safeSegment(releaseId), safeSegment(basename(filename)));
+  return join(addonCacheDir(cacheDir, addon), safeSegment(releaseId), safeSegment(basename(filename)));
 }
 
 function isReadableZip(bytes: Uint8Array): boolean {

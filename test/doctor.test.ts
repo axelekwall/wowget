@@ -114,6 +114,17 @@ describe("doctor helpers", () => {
     expect(await pruneAddonCache(cacheDir, state, "Questie")).toEqual([]);
   });
 
+  test("pruneAddonCache never leaves the cache directory", async () => {
+    const root = await tempDir();
+    state = openState(join(root, "state.db"));
+    const cacheDir = join(root, "caches", "wowget");
+    await mkdir(join(root, "caches", "OtherApp"), { recursive: true });
+    await mkdir(join(cacheDir, "other-addon", "v1"), { recursive: true });
+    for (const name of ["..", "."]) await pruneAddonCache(cacheDir, state, name);
+    expect((await readdir(join(root, "caches"))).sort()).toEqual(["OtherApp", "wowget"]);
+    expect(await readdir(join(cacheDir, "other-addon"))).toEqual(["v1"]);
+  });
+
   test("ops.doctor reports interface drift, missing folders, leftover temp dirs, and stale cache, and --clean removes them", async () => {
     const root = await tempDir();
     state = openState(join(root, "state", "state.db"));

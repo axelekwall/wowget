@@ -62,6 +62,16 @@ describe("wowi source", () => {
     expect(mismatch.message).toContain('pinned to "1.15.100"');
   });
 
+  test("falls back to the display name or the id when the file name is not a usable addon name", async () => {
+    const resolveWith = async (details: Record<string, unknown>) => {
+      const fake = fakeFetch({ [API]: () => json([{ ...sampleDetails[0], ...details }]) });
+      const http = new HttpClient({ fetch: fake.fetch, env: {} });
+      return wowiSource({ raw: "wowi:26270", id: "26270" }).resolve({ addon: "x", flavor: "forever", prerelease: false, http, cacheDir: "/nonexistent" });
+    };
+    expect((await resolveWith({ UIFileName: "...zip" })).defaultName).toBe("Leatrix Plus");
+    expect((await resolveWith({ UIFileName: "...zip", UIName: ".." })).defaultName).toBe("wowi-26270");
+  });
+
   test("a 404 is a source error naming the addon id", async () => {
     const fake = fakeFetch({});
     const http = new HttpClient({ fetch: fake.fetch, env: {} });

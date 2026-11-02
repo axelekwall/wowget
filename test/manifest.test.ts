@@ -111,6 +111,12 @@ describe("parseManifest", () => {
       "github:owner/repo",
     );
   });
+
+  test("rejects addon names that are not usable as a directory name", () => {
+    for (const bad of ["..", ".", " ", " .. "]) {
+      expect(errorOf(() => parseManifest(VALID.replace('name = "Questie"', `name = "${bad}"`))).message).toContain("name");
+    }
+  });
 });
 
 describe("addAddon", () => {
