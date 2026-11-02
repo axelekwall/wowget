@@ -1,10 +1,12 @@
 #!/usr/bin/env bun
+import { realpath } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { WowgetError } from "./core/errors.ts";
 import type { ProgressEvent } from "./core/events.ts";
 import { FLAVORS, isFlavor, type Flavor } from "./core/flavor.ts";
 import * as ops from "./core/ops.ts";
 import { manifestPath, stateDbPath } from "./core/paths.ts";
+import { selfUpdate, type SelfUpdateResult } from "./core/selfupdate.ts";
 import { openState, type State } from "./core/state.ts";
 import { VERSION } from "./version.ts";
 
@@ -29,6 +31,7 @@ Commands:
   rollback <name>                       reinstall the previous release of an addon from the cache
   reconcile [--adopt]                   find hand-installed addons and optionally adopt them
   doctor [--clean]                      check targets, TOC interfaces and cache health
+  self-update [--check]                 replace this binary with the latest wowget release
 
 add, remove, list, outdated, update, install, rollback, reconcile and doctor act on every target
 unless filtered with -t/--target, which can be repeated. "add -t" records the targets
@@ -41,16 +44,18 @@ Options:
   -t, --target <name> act on this target only (repeatable)
   --adopt             with reconcile: install and add matched addons to the manifest
   --clean             with doctor: remove leftover temp folders and unreferenced cache dirs
+  --check             with self-update: only report whether a newer release exists
   --manifest <path>   manifest file (default $WOWGET_MANIFEST, else ${manifestPath(undefined, { ...process.env, WOWGET_MANIFEST: undefined })})
   --json              print the result as JSON
-  --force             install over unmanaged folders and unverifiable flavors
+  --force             install over unmanaged folders and unverifiable flavors;
+                      with self-update: reinstall the latest release even if it is not newer
   --verbose           show every progress step and stack traces
   -h, --help          show this help
   --version           show the version
 `;
 
-type Flag = "path" | "flavor" | "name" | "prerelease" | "pin" | "target" | "game-dir" | "adopt" | "clean";
-const FLAGS: Flag[] = ["path", "flavor", "name", "prerelease", "pin", "target", "game-dir", "adopt", "clean"];
+type Flag = "path" | "flavor" | "name" | "prerelease" | "pin" | "target" | "game-dir" | "adopt" | "clean" | "check";
+const FLAGS: Flag[] = ["path", "flavor", "name", "prerelease", "pin", "target", "game-dir", "adopt", "clean", "check"];
 
 const COMMAND_FLAGS: Record<string, Flag[]> = {
   init: ["path", "flavor", "name", "game-dir"],
@@ -68,6 +73,7 @@ const COMMAND_FLAGS: Record<string, Flag[]> = {
   rollback: ["target"],
   reconcile: ["target", "adopt"],
   doctor: ["target", "clean"],
+  "self-update": ["check"],
 };
 
 const POSITIONALS: Record<string, [min: number, max: number]> = {
@@ -86,6 +92,7 @@ const POSITIONALS: Record<string, [min: number, max: number]> = {
   rollback: [1, 1],
   reconcile: [0, 0],
   doctor: [0, 0],
+  "self-update": [0, 0],
 };
 
 class UsageError extends Error {}
@@ -111,6 +118,7 @@ function parse(argv: string[]) {
         "game-dir": { type: "string" },
         adopt: { type: "boolean" },
         clean: { type: "boolean" },
+        check: { type: "boolean" },
       },
     });
   } catch (err) {
@@ -322,6 +330,12 @@ function render(command: string, result: unknown): string {
       else for (const issue of r.issues) lines.push(`Issue [${issue.kind}]: ${issue.message}`);
       return lines.join("\n");
     }
+    case "self-update": {
+      const r = result as SelfUpdateResult;
+      if (r.status === "updated") return `Updated wowget ${r.current} -> ${r.latest} at ${r.path}`;
+      if (r.status === "available") return `wowget ${r.latest} is available (installed: ${r.current}); run "wowget self-update" to install it.`;
+      return `wowget ${r.current} is up to date (latest release: ${r.latest}).`;
+    }
     default:
       return renderUpdate(result as ops.UpdateResult);
   }
@@ -400,7 +414,15 @@ async function main(argv: string[]): Promise<number> {
 
     const manifest = manifestPath(values.manifest);
     let result: unknown;
-    if (key === "init") {
+    if (key === "self-update") {
+      result = await selfUpdate({
+        currentVersion: VERSION,
+        execPath: await realpath(process.execPath),
+        check: values.check,
+        force: values.force,
+        onDownload: (asset, version) => process.stderr.write(`Downloading ${asset} ${version}\n`),
+      });
+    } else if (key === "init") {
       result = await ops.init({
         manifestPath: manifest,
         path: values.path,

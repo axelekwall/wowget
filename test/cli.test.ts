@@ -36,6 +36,13 @@ describe("cli", () => {
     expect((await run(["list", "--manifest="], root)).code).toBe(2);
   });
 
+  test("self-update refuses to replace a development build", async () => {
+    const root = await tempDir();
+    const result = await run(["self-update", "--check"], root);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("development build");
+  });
+
   test("init then list --json prints only JSON on stdout", async () => {
     const root = await tempDir();
     const manifest = `--manifest=${join(root, "wowget.toml")}`;

@@ -41,6 +41,13 @@ Or pick the file for your platform on the releases page. A binary downloaded
 with a browser on macOS needs `xattr -d com.apple.quarantine wowget` before it
 runs.
 
+To upgrade later, run `wowget self-update`. It downloads the latest release
+for your platform, verifies its checksum, checks that it runs, and replaces
+the binary in place. `wowget self-update --check` only reports whether a newer
+release exists. On Windows the previous binary is kept as `wowget.exe.old`
+until the next self-update. Versions before 0.3.0 lack the command; upgrade
+those by running the install script again.
+
 Then:
 
 ```sh
@@ -70,6 +77,7 @@ wowget unpin Questie                          # remove the pin
 wowget rollback Questie                       # reinstall the previous release from the cache
 wowget reconcile [--adopt]                    # find hand-installed addons and optionally adopt them
 wowget doctor [--clean]                       # verify targets, TOC interfaces and cache health
+wowget self-update [--check]                  # upgrade wowget itself to the latest release
 wowget remove Questie -t era                  # remove from one target, keep the others
 wowget remove Questie
 ```
