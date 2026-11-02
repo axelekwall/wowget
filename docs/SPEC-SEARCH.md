@@ -48,9 +48,12 @@ description = "Quest helper for Classic"  # optional, one line
   `addonNameProblem`.
 - `source`: any source string `parseSource` accepts except `url:`. One
   source per entry.
-- `flavors`: flavors the current release installs on. Checked by CI (below).
-- `folders`: the addon folders the release installs. Used for reconcile and
-  for de-duplicating WoWInterface rows. Checked by CI.
+- `flavors`: flavors `wowget add` installs on today, without `--force`. For
+  GitHub that can be an older release when the newest has no build for the
+  flavor. Checked by CI (below).
+- `folders`: the addon folders those installs produce, across all listed
+  flavors. Used for reconcile and for de-duplicating WoWInterface rows.
+  Checked by CI.
 - `aliases`: other names a user might type. Compared after normalisation.
 - Unknown keys are an error in the check script and are ignored by the
   client, so older binaries keep working when the format grows.
