@@ -17,6 +17,8 @@ export interface Resolved {
   localPath?: string;
   /** Suggested addon name from the source metadata when none was given on `add`. */
   defaultName?: string;
+  /** Something the user should know about this resolution, such as newer releases being skipped. */
+  note?: string;
 }
 
 export interface HttpRequestOptions {

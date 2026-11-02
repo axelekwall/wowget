@@ -77,6 +77,9 @@ describe("github source", () => {
     expect(wrath.releaseId).toBe("v11.1.0");
     expect(wrath.filename).toBe("Questie-v11.1.0-wrath.zip");
     expect(wrath.flavorVerified).toBe(false);
+    expect(wrath.note).toStartWith("using v11.1.0 because the newer release v11.2.0 could not be used:");
+    // The newest release that has the flavor carries no note.
+    expect((await resolve({ flavor: "classic" }).result).note).toBeUndefined();
   });
 
   test("without release.json, prefers non-nolib zips and matches expanded flavor hints", async () => {

@@ -334,6 +334,18 @@ function leftoverDirs(result: unknown): { name: string; target: string; dir: str
   return addons.flatMap((e) => (e.leftoverDir ? [{ name: e.name, target: e.target, dir: e.leftoverDir }] : []));
 }
 
+/** Source notes from the rows of a result, once per distinct addon and message. */
+function notes(result: unknown): { name: string; note: string }[] {
+  const addons = (result as { addons?: { name: string; note?: string }[] }).addons;
+  if (!Array.isArray(addons)) return [];
+  const seen = new Set<string>();
+  return addons.flatMap((e) => {
+    if (!e.note || seen.has(`${e.name}\0${e.note}`)) return [];
+    seen.add(`${e.name}\0${e.note}`);
+    return [{ name: e.name, note: e.note }];
+  });
+}
+
 function hasErrors(result: unknown): boolean {
   const r = result as { addons?: { status: string }[]; issues?: unknown[] };
   if (Array.isArray(r.addons) && r.addons.some((a) => a.status === "error")) return true;
@@ -428,6 +440,7 @@ async function main(argv: string[]): Promise<number> {
 
     progress.flush();
     process.stdout.write(`${values.json ? JSON.stringify(result, null, 2) : render(key, result)}\n`);
+    for (const { name, note } of notes(result)) process.stderr.write(`wowget: note: ${name}: ${note}\n`);
     for (const { name, target, dir } of leftoverDirs(result)) {
       process.stderr.write(
         `wowget: warning: ${name} (${target}): could not delete the old folders moved to ${dir}; remove it by hand.\n`,

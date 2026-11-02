@@ -463,6 +463,7 @@ export interface AddEntry {
   folders: string[];
   /** Previous copies of replaced folders that could not be deleted. */
   leftoverDir?: string;
+  note?: string;
 }
 
 export interface AddResult {
@@ -583,7 +584,8 @@ export async function add(opts: AddOptions): Promise<AddResult> {
     for (const row of rows) {
       try {
         const previous = opts.state.getActiveInstall(row.target.name, name);
-        const installed = await installRow(ctx, row, await resolveRow(ctx, row), { keepOld: true });
+        const resolved = await resolveRow(ctx, row);
+        const installed = await installRow(ctx, row, resolved, { keepOld: true });
         done.push({
           target: row.target,
           previous,
@@ -594,6 +596,7 @@ export async function add(opts: AddOptions): Promise<AddResult> {
             releaseId: installed.releaseId,
             version: installed.version,
             folders: installed.folders,
+            ...(resolved.note ? { note: resolved.note } : {}),
           },
         });
       } catch (err) {
@@ -728,7 +731,8 @@ export async function list(opts: Pick<OpsOptions, "manifestPath" | "state" | "ta
 
 // outdated
 
-type OnRow<T> = { name: string; target: string } & T;
+/** `note`: something the source did that the user should know, such as skipping newer releases. */
+type OnRow<T> = { name: string; target: string; note?: string } & T;
 
 export type OutdatedEntry = OnRow<
   | { status: "current"; version: string }
@@ -756,6 +760,7 @@ export async function outdated(opts: OpsOptions): Promise<OutdatedResult> {
   for (const row of rows) {
     const { entry, target } = row;
     const ids = { name: entry.name, target: target.name };
+    let note: { note?: string } = {};
     const pinned = atPin.get(row);
     if (pinned) {
       addons.push({ ...ids, status: "current", version: pinned.version ?? pinned.releaseId });
@@ -763,18 +768,19 @@ export async function outdated(opts: OpsOptions): Promise<OutdatedResult> {
     }
     try {
       const resolved = await resolveRow(ctx, row);
+      if (resolved.note) note = { note: resolved.note };
       const active = opts.state.getActiveInstall(target.name, entry.name);
       if (!active) {
-        addons.push({ ...ids, status: "not installed", latest: resolved.version });
+        addons.push({ ...ids, ...note, status: "not installed", latest: resolved.version });
         continue;
       }
       const installed = active.version ?? active.releaseId;
       const missing = await missingFolders(target.path, active);
-      if (missing.length) addons.push({ ...ids, status: "missing", installed, latest: resolved.version, missingFolders: missing });
-      else if (isCurrent(active, entry, resolved)) addons.push({ ...ids, status: "current", version: resolved.version });
-      else addons.push({ ...ids, status: "outdated", installed, latest: resolved.version });
+      if (missing.length) addons.push({ ...ids, ...note, status: "missing", installed, latest: resolved.version, missingFolders: missing });
+      else if (isCurrent(active, entry, resolved)) addons.push({ ...ids, ...note, status: "current", version: resolved.version });
+      else addons.push({ ...ids, ...note, status: "outdated", installed, latest: resolved.version });
     } catch (err) {
-      addons.push({ ...ids, status: "error", error: message(err) });
+      addons.push({ ...ids, ...note, status: "error", error: message(err) });
     }
   }
   return { addons };
@@ -831,6 +837,7 @@ export async function update(opts: UpdateOptions): Promise<UpdateResult> {
   for (const row of rows) {
     const { entry, target } = row;
     const ids = { name: entry.name, target: target.name };
+    let note: { note?: string } = {};
     const pinned = atPin.get(row);
     if (pinned) {
       addons.push({ ...ids, status: "current", version: pinned.version ?? pinned.releaseId });
@@ -838,21 +845,22 @@ export async function update(opts: UpdateOptions): Promise<UpdateResult> {
     }
     try {
       const resolved = await resolveRow(ctx, row);
+      if (resolved.note) note = { note: resolved.note };
       const active = opts.state.getActiveInstall(target.name, entry.name);
       if (active) {
         const intact = !(await missingFolders(target.path, active)).length;
-        if (intact && isCurrent(active, entry, resolved)) addons.push({ ...ids, status: "current", version: resolved.version });
+        if (intact && isCurrent(active, entry, resolved)) addons.push({ ...ids, ...note, status: "current", version: resolved.version });
         else {
-          addons.push(await reinstall(ctx, row, resolved, active));
+          addons.push({ ...(await reinstall(ctx, row, resolved, active)), ...note });
           await pruneAddonCache(ctx.cacheDir, opts.state, entry.name);
         }
         continue;
       }
       const result = await installRow(ctx, row, resolved);
       await pruneAddonCache(ctx.cacheDir, opts.state, entry.name);
-      addons.push({ ...ids, status: "installed", version: result.version, folders: result.folders, ...leftover(result) });
+      addons.push({ ...ids, ...note, status: "installed", version: result.version, folders: result.folders, ...leftover(result) });
     } catch (err) {
-      addons.push({ ...ids, status: "error", error: message(err) });
+      addons.push({ ...ids, ...note, status: "error", error: message(err) });
     }
   }
   return { addons };
@@ -878,6 +886,7 @@ export async function install(opts: OpsOptions): Promise<UpdateResult> {
   for (const row of rows) {
     const { entry, target } = row;
     const ids = { name: entry.name, target: target.name };
+    let note: { note?: string } = {};
     const skipped = intact.get(row);
     if (skipped) {
       addons.push({ ...ids, status: "skipped", version: skipped.version ?? skipped.releaseId });
@@ -886,16 +895,17 @@ export async function install(opts: OpsOptions): Promise<UpdateResult> {
     const active = opts.state.getActiveInstall(target.name, entry.name);
     try {
       const resolved = await resolveRow(ctx, row);
+      if (resolved.note) note = { note: resolved.note };
       if (active) {
-        addons.push(await reinstall(ctx, row, resolved, active));
+        addons.push({ ...(await reinstall(ctx, row, resolved, active)), ...note });
         await pruneAddonCache(ctx.cacheDir, opts.state, entry.name);
         continue;
       }
       const result = await installRow(ctx, row, resolved);
       await pruneAddonCache(ctx.cacheDir, opts.state, entry.name);
-      addons.push({ ...ids, status: "installed", version: result.version, folders: result.folders, ...leftover(result) });
+      addons.push({ ...ids, ...note, status: "installed", version: result.version, folders: result.folders, ...leftover(result) });
     } catch (err) {
-      addons.push({ ...ids, status: "error", error: message(err) });
+      addons.push({ ...ids, ...note, status: "error", error: message(err) });
     }
   }
   return { addons };

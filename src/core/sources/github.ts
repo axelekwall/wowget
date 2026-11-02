@@ -208,15 +208,22 @@ export function githubSource(spec: { raw: string; owner: string; repo: string })
     let page = 1;
     let checked = 0;
     let firstError: WowgetError | undefined;
+    let firstTag: string | undefined;
     for (; page <= MAX_PAGES; page++) {
       const releases = await listReleases(ctx, page);
       for (const release of releases) {
         if (!matchesChannel(release, ctx)) continue;
         try {
-          return await resolveRelease(ctx, release);
+          const resolved = await resolveRelease(ctx, release);
+          if (!firstError) return resolved;
+          const skipped = checked === 1 ? `the newer release ${firstTag}` : `${checked} newer releases, the newest ${firstTag}`;
+          return { ...resolved, note: `using ${release.tag_name} because ${skipped} could not be used: ${firstError.message}` };
         } catch (err) {
           if (err instanceof WowgetError && (err.code === "flavor" || err.code === "source")) {
-            firstError ??= err;
+            if (!firstError) {
+              firstError = err;
+              firstTag = release.tag_name;
+            }
             checked++;
             if (checked >= MAX_FLAVOR_CANDIDATES) throw firstError;
             continue;
