@@ -20,8 +20,8 @@ interface FolderMeta {
   deps: string[];
 }
 
-const GITHUB_SLUG = /^([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)$/;
-const GITHUB_URL = /(?:https?:\/\/|git@)?github\.com[:/]([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)/i;
+const GITHUB_SLUG = /^([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9._-]+)$/;
+const GITHUB_URL = /(?:https?:\/\/|git@)?github\.com[:/]([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9._-]+)/i;
 
 function parseGithubRef(raw: string, allowBareSlug: boolean): string | null {
   const trimmed = raw.trim().replace(/\/+$/, "");

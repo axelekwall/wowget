@@ -21,6 +21,7 @@ async function makeFolder(addonsDir: string, name: string, tocText: string): Pro
 describe("detectSourceFromFields", () => {
   test("recognises X-GitHub, GitHub URLs in X-Website and X-WoWI-ID", () => {
     expect(detectSourceFromFields({ "X-GitHub": "Questie/Questie" })).toBe("github:Questie/Questie");
+    expect(detectSourceFromFields({ "X-Website": "https://github.com/ls-/ls_Toasts" })).toBe("github:ls-/ls_Toasts");
     expect(detectSourceFromFields({ "X-Website": "https://github.com/WeakAuras/WeakAuras2.git" })).toBe(
       "github:WeakAuras/WeakAuras2",
     );

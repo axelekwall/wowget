@@ -67,7 +67,7 @@ wowget target add retail --path DIR --flavor mainline
 wowget target remove retail                   # uninstall everything on it and drop it
 wowget add github:Questie/Questie             # install on every target and add to the manifest
 wowget add github:Questie/Questie -t era      # install on some targets only
-wowget add wowi:26270                         # install from WoWInterface by addon ID
+wowget add wowi:7032                          # install from WoWInterface by addon ID (TomTom)
 wowget add url:https://example.com/Foo.zip --name Foo
 wowget list                                   # what is installed, per target (no network)
 wowget outdated                               # check for newer releases

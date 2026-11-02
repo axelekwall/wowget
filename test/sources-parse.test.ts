@@ -8,6 +8,11 @@ describe("parseSource", () => {
     expect(defaultAddonName(spec)).toBe("Questie");
   });
 
+  test("github owners from before GitHub banned a trailing hyphen", () => {
+    expect(parseSource("github:ls-/ls_Toasts")).toMatchObject({ owner: "ls-", repo: "ls_Toasts" });
+    expect(() => parseSource("github:-ls/ls_Toasts")).toThrow("github:owner/repo");
+  });
+
   test("url", () => {
     const spec = parseSource("url:https://example.com/files/Some%20Addon.zip?dl=1");
     expect(spec.kind).toBe("url");
