@@ -42,7 +42,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       WOWGET_DOWNLOAD_BASE: http://127.0.0.1:8765
-      WOWGET_INSTALL_DIR: ${{ runner.temp }}/wowget-bin
+      WOWGET_INSTALL_DIR: ${{ github.workspace }}/wowget-bin
     steps:
       - uses: actions/checkout@v4
       - name: Download the release assets and serve them locally
