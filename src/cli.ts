@@ -277,9 +277,16 @@ function render(command: string, result: unknown): string {
     }
     case "rollback": {
       const r = result as ops.RollbackResult;
-      return r.addons
-        .map((a) => `Rolled back ${a.name} on ${a.target}: ${a.from ?? "none"} -> ${a.to} (${a.folders.join(", ")})`)
-        .join("\n");
+      const lines = r.addons.map(
+        (a) => `Rolled back ${a.name} on ${a.target}: ${a.from ?? "none"} -> ${a.to} (${a.folders.join(", ")})`,
+      );
+      if (r.pinned !== undefined) {
+        lines.push(`Pinned ${r.name} to ${r.pinned}; run "wowget unpin ${r.name}" to resume updates.`);
+      } else {
+        const why = r.notPinned === "partial" ? "the rollback did not cover all its targets" : "its targets are on different releases";
+        lines.push(`${r.name} was not pinned because ${why}; the next update reinstalls the newer release.`);
+      }
+      return lines.join("\n");
     }
     case "reconcile": {
       const r = result as ops.ReconcileResult;

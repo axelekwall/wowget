@@ -182,6 +182,19 @@ function installRow(ctx: Context, { entry, target }: Row, resolved: Resolved, ex
 }
 
 /** An install is current when it came from the same source string and release. */
+/**
+ * The active install when the entry is pinned and that release is installed with all its folders.
+ * Such rows are current without asking the source, which for URL and WoWInterface sources can only
+ * serve the latest file and would otherwise report the pin as an error once the source moves on.
+ */
+async function installedAtPin(state: State, row: Row): Promise<InstallRecord | undefined> {
+  const { entry, target } = row;
+  if (entry.pin === undefined) return undefined;
+  const active = state.getActiveInstall(target.name, entry.name);
+  if (!active || active.source !== entry.source || active.releaseId !== entry.pin) return undefined;
+  return (await missingFolders(target.path, active)).length ? undefined : active;
+}
+
 function isCurrent(active: InstallRecord | undefined, entry: AddonEntry, resolved: Resolved): boolean {
   return active !== undefined && active.source === entry.source && active.releaseId === resolved.releaseId;
 }
@@ -733,11 +746,21 @@ export interface OutdatedResult {
 export async function outdated(opts: OpsOptions): Promise<OutdatedResult> {
   const ctx = await context(opts);
   const rows = rowsFor(ctx, ctx.manifest.addons);
-  await preResolve(ctx, rows);
+  const atPin = new Map<Row, InstallRecord>();
+  for (const row of rows) {
+    const active = await installedAtPin(opts.state, row);
+    if (active) atPin.set(row, active);
+  }
+  await preResolve(ctx, rows.filter((r) => !atPin.has(r)));
   const addons: OutdatedEntry[] = [];
   for (const row of rows) {
     const { entry, target } = row;
     const ids = { name: entry.name, target: target.name };
+    const pinned = atPin.get(row);
+    if (pinned) {
+      addons.push({ ...ids, status: "current", version: pinned.version ?? pinned.releaseId });
+      continue;
+    }
     try {
       const resolved = await resolveRow(ctx, row);
       const active = opts.state.getActiveInstall(target.name, entry.name);
@@ -798,11 +821,21 @@ export async function update(opts: UpdateOptions): Promise<UpdateResult> {
   }
 
   const rows = rowsFor(ctx, [...new Set(entries)]);
-  await preResolve(ctx, rows);
+  const atPin = new Map<Row, InstallRecord>();
+  for (const row of rows) {
+    const active = await installedAtPin(opts.state, row);
+    if (active) atPin.set(row, active);
+  }
+  await preResolve(ctx, rows.filter((r) => !atPin.has(r)));
   const addons: UpdateEntry[] = [];
   for (const row of rows) {
     const { entry, target } = row;
     const ids = { name: entry.name, target: target.name };
+    const pinned = atPin.get(row);
+    if (pinned) {
+      addons.push({ ...ids, status: "current", version: pinned.version ?? pinned.releaseId });
+      continue;
+    }
     try {
       const resolved = await resolveRow(ctx, row);
       const active = opts.state.getActiveInstall(target.name, entry.name);
@@ -1016,6 +1049,13 @@ export interface RollbackEntry {
 export interface RollbackResult {
   name: string;
   addons: RollbackEntry[];
+  /** The release the manifest now pins, so `update` keeps the rollback. */
+  pinned?: string;
+  /**
+   * Why no pin was written: the rollback covered only some of the addon's targets ("partial") or
+   * left them on different releases ("mixed"). The next `update` reinstalls the newer release then.
+   */
+  notPinned?: "partial" | "mixed";
 }
 
 export async function rollback(opts: RollbackOptions): Promise<RollbackResult> {
@@ -1032,6 +1072,7 @@ export async function rollback(opts: RollbackOptions): Promise<RollbackResult> {
   }
 
   const plans: { row: Row; active?: InstallRecord; previous: InstallRecord }[] = [];
+  const { text: manifestText } = await readManifestText(opts.manifestPath);
   for (const row of rows) {
     if (!(await stat(row.target.path).then((s) => s.isDirectory(), () => false))) {
       throw new WowgetError("io", `Target "${row.target.name}": ${row.target.path} does not exist or is not a directory.`);
@@ -1049,6 +1090,14 @@ export async function rollback(opts: RollbackOptions): Promise<RollbackResult> {
     }
     plans.push({ row, active, previous });
   }
+
+  // Without a pin the next update would reinstall the newer release. The pin applies to every
+  // target, so it is only written when the rollback covers them all and lands on one release.
+  const releaseIds = new Set(plans.map((p) => p.previous.releaseId));
+  const coversAll = rows.length === addonTargets(loaded.manifest, entry).length;
+  const pinTo = coversAll && releaseIds.size === 1 ? [...releaseIds][0]! : undefined;
+  const plannedManifest = pinTo !== undefined ? planSetAddonPin(manifestText, entry.name, pinTo, opts.manifestPath) : undefined;
+  const notPinned = pinTo !== undefined ? undefined : !coversAll ? "partial" : "mixed";
 
   const cacheDir = opts.cacheDir ?? defaultCacheDir();
   const done: (AddDone & { rollbackEntry: RollbackEntry })[] = [];
@@ -1102,6 +1151,7 @@ export async function rollback(opts: RollbackOptions): Promise<RollbackResult> {
         throw plans.length > 1 ? onTarget(row.target.name, err) : err;
       }
     }
+    if (plannedManifest !== undefined) await writePlanned(opts.manifestPath, manifestText, plannedManifest);
   } catch (err) {
     const failed: string[] = [];
     for (const d of [...done].reverse()) {
@@ -1125,7 +1175,11 @@ export async function rollback(opts: RollbackOptions): Promise<RollbackResult> {
   for (const d of done) {
     if (d.oldDir && !(await removeBestEffort(d.oldDir))) d.rollbackEntry.leftoverDir = d.oldDir;
   }
-  return { name: entry.name, addons: done.map((d) => d.rollbackEntry) };
+  return {
+    name: entry.name,
+    addons: done.map((d) => d.rollbackEntry),
+    ...(pinTo !== undefined ? { pinned: pinTo } : { notPinned: notPinned! }),
+  };
 }
 
 // reconcile

@@ -156,8 +156,9 @@ export class State {
   }
 
   /**
-   * The most recent inactive install of `addon` on `target` whose release differs from the active
-   * install, for rolling back.
+   * The install to roll back to: the latest install of another release recorded before the active
+   * release was first installed. Measuring from the first install of the active release means a
+   * rollback followed by another rollback steps further back instead of returning to where it was.
    */
   getPreviousInstall(target: string, addon: string): InstallRecord | undefined {
     const active = this.getActiveInstall(target, addon);
@@ -165,7 +166,8 @@ export class State {
       active
         ? this.db
             .query(
-              `SELECT * FROM installs WHERE target = ? AND addon = ? AND active = 0 AND release_id != ?
+              `SELECT * FROM installs WHERE target = ?1 AND addon = ?2 AND active = 0 AND release_id != ?3
+               AND id < (SELECT MIN(id) FROM installs WHERE target = ?1 AND addon = ?2 AND release_id = ?3)
                ORDER BY id DESC LIMIT 1`,
             )
             .get(target, addon.toLowerCase(), active.releaseId)

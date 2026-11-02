@@ -151,6 +151,17 @@ describe("installs", () => {
     expect(state.getPreviousInstall("forever", "Questie")?.releaseId).toBe("v1");
     state.close();
   });
+
+  test("getPreviousInstall steps further back after a rollback instead of returning", async () => {
+    const state = openState(join(await tempDir(), "state.db"));
+    for (const releaseId of ["v1", "v2", "v3"]) state.recordInstall({ ...base, addon: "Questie", releaseId, folders: ["Questie"] });
+    expect(state.getPreviousInstall("forever", "Questie")?.releaseId).toBe("v2");
+    state.recordInstall({ ...base, addon: "Questie", releaseId: "v2", folders: ["Questie"] });
+    expect(state.getPreviousInstall("forever", "Questie")?.releaseId).toBe("v1");
+    state.recordInstall({ ...base, addon: "Questie", releaseId: "v1", folders: ["Questie"] });
+    expect(state.getPreviousInstall("forever", "Questie")).toBeUndefined();
+    state.close();
+  });
 });
 
 describe("targets", () => {

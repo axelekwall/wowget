@@ -568,6 +568,16 @@ describe("targets", () => {
       folders: ["MyAddon"],
     });
     expect(await readFile(join(addons, "MyAddon", "core.lua"), "utf8")).toBe("v1");
+
+    // The rollback pins, so update keeps v1 even though the URL still serves v2.
+    expect(rolledBack.pinned).toBe(v1Id);
+    expect((await readManifest(manifestPath)).addons[0]?.pin).toBe(v1Id);
+    expect((await ops.update(opts)).addons.map((a) => a.status)).toEqual(["current"]);
+    expect((await ops.outdated(opts)).addons.map((a) => a.status)).toEqual(["current"]);
+    expect(await readFile(join(addons, "MyAddon", "core.lua"), "utf8")).toBe("v1");
+
+    // v1 was the first release, so there is nothing further back; it does not toggle to v2.
+    expect((await ops.rollback({ ...opts, name: "myaddon" }).catch((e) => e)).code).toBe("not_found");
   });
 
   test("pin with an explicit release resolves and installs it before updating the manifest", async () => {
