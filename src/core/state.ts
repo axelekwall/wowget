@@ -155,6 +155,27 @@ export class State {
     return row ? this.toRecord(row) : undefined;
   }
 
+  /**
+   * The most recent inactive install of `addon` on `target` whose release differs from the active
+   * install, for rolling back.
+   */
+  getPreviousInstall(target: string, addon: string): InstallRecord | undefined {
+    const active = this.getActiveInstall(target, addon);
+    const row = (
+      active
+        ? this.db
+            .query(
+              `SELECT * FROM installs WHERE target = ? AND addon = ? AND active = 0 AND release_id != ?
+               ORDER BY id DESC LIMIT 1`,
+            )
+            .get(target, addon.toLowerCase(), active.releaseId)
+        : this.db
+            .query("SELECT * FROM installs WHERE target = ? AND addon = ? AND active = 0 ORDER BY id DESC LIMIT 1")
+            .get(target, addon.toLowerCase())
+    ) as InstallRow | null;
+    return row ? this.toRecord(row) : undefined;
+  }
+
   /** Active installs on `target`, or on every target, ordered by addon then target. */
   listActiveInstalls(target?: string): InstallRecord[] {
     const rows = (

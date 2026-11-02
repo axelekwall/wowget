@@ -24,6 +24,7 @@ import {
   parseManifest,
   planRemoveAddon,
   planRemoveTarget,
+  planSetAddonPin,
   planSetAddonTargets,
   readManifest,
   readManifestText,
@@ -840,4 +841,264 @@ export async function install(opts: OpsOptions): Promise<UpdateResult> {
     }
   }
   return { addons };
+}
+
+// pin, unpin, rollback
+
+export interface PinOptions extends OpsOptions {
+  name: string;
+  /** Release id to pin to; when omitted, pins to the active install's releaseId. */
+  pin?: string;
+}
+
+export interface PinResult {
+  name: string;
+  pin: string;
+  /** Targets updated when an explicit releaseId was resolved and installed. */
+  addons: AddEntry[];
+}
+
+export async function pin(opts: PinOptions): Promise<PinResult> {
+  if (opts.pin === "") throw new WowgetError("usage", "Pin must not be empty.");
+  const { text, manifest } = await readManifestText(opts.manifestPath);
+  const entry = findAddon(manifest, opts.name);
+  if (!entry) throw new WowgetError("not_found", `No addon named "${opts.name}" in the manifest.`);
+  const targets = selectTargets(manifest, opts.manifestPath, undefined).filter((t) =>
+    addonTargets(manifest, entry).includes(t.name),
+  );
+
+  if (opts.pin === undefined) {
+    const actives = targets
+      .map((t) => opts.state.getActiveInstall(t.name, entry.name))
+      .filter((r): r is InstallRecord => r !== undefined);
+    if (!actives.length) {
+      throw new WowgetError(
+        "not_found",
+        `${entry.name} is not installed; pass a release id to "wowget pin ${entry.name} <release>".`,
+      );
+    }
+    const releaseIds = [...new Set(actives.map((a) => a.releaseId))];
+    if (releaseIds.length > 1) {
+      const detail = actives.map((a) => `${a.target}=${a.releaseId}`).join(", ");
+      throw new WowgetError(
+        "conflict",
+        `${entry.name} has different releases installed across targets (${detail}); pass an explicit release id to "wowget pin".`,
+      );
+    }
+    const chosen = releaseIds[0]!;
+    const planned = planSetAddonPin(text, entry.name, chosen, opts.manifestPath);
+    await writePlanned(opts.manifestPath, text, planned);
+    return { name: entry.name, pin: chosen, addons: [] };
+  }
+
+  const planned = planSetAddonPin(text, entry.name, opts.pin, opts.manifestPath);
+  const ctx = await context({ ...opts, targets: undefined });
+  const pinnedEntry: AddonEntry = { ...entry, pin: opts.pin };
+  const allRows = rowsFor(ctx, [pinnedEntry]);
+  const rows: Row[] = [];
+  for (const row of allRows) {
+    const active = opts.state.getActiveInstall(row.target.name, entry.name);
+    if (active && active.releaseId === opts.pin && !(await missingFolders(row.target.path, active)).length) continue;
+    rows.push(row);
+  }
+  for (const { target } of rows) {
+    if (!(await stat(target.path).then((s) => s.isDirectory(), () => false))) {
+      throw new WowgetError("io", `Target "${target.name}": ${target.path} does not exist or is not a directory.`);
+    }
+  }
+
+  const done: AddDone[] = [];
+  try {
+    for (const row of rows) {
+      try {
+        const previous = opts.state.getActiveInstall(row.target.name, entry.name);
+        const installed = await installRow(ctx, row, await resolveRow(ctx, row), { keepOld: true });
+        done.push({
+          target: row.target,
+          previous,
+          oldDir: installed.oldDir,
+          entry: {
+            name: entry.name,
+            target: row.target.name,
+            releaseId: installed.releaseId,
+            version: installed.version,
+            folders: installed.folders,
+          },
+        });
+      } catch (err) {
+        throw rows.length > 1 ? onTarget(row.target.name, err) : err;
+      }
+    }
+    await writePlanned(opts.manifestPath, text, planned);
+  } catch (err) {
+    const failed: string[] = [];
+    for (const d of [...done].reverse()) {
+      try {
+        await undoAdd(opts.state, entry.name, d);
+      } catch (rollbackErr) {
+        const kept = d.oldDir ? `; the replaced folders are in ${d.oldDir}` : "";
+        failed.push(`${d.target.name}: ${message(rollbackErr)}${kept}`);
+      }
+    }
+    if (failed.length) {
+      const code = err instanceof WowgetError ? err.code : "io";
+      throw new WowgetError(
+        code,
+        `${message(err)} Undoing the install of ${entry.name} also failed (${failed.join("; ")}).`,
+        { cause: err },
+      );
+    }
+    throw err;
+  }
+  for (const d of done) {
+    if (d.oldDir && !(await removeBestEffort(d.oldDir))) d.entry.leftoverDir = d.oldDir;
+  }
+  return { name: entry.name, pin: opts.pin, addons: done.map((d) => d.entry) };
+}
+
+export interface UnpinOptions extends Pick<OpsOptions, "manifestPath"> {
+  name: string;
+}
+
+export interface UnpinResult {
+  name: string;
+  previousPin?: string;
+}
+
+export async function unpin(opts: UnpinOptions): Promise<UnpinResult> {
+  const { text, manifest } = await readManifestText(opts.manifestPath);
+  const entry = findAddon(manifest, opts.name);
+  if (!entry) throw new WowgetError("not_found", `No addon named "${opts.name}" in the manifest.`);
+  const planned = planSetAddonPin(text, entry.name, undefined, opts.manifestPath);
+  await writePlanned(opts.manifestPath, text, planned);
+  return { name: entry.name, ...(entry.pin !== undefined ? { previousPin: entry.pin } : {}) };
+}
+
+export interface RollbackOptions extends OpsOptions {
+  name: string;
+}
+
+export interface RollbackEntry {
+  name: string;
+  target: string;
+  from: string | null;
+  to: string;
+  releaseId: string;
+  folders: string[];
+  leftoverDir?: string;
+}
+
+export interface RollbackResult {
+  name: string;
+  addons: RollbackEntry[];
+}
+
+export async function rollback(opts: RollbackOptions): Promise<RollbackResult> {
+  const loaded = await load(opts);
+  const entry = findAddon(loaded.manifest, opts.name);
+  if (!entry) throw new WowgetError("not_found", `No addon named "${opts.name}" in the manifest.`);
+  const rows = rowsFor(loaded, [entry]);
+  if (!rows.length) {
+    const on = addonTargets(loaded.manifest, entry).join(", ");
+    throw new WowgetError(
+      "usage",
+      `${entry.name} is not on target ${loaded.targets.map((t) => t.name).join(", ")}; it is on ${on}.`,
+    );
+  }
+
+  const plans: { row: Row; active?: InstallRecord; previous: InstallRecord }[] = [];
+  for (const row of rows) {
+    if (!(await stat(row.target.path).then((s) => s.isDirectory(), () => false))) {
+      throw new WowgetError("io", `Target "${row.target.name}": ${row.target.path} does not exist or is not a directory.`);
+    }
+    const active = opts.state.getActiveInstall(row.target.name, entry.name);
+    const previous = opts.state.getPreviousInstall(row.target.name, entry.name);
+    if (!previous) {
+      throw new WowgetError("not_found", `${row.target.name}: no previous install recorded for ${entry.name}.`);
+    }
+    if (!(await Bun.file(previous.zipPath).exists())) {
+      throw new WowgetError(
+        "not_found",
+        `${row.target.name}: cached zip for ${entry.name} ${previous.version ?? previous.releaseId} (${previous.zipPath}) is missing.`,
+      );
+    }
+    plans.push({ row, active, previous });
+  }
+
+  const cacheDir = opts.cacheDir ?? defaultCacheDir();
+  const done: (AddDone & { rollbackEntry: RollbackEntry })[] = [];
+  try {
+    for (const { row, active, previous } of plans) {
+      try {
+        const resolved: Resolved = {
+          source: previous.source,
+          releaseId: previous.releaseId,
+          version: previous.version ?? previous.releaseId,
+          filename: previous.filename,
+          downloadUrl: `file://${previous.zipPath}`,
+          flavorVerified: false,
+          localPath: previous.zipPath,
+        };
+        const installed = await installRelease({
+          target: row.target.name,
+          addon: entry.name,
+          resolved,
+          targetDir: row.target.path,
+          flavor: row.target.flavor,
+          state: opts.state,
+          force: opts.force,
+          cacheDir,
+          sha256: previous.sha256,
+          onEvent: opts.onEvent,
+          keepOld: true,
+        });
+        const item: AddEntry = {
+          name: entry.name,
+          target: row.target.name,
+          releaseId: installed.releaseId,
+          version: installed.version,
+          folders: installed.folders,
+        };
+        done.push({
+          target: row.target,
+          previous: active,
+          oldDir: installed.oldDir,
+          entry: item,
+          rollbackEntry: {
+            name: entry.name,
+            target: row.target.name,
+            from: active ? (active.version ?? active.releaseId) : null,
+            to: installed.version,
+            releaseId: installed.releaseId,
+            folders: installed.folders,
+          },
+        });
+      } catch (err) {
+        throw plans.length > 1 ? onTarget(row.target.name, err) : err;
+      }
+    }
+  } catch (err) {
+    const failed: string[] = [];
+    for (const d of [...done].reverse()) {
+      try {
+        await undoAdd(opts.state, entry.name, d);
+      } catch (rollbackErr) {
+        const kept = d.oldDir ? `; the replaced folders are in ${d.oldDir}` : "";
+        failed.push(`${d.target.name}: ${message(rollbackErr)}${kept}`);
+      }
+    }
+    if (failed.length) {
+      const code = err instanceof WowgetError ? err.code : "io";
+      throw new WowgetError(
+        code,
+        `${message(err)} Undoing the rollback of ${entry.name} also failed (${failed.join("; ")}).`,
+        { cause: err },
+      );
+    }
+    throw err;
+  }
+  for (const d of done) {
+    if (d.oldDir && !(await removeBestEffort(d.oldDir))) d.rollbackEntry.leftoverDir = d.oldDir;
+  }
+  return { name: entry.name, addons: done.map((d) => d.rollbackEntry) };
 }

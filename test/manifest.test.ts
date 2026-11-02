@@ -10,6 +10,7 @@ import {
   readManifest,
   removeAddon,
   removeTarget,
+  setAddonPin,
   setAddonTargets,
 } from "../src/core/manifest.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -365,5 +366,22 @@ describe("setAddonTargets", () => {
     const path = await manifestFile(original);
     const updated = await setAddonTargets(path, "A", ["era"]);
     expect(updated.addons[0]?.targets).toEqual(["era"]);
+  });
+});
+
+describe("setAddonPin", () => {
+  test("inserts, replaces and removes the pin line while keeping comments", async () => {
+    const path = await manifestFile(TWO_TARGETS);
+
+    await setAddonPin(path, "Everywhere", "v2.0.0");
+    expect((await readManifest(path)).addons.find((a) => a.name === "Everywhere")?.pin).toBe("v2.0.0");
+    expect(await readFile(path, "utf8")).toEndWith('name = "Everywhere"\nsource = "github:a/everywhere"\npin = "v2.0.0"\n');
+
+    await setAddonPin(path, "Questie", "v2");
+    expect((await readManifest(path)).addons.find((a) => a.name === "Questie")?.pin).toBe("v2");
+
+    await setAddonPin(path, "Questie", undefined);
+    expect((await readManifest(path)).addons.find((a) => a.name === "Questie")?.pin).toBeUndefined();
+    expect(await readFile(path, "utf8")).toContain("# Quest helper\n[[addon]]\nname = \"Questie\"\nsource = \"github:Questie/Questie\"\ntargets = [\"forever\", \"era\"]\n\n[[addon]]");
   });
 });

@@ -174,6 +174,10 @@ function renderTargetsLine(targets: string[]): string {
   return `targets = [${targets.map(tomlString).join(", ")}]`;
 }
 
+function renderPinLine(pin: string): string {
+  return `pin = ${tomlString(pin)}`;
+}
+
 function renderAddon(entry: AddonEntry): string {
   let block = `[[addon]]\nname = ${tomlString(entry.name)}\nsource = ${tomlString(entry.source)}\n`;
   if (entry.targets !== undefined) block += `${renderTargetsLine(entry.targets)}\n`;
@@ -331,6 +335,25 @@ export function setAddonTargetsText(text: string, name: string, targets: string[
   const source = findBlockKeyLine(lines, header, end, "source");
   const at = source >= 0 ? valueEnd(lines, source, end) : header + 1;
   return [...lines.slice(0, at), renderTargetsLine(targets), ...lines.slice(at)].join("\n");
+}
+
+/**
+ * Returns `text` with the `pin =` line of the addon block named `name` replaced, appended at the
+ * end of the block's keys, or deleted when `pin` is undefined.
+ */
+export function setAddonPinText(text: string, name: string, pin: string | undefined): string {
+  const lines = text.split("\n");
+  const header = findAddonHeader(lines, name);
+  const end = blockEnd(lines, header);
+  const existing = findBlockKeyLine(lines, header, end, "pin");
+  if (existing >= 0) {
+    const stop = valueEnd(lines, existing, end);
+    const replacement = pin === undefined ? [] : [renderPinLine(pin)];
+    return [...lines.slice(0, existing), ...replacement, ...lines.slice(stop)].join("\n");
+  }
+  if (pin === undefined) return text;
+  const [, blockStop] = blockRange(lines, header);
+  return [...lines.slice(0, blockStop), renderPinLine(pin), ...lines.slice(blockStop)].join("\n");
 }
 
 async function readText(path: string): Promise<string> {
@@ -546,4 +569,27 @@ export function planSetAddonTargets(text: string, name: string, targets: string[
 export async function setAddonTargets(path: string, name: string, targets: string[] | undefined): Promise<Manifest> {
   const text = await readText(path);
   return writePlannedText(path, text, planSetAddonTargets(text, name, targets, path));
+}
+
+/**
+ * Returns `text` with the addon's `pin` set, checked to parse back to the expected manifest;
+ * `undefined` removes the key.
+ */
+export function planSetAddonPin(text: string, name: string, pin: string | undefined, path = "the manifest"): string {
+  if (pin === "") throw new WowgetError("usage", "Pin must not be empty.");
+  const manifest = parseManifest(text, path);
+  const entry = findAddon(manifest, name);
+  if (!entry) throw new WowgetError("not_found", `No addon named "${name}" in the manifest.`);
+  const updated: AddonEntry = { ...entry };
+  if (pin === undefined) delete updated.pin;
+  else updated.pin = pin;
+  const next = setAddonPinText(text, entry.name, pin);
+  checkPlanned(path, next, { ...manifest, addons: manifest.addons.map((a) => (a === entry ? updated : a)) });
+  return next;
+}
+
+/** Sets or clears (`undefined`) the addon's `pin` in the manifest. */
+export async function setAddonPin(path: string, name: string, pin: string | undefined): Promise<Manifest> {
+  const text = await readText(path);
+  return writePlannedText(path, text, planSetAddonPin(text, name, pin, path));
 }

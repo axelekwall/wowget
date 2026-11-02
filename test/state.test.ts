@@ -138,6 +138,19 @@ describe("installs", () => {
     expect(state.deactivateInstall("forever", "Questie")).toBe(false);
     state.close();
   });
+
+  test("getPreviousInstall returns the newest inactive install with a different releaseId", async () => {
+    const state = openState(join(await tempDir(), "state.db"));
+    expect(state.getPreviousInstall("forever", "Questie")).toBeUndefined();
+    state.recordInstall({ ...base, addon: "Questie", releaseId: "v1", folders: ["Questie"] });
+    expect(state.getPreviousInstall("forever", "Questie")).toBeUndefined();
+    // A repair of the same releaseId does not become the rollback target for v1.
+    state.recordInstall({ ...base, addon: "Questie", releaseId: "v1", folders: ["Questie"] });
+    expect(state.getPreviousInstall("forever", "Questie")).toBeUndefined();
+    state.recordInstall({ ...base, addon: "Questie", releaseId: "v2", folders: ["Questie"] });
+    expect(state.getPreviousInstall("forever", "Questie")?.releaseId).toBe("v1");
+    state.close();
+  });
 });
 
 describe("targets", () => {

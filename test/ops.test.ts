@@ -535,4 +535,58 @@ describe("targets", () => {
     expect(opts.state.getCache(`wowget:url-source:one:${base}/A.zip`)).toBeDefined();
     expect(opts.state.getCache(`wowget:url-source:two:${base}/A.zip`)).toBeDefined();
   });
+
+  test("pin, unpin and rollback", async () => {
+    const { manifestPath, addons, opts } = await setup();
+    const files = { current: { "MyAddon/MyAddon_Forever.toc": "## Version: 1\n", "MyAddon/core.lua": "v1" } };
+    const base = serveAddon(files);
+    await ops.init({ manifestPath, path: addons });
+
+    const v1 = await ops.add({ ...opts, source: `url:${base}/MyAddon.zip` });
+    const v1Id = v1.addons[0]!.releaseId;
+
+    // Pin offline to the active install's releaseId.
+    const pinned = await ops.pin({ ...opts, name: "myaddon" });
+    expect(pinned).toEqual({ name: "MyAddon", pin: v1Id, addons: [] });
+    expect((await readManifest(manifestPath)).addons[0]?.pin).toBe(v1Id);
+
+    // Unpin, update to v2, then rollback to v1 from cache.
+    expect(await ops.unpin({ manifestPath, name: "myaddon" })).toEqual({ name: "MyAddon", previousPin: v1Id });
+    expect((await readManifest(manifestPath)).addons[0]?.pin).toBeUndefined();
+
+    files.current = { "MyAddon/MyAddon_Forever.toc": "## Version: 2\n", "MyAddon/core.lua": "v2" };
+    const updated = await ops.update(opts);
+    expect(updated.addons[0]?.status).toBe("updated");
+    expect(await readFile(join(addons, "MyAddon", "core.lua"), "utf8")).toBe("v2");
+
+    const rolledBack = await ops.rollback({ ...opts, name: "myaddon" });
+    expect(rolledBack.addons[0]).toMatchObject({
+      name: "MyAddon",
+      target: "forever",
+      to: v1.addons[0]!.version,
+      releaseId: v1Id,
+      folders: ["MyAddon"],
+    });
+    expect(await readFile(join(addons, "MyAddon", "core.lua"), "utf8")).toBe("v1");
+  });
+
+  test("pin with an explicit release resolves and installs it before updating the manifest", async () => {
+    const { manifestPath, addons, opts } = await setup();
+    await ops.init({ manifestPath, path: addons });
+    await addAddon(manifestPath, { name: "Example", source: "github:Example/Example", prerelease: false });
+
+    const releases = "https://api.github.com/repos/Example/Example/releases?per_page=30";
+    const zipUrl = "https://github.com/Example/Example/releases/download/v1.0.0/Example.zip";
+    const fake = fakeFetch({
+      [releases]: () =>
+        json([{ tag_name: "v1.0.0", draft: false, prerelease: false, assets: [{ name: "Example.zip", browser_download_url: zipUrl }] }]),
+      [zipUrl]: () => new Response(zipSync({ "Example/Example_Forever.toc": text(""), "Example/core.lua": text("pinned") })),
+    });
+
+    const result = await ops.pin({ ...opts, fetch: fake.fetch, name: "Example", pin: "v1.0.0" });
+    expect(result.pin).toBe("v1.0.0");
+    expect(result.addons).toHaveLength(1);
+    expect((await readManifest(manifestPath)).addons[0]?.pin).toBe("v1.0.0");
+    expect(await readFile(join(addons, "Example", "core.lua"), "utf8")).toBe("pinned");
+  });
 });

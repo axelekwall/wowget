@@ -24,8 +24,11 @@ Commands:
   outdated                              check every addon for a newer release
   update [name...]                      install newer releases (all addons by default)
   install                               install manifest addons that are not installed
+  pin <name> [release]                  freeze an addon at its installed release or a given release
+  unpin <name>                          remove the release pin from an addon
+  rollback <name>                       reinstall the previous release of an addon from the cache
 
-add, remove, list, outdated, update and install act on every target unless
+add, remove, list, outdated, update, install and rollback act on every target unless
 filtered with -t/--target, which can be repeated. "add -t" records the targets
 in the manifest; "remove -t" removes the addon from those targets only.
 
@@ -56,6 +59,9 @@ const COMMAND_FLAGS: Record<string, Flag[]> = {
   outdated: ["target"],
   update: ["target"],
   install: ["target"],
+  pin: [],
+  unpin: [],
+  rollback: ["target"],
 };
 
 const POSITIONALS: Record<string, [min: number, max: number]> = {
@@ -69,6 +75,9 @@ const POSITIONALS: Record<string, [min: number, max: number]> = {
   outdated: [0, 0],
   update: [0, Infinity],
   install: [0, 0],
+  pin: [1, 2],
+  unpin: [1, 1],
+  rollback: [1, 1],
 };
 
 class UsageError extends Error {}
@@ -246,6 +255,22 @@ function render(command: string, result: unknown): string {
         }),
       ]);
     }
+    case "pin": {
+      const r = result as ops.PinResult;
+      const lines = r.addons.map((a) => `Installed ${r.name} ${a.version} on ${a.target} (${a.folders.join(", ")})`);
+      lines.push(`Pinned ${r.name} to ${r.pin}`);
+      return lines.join("\n");
+    }
+    case "unpin": {
+      const r = result as ops.UnpinResult;
+      return r.previousPin !== undefined ? `Unpinned ${r.name} (was ${r.previousPin})` : `${r.name} was not pinned`;
+    }
+    case "rollback": {
+      const r = result as ops.RollbackResult;
+      return r.addons
+        .map((a) => `Rolled back ${a.name} on ${a.target}: ${a.from ?? "none"} -> ${a.to} (${a.folders.join(", ")})`)
+        .join("\n");
+    }
     default:
       return renderUpdate(result as ops.UpdateResult);
   }
@@ -323,6 +348,8 @@ async function main(argv: string[]): Promise<number> {
     } else if (key === "target add") {
       if (values.path === undefined || flavor === undefined) throw new UsageError('"target add" needs --path and --flavor.');
       result = await ops.targetAdd({ manifestPath: manifest, name: args[0]!, path: values.path, flavor });
+    } else if (key === "unpin") {
+      result = await ops.unpin({ manifestPath: manifest, name: args[0]! });
     } else {
       state = openState(stateDbPath());
       const base: ops.OpsOptions = {
@@ -339,6 +366,8 @@ async function main(argv: string[]): Promise<number> {
       else if (key === "list") result = await ops.list(base);
       else if (key === "outdated") result = await ops.outdated(base);
       else if (key === "update") result = await ops.update({ ...base, names: args });
+      else if (key === "pin") result = await ops.pin({ ...base, name: args[0]!, pin: args[1] });
+      else if (key === "rollback") result = await ops.rollback({ ...base, name: args[0]! });
       else result = await ops.install(base);
     }
 
