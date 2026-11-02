@@ -134,4 +134,38 @@ describe("reconcile", () => {
       state.close();
     }
   });
+
+  test("--adopt replaces only the hand-installed folders and leaves other addons' folders alone", async () => {
+    const root = await tempDir();
+    const state = openState(join(root, "state", "state.db"));
+    try {
+      const manifestPath = join(root, "wowget.toml");
+      const addons = join(root, "AddOns");
+      await ops.init({ manifestPath, path: addons });
+      const sharedZip = "https://example.test/Shared.zip";
+      const routes: Parameters<typeof fakeFetch>[0] = {
+        [sharedZip]: () => new Response(zipSync({ "Shared/Shared_Forever.toc": text(""), "Shared/core.lua": text("managed") })),
+      };
+      const fake = fakeFetch(routes);
+      const opts = { manifestPath, state, cacheDir: join(root, "cache"), fetch: fake.fetch, env: {} };
+      await ops.add({ ...opts, source: `url:${sharedZip}` });
+      await makeFolder(addons, "Foo", "## Interface: 16001\n## X-GitHub: Foo/Foo\n");
+
+      // The guessed source's release also ships a folder that another managed addon owns.
+      const releases = "https://api.github.com/repos/Foo/Foo/releases?per_page=30";
+      const zipUrl = "https://github.com/Foo/Foo/releases/download/v1/Foo.zip";
+      routes[releases] = () =>
+        json([{ tag_name: "v1", draft: false, prerelease: false, assets: [{ name: "Foo.zip", browser_download_url: zipUrl }] }]);
+      routes[zipUrl] = () =>
+        new Response(zipSync({ "Foo/Foo_Forever.toc": text(""), "Shared/Shared_Forever.toc": text(""), "Shared/core.lua": text("foo's") }));
+
+      const result = await ops.reconcile({ ...opts, adopt: true });
+      expect(result.addons.map((a) => [a.name, a.status])).toEqual([["Foo", "error"]]);
+      expect(await readFile(join(addons, "Shared", "core.lua"), "utf8")).toBe("managed");
+      expect(state.folderOwners("forever", "Shared")).toEqual(["shared"]);
+      expect((await readManifest(manifestPath)).addons.map((a) => a.name)).toEqual(["Shared"]);
+    } finally {
+      state.close();
+    }
+  });
 });

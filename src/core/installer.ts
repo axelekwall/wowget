@@ -28,6 +28,11 @@ export interface InstallOptions {
   onEvent?: OnEvent;
   /** Keep the previous copies of replaced folders in `oldDir` instead of deleting them. */
   keepOld?: boolean;
+  /**
+   * Unmanaged folders this install may replace without `force`, matched case-insensitively. Used
+   * when adopting hand-installed copies; folders owned by another addon still need `force`.
+   */
+  adoptFolders?: string[];
 }
 
 export interface InstallResult {
@@ -256,11 +261,13 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
     );
 
     if (!force) {
+      const adoptable = new Set((opts.adoptFolders ?? []).map((f) => f.toLowerCase()));
       for (const name of folders) {
         const existingName = onDisk.get(name.toLowerCase());
         if (!existingName) continue;
         const owners = state.folderOwners(targetName, name);
         if (owners.includes(addonKey)) continue;
+        if (!owners.length && adoptable.has(name.toLowerCase())) continue;
         const owner = owners[0] ? `belongs to "${owners[0]}"` : "is not managed by wowget";
         throw new WowgetError(
           "conflict",
