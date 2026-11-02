@@ -9,6 +9,46 @@ Status: MVP. See [docs/PLAN.md](docs/PLAN.md) for the roadmap,
 [docs/SPEC-MVP.md](docs/SPEC-MVP.md) for the base behaviour and
 [docs/SPEC-TARGETS-WINDOWS.md](docs/SPEC-TARGETS-WINDOWS.md) for targets.
 
+## Install
+
+Prebuilt binaries for macOS (Apple silicon and Intel) and 64-bit Windows are attached to every [release](https://github.com/axelekwall/wowget/releases).
+
+macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/axelekwall/wowget/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/axelekwall/wowget/main/install.ps1 | iex
+```
+
+The scripts download the binary for your platform, verify its SHA-256 checksum
+and put it in `~/.local/bin` (macOS) or `%LOCALAPPDATA%\wowget\bin`
+(Windows, added to your user `PATH`). Set `WOWGET_VERSION=0.1.0` to pin a
+version and `WOWGET_INSTALL_DIR` to choose the directory.
+
+With the GitHub CLI instead:
+
+```sh
+gh release download --repo axelekwall/wowget --pattern wowget-darwin-arm64 --output ~/.local/bin/wowget
+chmod +x ~/.local/bin/wowget
+```
+
+Or pick the file for your platform on the releases page. A binary downloaded
+with a browser on macOS needs `xattr -d com.apple.quarantine wowget` before it
+runs.
+
+Then:
+
+```sh
+wowget init                       # finds your World of Warcraft installs
+wowget add github:Questie/Questie # installs on every target
+wowget list
+```
+
 ## Usage
 
 ```
@@ -101,6 +141,20 @@ state; the manifest stays a text file you can keep in your dotfiles.
 bun run build       # dist/wowget for this machine
 bun run build:mac   # dist/wowget for Apple silicon
 bun run build:win   # dist/wowget.exe for 64-bit Windows, cross-compiled from any host
+WOWGET_VERSION=0.1.0 bun run build:release   # dist/release/* for every platform, with SHA256SUMS.txt
+```
+
+`wowget --version` prints the version compiled in by `build:release` (`dev`
+for other builds).
+
+### Releasing
+
+Push a tag and the release workflow builds the binaries, publishes a GitHub
+release with generated notes, then downloads and runs each binary on its
+platform. A tag with a `-` suffix (`v0.2.0-beta.1`) becomes a pre-release.
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
 ```
 
 ## License

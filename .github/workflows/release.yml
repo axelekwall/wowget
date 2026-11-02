@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - run: bun run build:release
+        env:
+          WOWGET_VERSION: ${{ github.ref_name }}
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/release/* \
+            --verify-tag --title "$GITHUB_REF_NAME" --generate-notes $prerelease
+
+  # Installs the published binaries with the install scripts on every platform.
+  # The assets are served from a local HTTP server so this also works while
+  # the repository is private.
+  verify:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      WOWGET_DOWNLOAD_BASE: http://127.0.0.1:8765
+      WOWGET_INSTALL_DIR: ${{ runner.temp }}/wowget-bin
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the release assets and serve them locally
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir assets
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir assets
+          ls -l assets
+          cd assets
+          (python3 -m http.server 8765 --bind 127.0.0.1 || python -m http.server 8765 --bind 127.0.0.1) > /dev/null 2>&1 &
+          sleep 3
+          curl -fsS http://127.0.0.1:8765/SHA256SUMS.txt
+      - name: install.sh
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          sh install.sh
+          out="$("$WOWGET_INSTALL_DIR/wowget" --version)"
+          echo "$out"
+          test "$out" = "wowget ${GITHUB_REF_NAME#v}"
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./install.ps1
+          $out = & "$env:WOWGET_INSTALL_DIR\wowget.exe" --version
+          Write-Host $out
+          $expected = "wowget " + ($env:GITHUB_REF_NAME -replace '^v', '')
+          if ($out -ne $expected) { throw "expected '$expected', got '$out'" }
