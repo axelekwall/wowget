@@ -9,13 +9,14 @@ import { fakeFetch, json } from "./helpers/fetch.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
 
 const text = (s: string) => new TextEncoder().encode(s);
-const tempDir = useTempDirs();
 
 let state: State | undefined;
 afterEach(() => {
   state?.close();
   state = undefined;
 });
+// Registered after the hook above so the database is closed before its directory is removed.
+const tempDir = useTempDirs();
 
 function makeZip(files: Record<string, string>): Uint8Array {
   return zipSync(
