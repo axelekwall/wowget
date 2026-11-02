@@ -6,6 +6,7 @@ import { FLAVORS, isFlavor, type Flavor } from "./core/flavor.ts";
 import * as ops from "./core/ops.ts";
 import { manifestPath, stateDbPath } from "./core/paths.ts";
 import { openState, type State } from "./core/state.ts";
+import { VERSION } from "./version.ts";
 
 const HELP = `Usage: wowget <command> [options]
 
@@ -38,6 +39,7 @@ Options:
   --force             install over unmanaged folders and unverifiable flavors
   --verbose           show every progress step and stack traces
   -h, --help          show this help
+  --version           show the version
 `;
 
 type Flag = "path" | "flavor" | "name" | "prerelease" | "pin" | "target" | "game-dir";
@@ -82,6 +84,7 @@ function parse(argv: string[]) {
         force: { type: "boolean" },
         verbose: { type: "boolean" },
         help: { type: "boolean", short: "h" },
+        version: { type: "boolean" },
         path: { type: "string" },
         flavor: { type: "string" },
         name: { type: "string" },
@@ -270,6 +273,10 @@ async function main(argv: string[]): Promise<number> {
     json = values.json ?? false;
     progress = progressRenderer(verbose);
     const [command, ...rest] = positionals;
+    if (values.version) {
+      process.stdout.write(`wowget ${VERSION}\n`);
+      return 0;
+    }
     if (values.help || !command) {
       (command || values.help ? process.stdout : process.stderr).write(HELP);
       return values.help ? 0 : 2;

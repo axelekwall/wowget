@@ -28,6 +28,9 @@ describe("cli", () => {
     const help = await run(["--help"], root);
     expect(help.code).toBe(0);
     expect(help.stdout).toContain("Usage: wowget");
+    const version = await run(["--version"], root);
+    expect(version.code).toBe(0);
+    expect(version.stdout).toBe("wowget dev\n");
     expect((await run(["frobnicate"], root)).code).toBe(2);
     expect((await run(["list", "--manifest="], root)).code).toBe(2);
   });
