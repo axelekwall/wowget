@@ -112,6 +112,7 @@ function progressRenderer(verbose: boolean) {
   return {
     onEvent(event: ProgressEvent) {
       if (event.type === "download:start") {
+        this.flush();
         write(`${event.addon}: downloading ${event.filename}`);
         openLine = true;
       } else if (event.type === "download:done" && openLine) {

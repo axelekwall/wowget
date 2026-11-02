@@ -359,6 +359,16 @@ describe("targets", () => {
       ["B", ["era"]],
     ]);
 
+    // Adding an already-present addon to a new target expands its targets list.
+    const aOnEra = await ops.remove({ ...opts, name: "A", targets: ["forever"] });
+    expect(aOnEra.remainingTargets).toEqual(["era"]);
+    expect(await readdir(forever)).toEqual([]);
+    const expanded = await ops.add({ ...opts, targets: ["forever"], source: `url:${base}/A.zip` });
+    expect(expanded.targets).toBeUndefined();
+    expect(expanded.addons.map((r) => r.target)).toEqual(["forever"]);
+    expect(await readdir(forever)).toEqual(["A"]);
+    expect((await readManifest(manifestPath)).addons.find((e) => e.name === "A")?.targets).toBeUndefined();
+
     expect((await ops.list(opts)).addons.map((r) => [r.name, r.target, r.status])).toEqual([
       ["A", "era", "ok"],
       ["A", "forever", "ok"],

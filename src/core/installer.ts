@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { copyFile, lstat, mkdir, mkdtemp, readFile, rename, rm, stat } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { WowgetError } from "./errors.ts";
 import type { OnEvent } from "./events.ts";
@@ -246,15 +246,20 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
       }
     }
 
+    const onDisk = new Map(
+      (await readdir(targetDir)).filter((n) => !n.startsWith(".")).map((n) => [n.toLowerCase(), n]),
+    );
+
     if (!force) {
       for (const name of folders) {
-        if (!(await exists(join(targetDir, name)))) continue;
+        const existingName = onDisk.get(name.toLowerCase());
+        if (!existingName) continue;
         const owners = state.folderOwners(targetName, name);
         if (owners.includes(addonKey)) continue;
         const owner = owners[0] ? `belongs to "${owners[0]}"` : "is not managed by wowget";
         throw new WowgetError(
           "conflict",
-          `${addon}: folder ${name} already exists in ${targetDir} and ${owner}; use --force to replace it.`,
+          `${addon}: folder ${existingName} already exists in ${targetDir} and ${owner}; use --force to replace it.`,
         );
       }
     }
@@ -272,22 +277,25 @@ export async function install(opts: InstallOptions): Promise<InstallResult> {
     const removedFolders: string[] = [];
     try {
       for (const folder of extracted) {
+        const existingName = onDisk.get(folder.name.toLowerCase());
+        if (existingName !== undefined && (await exists(join(targetDir, existingName)))) {
+          moving = join(targetDir, existingName);
+          await rename(moving, join(oldDir, existingName));
+          movedOld.push(existingName);
+        }
         const dest = join(targetDir, folder.name);
         moving = dest;
-        if (await exists(dest)) {
-          await rename(dest, join(oldDir, folder.name));
-          movedOld.push(folder.name);
-        }
         await rename(folder.path, dest);
         placed.push(folder.name);
       }
       for (const name of stale) {
         // Another addon may have taken the folder over with --force; leave it alone then.
         if (state.folderOwners(targetName, name).some((o) => o !== addonKey)) continue;
-        if (!(await exists(join(targetDir, name)))) continue;
-        moving = join(targetDir, name);
-        await rename(join(targetDir, name), join(oldDir, name));
-        movedOld.push(name);
+        const existingName = onDisk.get(name.toLowerCase()) ?? name;
+        if (!(await exists(join(targetDir, existingName)))) continue;
+        moving = join(targetDir, existingName);
+        await rename(moving, join(oldDir, existingName));
+        movedOld.push(existingName);
         removedFolders.push(name);
       }
       record = state.recordInstall({

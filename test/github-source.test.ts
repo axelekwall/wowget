@@ -72,6 +72,32 @@ describe("github source", () => {
     expect(err.message).toContain("Questie-v11.1.0-classic.zip, Questie-v11.1.0-camelot.zip, Questie-v11.1.0-wrath.zip");
   });
 
+  test("skips a newest release that lacks the wanted flavor and resolves an older release", async () => {
+    const wrath = await resolve({ flavor: "wrath" }).result;
+    expect(wrath.releaseId).toBe("v11.1.0");
+    expect(wrath.filename).toBe("Questie-v11.1.0-wrath.zip");
+    expect(wrath.flavorVerified).toBe(false);
+  });
+
+  test("without release.json, prefers non-nolib zips and matches expanded flavor hints", async () => {
+    const assets = (names: string[]) => ({
+      tag_name: "v1.0.0",
+      draft: false,
+      prerelease: false,
+      assets: names.map((name) => ({ name, browser_download_url: `${DL}/v1.0.0/${name}` })),
+    });
+
+    const singleWithNolib = await resolve({}, { [API]: () => json([assets(["Foo-v1.0.0-nolib.zip", "Foo-v1.0.0.zip"])]) }).result;
+    expect(singleWithNolib.filename).toBe("Foo-v1.0.0.zip");
+
+    const multi = assets(["Foo-vanilla.zip", "Foo-classic.zip", "Foo-retail.zip", "Foo-retail-nolib.zip", "Foo-tbc.zip", "Foo-mop.zip"]);
+    const routes = { [API]: () => json([multi]) };
+    expect((await resolve({ flavor: "classic" }, routes).result).filename).toBe("Foo-vanilla.zip");
+    expect((await resolve({ flavor: "mainline" }, routes).result).filename).toBe("Foo-retail.zip");
+    expect((await resolve({ flavor: "bcc" }, routes).result).filename).toBe("Foo-tbc.zip");
+    expect((await resolve({ flavor: "mists" }, routes).result).filename).toBe("Foo-mop.zip");
+  });
+
   test("version comes from the release.json entry when it has one, else from the tag", async () => {
     expect((await resolve({ prerelease: true }).result).version).toBe("11.3.0-beta.2");
     expect((await resolve({ flavor: "classic" }).result).version).toBe("11.2.0");

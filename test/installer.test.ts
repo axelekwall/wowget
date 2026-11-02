@@ -200,6 +200,16 @@ describe("install", () => {
     expect(result.folders).toEqual(["Foo-Classic"]);
   });
 
+  test("an update that changes folder casing replaces the old folder", async () => {
+    const env = await setup();
+    const opts = { addon: "Details", target: "forever", targetDir: env.addons, flavor: "forever" as const, state: env.state, cacheDir: env.cache };
+    await install({ ...opts, resolved: await localRelease(env, "v1", { "details/details_Forever.toc": "", "details/core.lua": "v1" }) });
+    const result = await install({ ...opts, resolved: await localRelease(env, "v2", { "Details/Details_Forever.toc": "", "Details/core.lua": "v2" }) });
+    expect(result.folders).toEqual(["Details"]);
+    expect(await visible(env.addons)).toEqual(["Details"]);
+    expect(await readFile(join(env.addons, "Details", "core.lua"), "utf8")).toBe("v2");
+  });
+
   test("a forced takeover moves folder ownership to the new addon and marks it displaced for the old one", async () => {
     const env = await setup();
     const opts = { target: "forever", targetDir: env.addons, flavor: "forever" as const, state: env.state, cacheDir: env.cache };

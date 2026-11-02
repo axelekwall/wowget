@@ -2,7 +2,7 @@
 
 A small command-line addon manager for World of Warcraft on macOS and Windows.
 Keeps your addon list in a plain TOML manifest, installs from open sources
-(GitHub releases, WoWInterface, direct URLs) and updates them in place. No CurseForge
+(GitHub releases, direct URLs) and updates them in place. No CurseForge
 client, no ads, no browsing UI.
 
 Status: MVP. See [docs/PLAN.md](docs/PLAN.md) for the roadmap,

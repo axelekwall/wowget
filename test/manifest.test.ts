@@ -359,4 +359,11 @@ describe("setAddonTargets", () => {
     await expect(setAddonTargets(path, "Questie", ["retail"])).rejects.toThrow("left unchanged");
     expect(await readFile(path, "utf8")).toBe(TWO_TARGETS);
   });
+
+  test("skips a targets = line inside a multi-line string value", async () => {
+    const original = `[targets.forever]\npath = "/x"\nflavor = "forever"\n\n[targets.era]\npath = "/y"\nflavor = "classic"\n\n[[addon]]\nname = "A"\nsource = "github:a/a"\npin = """\ntargets = ["forever"]\n"""\n`;
+    const path = await manifestFile(original);
+    const updated = await setAddonTargets(path, "A", ["era"]);
+    expect(updated.addons[0]?.targets).toEqual(["era"]);
+  });
 });

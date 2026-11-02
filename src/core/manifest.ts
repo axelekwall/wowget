@@ -299,6 +299,20 @@ function valueEnd(lines: string[], start: number, stop: number): number {
   return start + 1;
 }
 
+/** Line index of the unquoted key `key` inside `[header + 1, end)`, skipping multi-line values. */
+function findBlockKeyLine(lines: string[], header: number, end: number, key: string): number {
+  const re = new RegExp(`^\\s*${key}\\s*=`);
+  for (let i = header + 1; i < end; ) {
+    if (isBlankOrComment(lines[i]!)) {
+      i++;
+      continue;
+    }
+    if (re.test(lines[i]!)) return i;
+    i = valueEnd(lines, i, end);
+  }
+  return -1;
+}
+
 /**
  * Returns `text` with the `targets =` line of the addon block named `name` replaced, inserted
  * after its `source =` line, or deleted when `targets` is undefined.
@@ -307,19 +321,14 @@ export function setAddonTargetsText(text: string, name: string, targets: string[
   const lines = text.split("\n");
   const header = findAddonHeader(lines, name);
   const end = blockEnd(lines, header);
-  const keyLine = (key: string) => {
-    const re = new RegExp(`^\\s*${key}\\s*=`);
-    for (let i = header + 1; i < end; i++) if (re.test(lines[i]!)) return i;
-    return -1;
-  };
-  const existing = keyLine("targets");
+  const existing = findBlockKeyLine(lines, header, end, "targets");
   if (existing >= 0) {
     const stop = valueEnd(lines, existing, end);
     const replacement = targets === undefined ? [] : [renderTargetsLine(targets)];
     return [...lines.slice(0, existing), ...replacement, ...lines.slice(stop)].join("\n");
   }
   if (targets === undefined) return text;
-  const source = keyLine("source");
+  const source = findBlockKeyLine(lines, header, end, "source");
   const at = source >= 0 ? valueEnd(lines, source, end) : header + 1;
   return [...lines.slice(0, at), renderTargetsLine(targets), ...lines.slice(at)].join("\n");
 }
