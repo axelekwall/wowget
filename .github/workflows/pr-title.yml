@@ -1,0 +1,30 @@
+name: PR title
+
+# Squash merges use the PR title as the commit header, or the commit's own header when the
+# PR has a single commit, and release-on-merge picks the version from those headers.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - env:
+          TITLE: ${{ github.event.pull_request.title }}
+          PR: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bun scripts/release-version.ts --lint "$TITLE"
+          commits="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json commits --jq '.commits | length')"
+          if [ "$commits" = 1 ]; then
+            bun scripts/release-version.ts --lint "$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json commits --jq '.commits[0].messageHeadline')"
+          fi
