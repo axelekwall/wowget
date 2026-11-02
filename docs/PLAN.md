@@ -60,8 +60,8 @@ name = "WeakAuras"
 source = "github:WeakAuras/WeakAuras2"
 
 [[addon]]
-name = "Leatrix Plus"
-source = "wowi:26270"
+name = "TomTom"
+source = "wowi:7032"
 
 [[addon]]
 name = "Some CF-only addon"
