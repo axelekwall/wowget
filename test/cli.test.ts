@@ -13,6 +13,7 @@ async function run(args: string[], root: string) {
     WOWGET_CACHE_DIR: join(root, "cache"),
     WOWGET_MANIFEST: undefined,
     GITHUB_TOKEN: undefined,
+    WOWGET_REGISTRY_URL: "off",
   };
   const proc = Bun.spawn([process.execPath, CLI, ...args], { env, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([

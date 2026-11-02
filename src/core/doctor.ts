@@ -157,7 +157,8 @@ export async function findStaleCacheDirs(cacheDir: string, state: State): Promis
   }
   const stale: string[] = [];
   for (const addonEntry of addonEntries) {
-    if (!addonEntry.isDirectory()) continue;
+    // Dot entries are not addon caches (the search catalogue lives in ".catalog").
+    if (!addonEntry.isDirectory() || addonEntry.name.startsWith(".")) continue;
     const addonDir = join(cacheDir, addonEntry.name);
     const releaseEntries = await readdir(addonDir, { withFileTypes: true }).catch(() => []);
     for (const rel of releaseEntries) {

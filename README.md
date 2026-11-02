@@ -53,7 +53,8 @@ Then:
 
 ```sh
 wowget init                       # finds your World of Warcraft installs
-wowget add github:Questie/Questie # installs on every target
+wowget search questie             # find an addon
+wowget add questie                # installs on every target
 wowget list
 ```
 
@@ -65,6 +66,8 @@ wowget init --path DIR --flavor classic --name era   # or a single AddOns direct
 wowget target list                            # targets and whether their AddOns directories exist
 wowget target add retail --path DIR --flavor mainline
 wowget target remove retail                   # uninstall everything on it and drop it
+wowget search map [--github]                  # search the addon registry and WoWInterface (and GitHub)
+wowget add questie                            # install a registry addon by name
 wowget add github:Questie/Questie             # install on every target and add to the manifest
 wowget add github:Questie/Questie -t era      # install on some targets only
 wowget add wowi:7032                          # install from WoWInterface by addon ID (TomTom)
@@ -82,6 +85,28 @@ wowget self-update [--check]                  # upgrade wowget itself to the lat
 wowget remove Questie -t era                  # remove from one target, keep the others
 wowget remove Questie
 ```
+
+### Search
+
+`search` looks in three places and prints source strings that `add` accepts:
+
+- the **addon registry**, a checked list of over 100 well-known addons in
+  [registry/addons.toml](registry/addons.toml). wowget fetches the current
+  file from this repository and falls back to the copy built into the binary
+  when offline.
+- the **WoWInterface catalogue**, downloaded once a day (about 6 MB) to the
+  cache directory; `--refresh` downloads it again.
+- **GitHub** repositories tagged `wow-addon`, only with `--github`, since
+  unauthenticated GitHub search allows 10 queries a minute.
+
+Results are filtered on the flavors of your targets (`-t` narrows it,
+`--flavor` replaces it, `--all-flavors` turns it off). Registry results list
+the flavors they are known to install on; WoWInterface results list what
+their authors claim and mark Forever `?`, since WoWInterface has no marker for
+it yet; GitHub results are unchecked. Registry addons can be added by name or
+alias, `wowget add questie`, and `reconcile` uses the registry's folder lists
+to recognise addons installed by hand. Set `WOWGET_REGISTRY_URL` to use
+another registry file, or `off` for the built-in copy only.
 
 ### Targets
 
@@ -124,7 +149,8 @@ installs to the `forever` target.
 
 ### Options
 
-`add` also takes `--prerelease` and `--pin <tag>`. Global flags: `--manifest
+`add` also takes `--prerelease` and `--pin <tag>`. `search` takes
+`--limit <n>` (default 20). Global flags: `--manifest
 <path>`, `--json`, `--force` (replace unmanaged folders, skip an inconclusive
 flavor check), `--verbose`. Set `GITHUB_TOKEN` to raise the GitHub API rate
 limit.

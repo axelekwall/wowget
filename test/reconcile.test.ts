@@ -85,7 +85,12 @@ describe("reconcile", () => {
       await makeFolder(addons, "Questie", "## Interface: 16001\n## Version: 11.1.0\n## X-GitHub: Questie/Questie\n");
       await makeFolder(addons, "Mystery", "## Interface: 16001\n## Version: 0.1\n");
 
-      const report = await ops.reconcile({ manifestPath, state, cacheDir: join(root, "cache"), env: {} });
+      const report = await ops.reconcile({
+        manifestPath,
+        state,
+        cacheDir: join(root, "cache"),
+        env: { WOWGET_REGISTRY_URL: "off" },
+      });
       expect(report.addons.map((a) => [a.name, a.status, a.source])).toEqual([
         ["Mystery", "unmatched", null],
         ["Questie", "unmanaged", "github:Questie/Questie"],

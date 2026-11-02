@@ -1,7 +1,11 @@
+import snapshotText from "../../registry/addons.toml" with { type: "text" };
 import { WowgetError } from "./errors.ts";
 import { FLAVORS, isFlavor, type Flavor } from "./flavor.ts";
 import { addonNameProblem } from "./manifest.ts";
 import { parseSource } from "./sources/parse.ts";
+import type { Http } from "./sources/types.ts";
+
+export const REGISTRY_URL = "https://raw.githubusercontent.com/axelekwall/wowget/main/registry/addons.toml";
 
 /** One curated addon in `registry/addons.toml`. */
 export interface RegistryEntry {
@@ -138,4 +142,32 @@ export function parseRegistry(text: string, options: { strict?: boolean } = {}):
     entries.push(parsed);
   });
   return { entries, problems };
+}
+
+export interface LoadedRegistry {
+  entries: RegistryEntry[];
+  /** Set when the fetch failed and the copy built into this binary was used; says why. */
+  stale?: string;
+}
+
+/**
+ * The registry from WOWGET_REGISTRY_URL (default REGISTRY_URL) through the ETag cache, or the
+ * copy built into the binary when that fails or when WOWGET_REGISTRY_URL is "off".
+ */
+export async function loadRegistry(http: Http, env: Record<string, string | undefined> = process.env): Promise<LoadedRegistry> {
+  const url = env.WOWGET_REGISTRY_URL || REGISTRY_URL;
+  if (url === "off") return { entries: parseRegistry(snapshotText).entries };
+  try {
+    return { entries: parseRegistry(new TextDecoder().decode(await http.getBytes(url))).entries };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    return { entries: parseRegistry(snapshotText).entries, stale: `Using the built-in addon registry: ${reason}` };
+  }
+}
+
+/** The entry whose name or alias equals `name` after normalisation. */
+export function findRegistryEntry(entries: RegistryEntry[], name: string): RegistryEntry | undefined {
+  const key = normaliseName(name);
+  if (!key) return undefined;
+  return entries.find((e) => normaliseName(e.name) === key || e.aliases.some((a) => normaliseName(a) === key));
 }
