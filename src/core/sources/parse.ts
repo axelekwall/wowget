@@ -13,7 +13,7 @@ export function parseSource(raw: string): SourceSpec {
   const rest = colon === -1 ? "" : raw.slice(colon + 1);
 
   if (kind === "github") {
-    const match = /^([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)$/.exec(rest);
+    const match = /^([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9._-]+)$/.exec(rest);
     if (!match || match[2] === "." || match[2] === "..") {
       throw new WowgetError("source", `Invalid GitHub source "${raw}"; expected "github:owner/repo".`);
     }
