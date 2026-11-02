@@ -123,12 +123,14 @@ export async function fetchToCache(opts: {
   const zipPath = cachedZipPath(opts.cacheDir, addon, resolved.releaseId, resolved.filename);
   const dir = dirname(zipPath);
   const expected = opts.sha256?.toLowerCase();
+  const expectedMd5 = resolved.md5?.toLowerCase();
+  const md5Matches = (bytes: Uint8Array) => !expectedMd5 || createHash("md5").update(bytes).digest("hex") === expectedMd5;
 
   if (await exists(zipPath)) {
     const bytes = new Uint8Array(await readFile(zipPath));
     const hash = sha256Hex(bytes);
     const readable = isReadableZip(bytes);
-    if ((!expected || hash === expected) && readable) {
+    if ((!expected || hash === expected) && md5Matches(bytes) && readable) {
       onEvent?.({ type: "download:done", addon, bytes: bytes.length, sha256: hash, cached: true });
       return { zipPath, bytes, sha256: hash };
     }
@@ -151,6 +153,9 @@ export async function fetchToCache(opts: {
     const hash = sha256Hex(bytes);
     if (expected && hash !== expected) {
       throw new WowgetError("network", `Checksum mismatch for ${resolved.filename}: expected ${expected}, got ${hash}.`);
+    }
+    if (!md5Matches(bytes)) {
+      throw new WowgetError("network", `Checksum mismatch for ${resolved.filename}: the source lists MD5 ${expectedMd5}.`);
     }
     readZip(bytes);
     await rename(part, zipPath);

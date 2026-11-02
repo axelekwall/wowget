@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { zipSync } from "fflate";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { HttpClient } from "../src/core/http.ts";
 import { readManifest } from "../src/core/manifest.ts";
@@ -109,6 +110,34 @@ describe("wowi source", () => {
       expect(await readFile(join(addons, "Leatrix_Plus", "core.lua"), "utf8")).toBe("ltp");
       // The metadata endpoint is fetched only once during add.
       expect(fake.requests.filter((r) => r.url === API)).toHaveLength(1);
+    } finally {
+      state.close();
+    }
+  });
+
+  test("a download must match the MD5 WoWInterface lists", async () => {
+    const root = await tempDir();
+    const state = openState(join(root, "state", "state.db"));
+    try {
+      const manifestPath = join(root, "wowget.toml");
+      const addons = join(root, "AddOns");
+      await ops.init({ manifestPath, path: addons });
+      const text = (s: string) => new TextEncoder().encode(s);
+      const zip = zipSync({ "Leatrix_Plus/Leatrix_Plus_Forever.toc": text(""), "Leatrix_Plus/core.lua": text("ltp") });
+      const md5 = createHash("md5").update(zip).digest("hex");
+      const addWith = (UIMD5: string) => {
+        const fake = fakeFetch({ [API]: () => json([{ ...sampleDetails[0], UIMD5 }]), [DL]: () => new Response(zip) });
+        return ops.add({ manifestPath, state, cacheDir: join(root, "cache"), fetch: fake.fetch, env: {}, source: "wowi:26270" });
+      };
+
+      const wrong = await addWith("0".repeat(32)).catch((e) => e);
+      expect(wrong.code).toBe("network");
+      expect(wrong.message).toContain("MD5");
+      expect(await readdir(addons)).toEqual([]);
+      expect((await readManifest(manifestPath)).addons).toEqual([]);
+
+      expect((await addWith(md5)).name).toBe("Leatrix_Plus");
+      expect(await readFile(join(addons, "Leatrix_Plus", "core.lua"), "utf8")).toBe("ltp");
     } finally {
       state.close();
     }

@@ -19,6 +19,8 @@ export interface Resolved {
   defaultName?: string;
   /** Something the user should know about this resolution, such as newer releases being skipped. */
   note?: string;
+  /** MD5 of the file as published by the source; a download or cached copy must match it. */
+  md5?: string;
 }
 
 export interface HttpRequestOptions {

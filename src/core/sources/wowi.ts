@@ -75,6 +75,7 @@ export function wowiSource(spec: { raw: string; id: string }): Source {
         publishedAt,
         flavorVerified: false,
         defaultName: addonNameProblem(fileName) ? displayName : fileName,
+        ...(typeof entry.UIMD5 === "string" && /^[0-9a-f]{32}$/i.test(entry.UIMD5) ? { md5: entry.UIMD5 } : {}),
       };
     },
   };
