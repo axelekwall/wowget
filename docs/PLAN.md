@@ -177,7 +177,9 @@ Exit: your Forever addon set is installed and `wowget update` keeps it current.
 
 ### Milestone 4: Nice to have
 
-- `search` across sources (the part you said you do not need yet).
+- `search` across sources (the part you said you do not need yet). Specified
+  in [SPEC-SEARCH.md](SPEC-SEARCH.md): curated registry, WoWInterface
+  catalogue, optional GitHub topic search.
 - `doctor`, interface-number drift warnings after patches.
 - Run `outdated` as a launchd job and notify.
 
