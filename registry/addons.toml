@@ -1,0 +1,692 @@
+# Curated addons for `wowget search` and `wowget add <name>`. See docs/SPEC-SEARCH.md.
+#
+# flavors and folders must match what the source installs today; `bun run registry:check`
+# verifies every entry and prints the values it found when they differ. Order is the
+# ranking among registry results, roughly by popularity.
+
+[[addon]]
+name = "Questie"
+source = "github:Questie/Questie"
+flavors = ["forever", "classic", "bcc", "wrath", "mists"]
+folders = ["Questie", "QuestieDB"]
+
+[[addon]]
+name = "WeakAuras"
+source = "github:WeakAuras/WeakAuras2"
+flavors = ["classic", "bcc", "wrath", "cata", "mists"]
+folders = ["WeakAuras", "WeakAurasArchive", "WeakAurasModelPaths", "WeakAurasOptions", "WeakAurasTemplates"]
+
+[[addon]]
+name = "DBM"
+aliases = ["deadly boss mods"]
+source = "github:DeadlyBossMods/DeadlyBossMods"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["DBM-Brawlers", "DBM-Core", "DBM-GUI", "DBM-Lairs-Midnight", "DBM-Midnight", "DBM-Raids-Midnight", "DBM-StatusBarTimers", "DBM-VPVEM"]
+
+[[addon]]
+name = "BigWigs"
+source = "github:BigWigsMods/BigWigs"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["BigWigs", "BigWigs_Core", "BigWigs_MarchOnQuelDanas", "BigWigs_MidnightLairs", "BigWigs_MidnightWorld", "BigWigs_Options", "BigWigs_Plugins", "BigWigs_Sporefall", "BigWigs_TheDreamrift", "BigWigs_TheUnbindingOfKithix", "BigWigs_TheVenomousAbyss", "BigWigs_TheVoidspire"]
+
+[[addon]]
+name = "LittleWigs"
+source = "github:BigWigsMods/LittleWigs"
+flavors = ["mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["LittleWigs", "LittleWigs_BattleForAzeroth", "LittleWigs_BurningCrusade", "LittleWigs_Cataclysm", "LittleWigs_Classic", "LittleWigs_Dragonflight", "LittleWigs_Legion", "LittleWigs_MistsOfPandaria", "LittleWigs_Shadowlands", "LittleWigs_TheWarWithin", "LittleWigs_WarlordsOfDraenor", "LittleWigs_WrathOfTheLichKing"]
+
+[[addon]]
+name = "Plater"
+aliases = ["plater nameplates"]
+source = "github:Tercioo/Plater-Nameplates"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["Plater"]
+
+[[addon]]
+name = "Bartender4"
+source = "github:Nevcairiel/Bartender4"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["Bartender4"]
+
+[[addon]]
+name = "TomTom"
+source = "wowi:7032"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["TomTom"]
+
+[[addon]]
+name = "Atlas"
+source = "wowi:3896"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["Atlas"]
+
+[[addon]]
+name = "Pawn"
+source = "github:VgerMods/Pawn"
+flavors = ["forever", "classic", "wrath", "cata"]
+folders = ["Pawn"]
+
+[[addon]]
+name = "Cell"
+source = "github:enderneko/Cell"
+flavors = ["mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["Cell"]
+
+[[addon]]
+name = "HealBot"
+source = "wowi:6096"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["HealBot", "HealBot_ExtraSkins", "HealBot_Tips"]
+
+[[addon]]
+name = "VuhDo"
+source = "wowi:14239"
+flavors = ["forever", "mainline"]
+folders = ["VuhDo", "VuhDoOptions"]
+
+[[addon]]
+name = "Grid2"
+source = "github:michaelnpsp/Grid2"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["Grid2", "Grid2LDB", "Grid2Options", "Grid2RaidDebuffs", "Grid2RaidDebuffsOptions"]
+
+[[addon]]
+name = "SilverDragon"
+source = "github:kemayo/wow-silverdragon"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "mists"]
+folders = ["SilverDragon", "SilverDragon_History", "SilverDragon_Overlay", "SilverDragon_RangeExtender"]
+
+[[addon]]
+name = "Titan Panel"
+source = "wowi:8092"
+flavors = ["classic"]
+folders = ["Titan", "TitanAlts", "TitanAmmo", "TitanBag", "TitanClassic", "TitanClock", "TitanGold", "TitanLocation", "TitanLootType", "TitanPerformance", "TitanPost", "TitanRegen", "TitanRepair", "TitanUI", "TitanVolume", "TitanXP"]
+
+[[addon]]
+name = "BugSack"
+source = "github:funkydude/BugSack"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["BugSack"]
+
+[[addon]]
+name = "BlizzMove"
+source = "github:Kiatra/BlizzMove"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["BlizzMove", "BlizzMove_Debug"]
+
+[[addon]]
+name = "GTFO"
+source = "wowi:17996"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["GTFO"]
+
+[[addon]]
+name = "Dominos"
+source = "github:tullamods/Dominos"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["Dominos", "Dominos_Cast", "Dominos_Config", "Dominos_Progress", "Dominos_Roll", "Masque_Dominos"]
+
+[[addon]]
+name = "OmniCC"
+source = "github:tullamods/OmniCC"
+flavors = ["mainline", "classic", "bcc", "cata", "mists"]
+folders = ["OmniCC", "OmniCC_Config"]
+
+[[addon]]
+name = "tullaRange"
+source = "github:tullamods/tullaRange"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["tullaRange", "tullaRange_Config"]
+
+[[addon]]
+name = "AdiBags"
+source = "github:AdiAddons/AdiBags"
+flavors = ["mainline", "classic", "bcc", "wrath"]
+folders = ["AdiBags", "AdiBags_Config"]
+
+[[addon]]
+name = "ArkInventory"
+source = "wowi:6488"
+flavors = ["mainline"]
+folders = ["ArkInventory", "ArkInventoryConfig", "ArkInventoryRules", "ArkInventoryRules_Example", "ArkInventorySearch"]
+
+[[addon]]
+name = "BagSync"
+source = "wowi:15351"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["BagSync"]
+
+[[addon]]
+name = "Threat Plates"
+source = "wowi:15749"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["TidyPlates_ThreatPlates"]
+
+[[addon]]
+name = "HandyNotes"
+source = "github:Nevcairiel/HandyNotes"
+flavors = ["mainline", "classic", "bcc", "cata", "mists"]
+folders = ["HandyNotes"]
+
+[[addon]]
+name = "SexyMap"
+source = "github:funkydude/SexyMap"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["SexyMap"]
+
+[[addon]]
+name = "BasicMinimap"
+source = "github:funkydude/BasicMinimap"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["BasicMinimap", "BasicMinimap_Options"]
+
+[[addon]]
+name = "BasicChatMods"
+source = "github:funkydude/BasicChatMods"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["BasicChatMods"]
+
+[[addon]]
+name = "BadBoy"
+source = "github:funkydude/BadBoy"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["BadBoy"]
+
+[[addon]]
+name = "MuteSoundFile"
+source = "github:funkydude/MuteSoundFile"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["MuteSoundFile", "MuteSoundFile_Options"]
+
+[[addon]]
+name = "WIM"
+aliases = ["wow instant messenger"]
+source = "wowi:5342"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "mists"]
+folders = ["WIM"]
+
+[[addon]]
+name = "Prat"
+aliases = ["prat 3.0"]
+source = "wowi:10783"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "mists"]
+folders = ["Prat-3.0"]
+
+[[addon]]
+name = "Masque"
+source = "github:SFX-WoW/Masque"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["Masque"]
+
+[[addon]]
+name = "Clique"
+source = "wowi:5108"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["Clique"]
+
+[[addon]]
+name = "Mapster"
+source = "github:Nevcairiel/Mapster"
+flavors = ["forever", "mainline"]
+folders = ["Mapster"]
+
+[[addon]]
+name = "Quartz"
+source = "github:Nevcairiel/Quartz"
+flavors = ["mainline", "classic", "bcc", "cata", "mists"]
+folders = ["Quartz"]
+
+[[addon]]
+name = "Shadowed Unit Frames"
+source = "github:Nevcairiel/ShadowedUnitFrames"
+flavors = ["mainline", "classic", "bcc", "mists"]
+folders = ["ShadowedUF_Options", "ShadowedUnitFrames"]
+
+[[addon]]
+name = "GatherMate2"
+source = "github:Nevcairiel/GatherMate2"
+flavors = ["mainline", "classic", "bcc", "mists"]
+folders = ["GatherMate2", "GatherMate2Storage_Dragonflight", "GatherMate2Storage_Midnight", "GatherMate2Storage_TheWarWithin"]
+
+[[addon]]
+name = "TellMeWhen"
+source = "github:ascott18/TellMeWhen"
+flavors = ["forever", "mainline", "classic", "bcc", "cata", "mists"]
+folders = ["TellMeWhen", "TellMeWhen_Options"]
+
+[[addon]]
+name = "SavedInstances"
+source = "github:SavedInstances/SavedInstances"
+flavors = ["mainline"]
+folders = ["SavedInstances"]
+
+[[addon]]
+name = "Premade Groups Filter"
+source = "github:0xbs/premade-groups-filter"
+flavors = ["mainline", "mists"]
+folders = ["PremadeGroupsFilter"]
+
+[[addon]]
+name = "Raider.IO"
+source = "github:RaiderIO/raiderio-addon"
+flavors = ["mainline"]
+folders = ["RaiderIO", "RaiderIO_DB_CN_F", "RaiderIO_DB_CN_M", "RaiderIO_DB_CN_R", "RaiderIO_DB_EU_F", "RaiderIO_DB_EU_M", "RaiderIO_DB_EU_R", "RaiderIO_DB_KR_F", "RaiderIO_DB_KR_M", "RaiderIO_DB_KR_R", "RaiderIO_DB_TW_F", "RaiderIO_DB_TW_M", "RaiderIO_DB_TW_R", "RaiderIO_DB_US_F", "RaiderIO_DB_US_M", "RaiderIO_DB_US_R"]
+
+[[addon]]
+name = "ClassicCastbars"
+source = "github:wardz/ClassicCastbars"
+flavors = ["mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["ClassicCastbars", "ClassicCastbars_Options"]
+
+[[addon]]
+name = "RatingBuster"
+source = "github:raethkcj/RatingBuster"
+flavors = ["forever", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["RatingBuster", "StatLogic"]
+
+[[addon]]
+name = "AdvancedInterfaceOptions"
+source = "github:Stanzilla/AdvancedInterfaceOptions"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["AdvancedInterfaceOptions"]
+
+[[addon]]
+name = "Capping"
+source = "github:BigWigsMods/Capping"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["Capping", "Capping_Options"]
+
+[[addon]]
+name = "oRA3"
+source = "github:BigWigsMods/oRA3"
+flavors = ["mainline"]
+folders = ["oRA3"]
+
+[[addon]]
+name = "Clicked"
+source = "github:Snakybo/Clicked"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["Clicked", "ClickedMedia"]
+
+[[addon]]
+name = "idTip"
+source = "github:silverwind/idTip"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["idTip"]
+
+[[addon]]
+name = "BetterBlizzPlates"
+source = "github:Bodify/BetterBlizzPlates"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["BetterBlizzPlates"]
+
+[[addon]]
+name = "BetterBlizzFrames"
+source = "github:Bodify/BetterBlizzFrames"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["BetterBlizzFrames"]
+
+[[addon]]
+name = "SUI"
+source = "github:Syiana/SUI"
+flavors = ["mainline"]
+folders = ["SUI"]
+
+[[addon]]
+name = "Azeroth Pilot Reloaded"
+aliases = ["apr"]
+source = "wowi:26457"
+flavors = ["forever", "mainline"]
+folders = ["APR"]
+
+[[addon]]
+name = "SpartanUI"
+source = "github:spartanui-wow/SpartanUI"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["SpartanUI"]
+
+[[addon]]
+name = "ls_UI"
+source = "wowi:22662"
+flavors = ["mainline"]
+folders = ["ls_UI", "ls_UI_Options"]
+
+[[addon]]
+name = "Macro Toolkit"
+source = "github:NumyAddon/MacroToolkit"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["MacroToolkit", "MacroToolkitIcons"]
+
+[[addon]]
+name = "ShestakUI"
+source = "github:Wetxius/ShestakUI"
+flavors = ["mainline"]
+folders = ["ShestakUI", "ShestakUI_Config"]
+
+[[addon]]
+name = "IceHUD"
+source = "github:parnic/ice-hud"
+flavors = ["mainline", "classic", "bcc", "mists"]
+folders = ["IceHUD", "IceHUD_Options"]
+
+[[addon]]
+name = "RCLootCouncil"
+source = "github:evil-morfar/RCLootCouncil2"
+flavors = ["mainline"]
+folders = ["RCLootCouncil"]
+
+[[addon]]
+name = "Molinari"
+source = "github:p3lim-wow/Molinari"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["Molinari"]
+
+[[addon]]
+name = "ExtraQuestButton"
+source = "github:p3lim-wow/ExtraQuestButton"
+flavors = ["forever", "mainline"]
+folders = ["ExtraQuestButton"]
+
+[[addon]]
+name = "QuickQuest"
+source = "github:p3lim-wow/QuickQuest"
+flavors = ["mainline"]
+folders = ["QuickQuest"]
+
+[[addon]]
+name = "Mount Journal Enhanced"
+source = "github:exochron/MountJournalEnhanced"
+flavors = ["mainline", "mists"]
+folders = ["MountJournalEnhanced"]
+
+[[addon]]
+name = "XLoot"
+source = "github:Xuerian/XLoot"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["XLoot", "XLoot_Frame", "XLoot_Group", "XLoot_Master", "XLoot_Monitor", "XLoot_Options", "XLoot_Toast"]
+
+[[addon]]
+name = "Dejunk"
+source = "github:moody/Dejunk"
+flavors = ["forever", "mainline", "classic", "bcc", "cata", "mists"]
+folders = ["Dejunk"]
+
+[[addon]]
+name = "Krowi Achievement Filter"
+source = "github:TheKrowi/Krowi_AchievementFilter"
+flavors = ["mainline", "wrath", "mists"]
+folders = ["Krowi_AchievementFilter"]
+
+[[addon]]
+name = "Instance Achievement Tracker"
+source = "github:Dragnogd/Instance-Achievement-Tracker"
+flavors = ["mainline", "mists"]
+folders = ["InstanceAchievementTracker"]
+
+[[addon]]
+name = "Broker_Everything"
+source = "github:HizurosWoWAddOns/Broker_Everything"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["Broker_Everything"]
+
+[[addon]]
+name = "FarmHud"
+source = "github:HizurosWoWAddOns/FarmHud"
+flavors = ["mainline", "classic", "bcc", "cata", "mists"]
+folders = ["FarmHud", "FarmHud_QuestArrow"]
+
+[[addon]]
+name = "Extended Character Stats"
+source = "github:BreakBB/ExtendedCharacterStats"
+flavors = ["classic", "bcc", "wrath"]
+folders = ["ExtendedCharacterStats"]
+
+[[addon]]
+name = "Keystone Polaris"
+source = "github:ZelionGG/KeystonePolaris"
+flavors = ["mainline"]
+folders = ["KeystonePolaris"]
+
+[[addon]]
+name = "XIV_Databar Continued"
+source = "github:ZelionGG/XIV_Databar-Continued"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["XIV_Databar_Continued"]
+
+[[addon]]
+name = "Postal"
+source = "github:paradosi/postal-community-edition"
+flavors = ["mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["Postal"]
+
+[[addon]]
+name = "NPCScan"
+source = "github:Torhal/NPCScan"
+flavors = ["mainline"]
+folders = ["NPCScan"]
+
+[[addon]]
+name = "Caerdon Wardrobe"
+source = "github:Caerdon/CaerdonWardrobe"
+flavors = ["mainline"]
+folders = ["CaerdonWardrobe"]
+
+[[addon]]
+name = "KeystoneLoot"
+source = "wowi:26597"
+flavors = ["mainline"]
+folders = ["KeystoneLoot"]
+
+[[addon]]
+name = "AutoGear"
+source = "github:BujuArena/AutoGear"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["AutoGear"]
+
+[[addon]]
+name = "Simulationcraft"
+aliases = ["simc"]
+source = "github:simulationcraft/simc-addon"
+flavors = ["forever", "mainline"]
+folders = ["Simulationcraft"]
+
+[[addon]]
+name = "Hekili"
+source = "github:Hekili/hekili"
+flavors = ["mainline"]
+folders = ["Hekili"]
+
+[[addon]]
+name = "MaxDps"
+source = "wowi:24637"
+flavors = ["mainline"]
+folders = ["MaxDps"]
+
+[[addon]]
+name = "Rarity"
+source = "github:WowRarity/Rarity"
+flavors = ["mainline", "classic", "cata", "mists"]
+folders = ["Rarity", "Rarity_Options"]
+
+[[addon]]
+name = "AllTheThings"
+aliases = ["att"]
+source = "github:ATTWoWAddon/AllTheThings"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["AllTheThings"]
+
+[[addon]]
+name = "RXPGuides"
+aliases = ["restedxp"]
+source = "github:RestedXP/RXPGuides"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["RXPGuides"]
+
+[[addon]]
+name = "MoveAny"
+source = "github:d4kir92/MoveAny"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["MoveAny"]
+
+[[addon]]
+name = "OmniBar"
+source = "github:jordonwow/omnibar"
+flavors = ["mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["OmniBar"]
+
+[[addon]]
+name = "CraftSim"
+source = "github:derfloh205/CraftSim"
+flavors = ["mainline"]
+folders = ["CraftSim"]
+
+[[addon]]
+name = "Simple Item Levels"
+source = "github:kemayo/wow-simpleitemlevel"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "mists"]
+folders = ["SimpleItemLevel"]
+
+[[addon]]
+name = "Total RP 3"
+aliases = ["trp3"]
+source = "github:Total-RP/Total-RP-3"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["totalRP3", "totalRP3_Data"]
+
+[[addon]]
+name = "Altoholic"
+source = "wowi:8533"
+flavors = ["mainline"]
+folders = ["AddonFactory", "Altoholic", "Altoholic_Achievements", "Altoholic_Agenda", "Altoholic_Characters", "Altoholic_Grids", "Altoholic_Guild", "Altoholic_Options", "Altoholic_Search", "Altoholic_Summary", "DataStore", "DataStore_Achievements", "DataStore_Agenda", "DataStore_Auctions", "DataStore_Characters", "DataStore_Containers", "DataStore_Crafts", "DataStore_Currencies", "DataStore_Garrisons", "DataStore_Inventory", "DataStore_Mails", "DataStore_Pets", "DataStore_Quests", "DataStore_Reputations", "DataStore_Spells", "DataStore_Stats", "DataStore_Talents"]
+
+[[addon]]
+name = "GSE"
+source = "github:TimothyLuke/GSE-Advanced-Macro-Compiler"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["GSE", "GSE_Actionbar", "GSE_GUI", "GSE_LDB", "GSE_Options", "GSE_Utils"]
+
+[[addon]]
+name = "Enhance QoL"
+source = "wowi:26888"
+flavors = ["mainline"]
+folders = ["EnhanceQoL", "EnhanceQoLBags", "EnhanceQoLChatSocial", "EnhanceQoLClassBuffReminder", "EnhanceQoLCooldownPanels", "EnhanceQoLCooldownPulse", "EnhanceQoLDamageMeter", "EnhanceQoLDungeonRaid", "EnhanceQoLMover", "EnhanceQoLQuickActions", "EnhanceQoLResourceBars", "EnhanceQoLSharedMedia", "EnhanceQoLSkinner", "EnhanceQoLSound", "EnhanceQoLTeleportCompendium", "EnhanceQoLTooltip", "EnhanceQoLUnitFrames", "EnhanceQoLVendor"]
+
+[[addon]]
+name = "What's Training"
+source = "wowi:25031"
+flavors = ["forever", "classic", "bcc"]
+folders = ["WhatsTraining"]
+
+[[addon]]
+name = "Vendor Price"
+source = "wowi:24922"
+flavors = ["classic", "bcc", "mists"]
+folders = ["VendorPrice"]
+
+[[addon]]
+name = "Better Vendor Price"
+source = "github:mooreatv/BetterVendorPrice"
+flavors = ["forever", "mainline", "classic", "wrath", "cata", "mists"]
+folders = ["BetterVendorPrice"]
+
+[[addon]]
+name = "BtWQuests"
+source = "wowi:24680"
+flavors = ["mainline"]
+folders = ["BtWQuests", "BtWQuestsMidnight"]
+
+[[addon]]
+name = "TacoTip"
+source = "wowi:26368"
+flavors = ["classic"]
+folders = ["TacoTip"]
+
+[[addon]]
+name = "Carbonite"
+source = "github:IrcDirk/Carbonite-All-in-One-Retail-Classic"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["Carbonite", "Carbonite.Gathermate2_Data", "Carbonite.Info", "Carbonite.Notes", "Carbonite.Quests", "Carbonite.Warehouse"]
+
+[[addon]]
+name = "AtlasLootClassic"
+source = "github:Hoizame/AtlasLootClassic"
+flavors = ["classic", "bcc", "wrath"]
+folders = ["AtlasLootClassic", "AtlasLootClassic_Collections", "AtlasLootClassic_Crafting", "AtlasLootClassic_Data", "AtlasLootClassic_DungeonsAndRaids", "AtlasLootClassic_Factions", "AtlasLootClassic_Options", "AtlasLootClassic_PvP"]
+
+[[addon]]
+name = "Can I Mog It"
+source = "wowi:24015"
+flavors = ["mainline"]
+folders = ["CanIMogIt"]
+
+[[addon]]
+name = "Aurora"
+source = "wowi:18589"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["Aurora"]
+
+[[addon]]
+name = "Immersion"
+source = "wowi:24714"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "mists"]
+folders = ["Immersion"]
+
+[[addon]]
+name = "Skillet"
+source = "wowi:7571"
+flavors = ["forever", "mainline"]
+folders = ["Skillet"]
+
+[[addon]]
+name = "Deathlog"
+source = "wowi:27170"
+flavors = ["classic", "bcc"]
+folders = ["Deathlog", "DeathlogData", "DeathNotificationLib", "DeathNotificationLibData", "ProfanityLib", "ProfanityLibData"]
+
+[[addon]]
+name = "Rematch"
+source = "wowi:22190"
+flavors = ["mainline"]
+folders = ["Rematch"]
+
+[[addon]]
+name = "NameplateAuras"
+source = "wowi:27231"
+flavors = ["forever", "mainline"]
+folders = ["NameplateAuras"]
+
+[[addon]]
+name = "NugRunning"
+source = "wowi:10440"
+flavors = ["forever", "mainline"]
+folders = ["NugRunning", "NugRunningOptions"]
+
+[[addon]]
+name = "NugComboBar"
+source = "wowi:6308"
+flavors = ["forever", "mainline"]
+folders = ["NugComboBar", "NugComboBarGUI"]
+
+[[addon]]
+name = "ThreatClassic2"
+source = "wowi:25966"
+flavors = ["mainline"]
+folders = ["ThreatClassic2"]
+
+[[addon]]
+name = "Candy Buckets"
+source = "wowi:20450"
+flavors = ["mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["CandyBuckets"]
+
+[[addon]]
+name = "ActionbarPlus"
+source = "wowi:26522"
+flavors = ["mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["ActionbarPlus", "ActionbarPlus-BarsUI", "ActionbarPlus-Core", "ActionbarPlus-OptionsUI"]
+
+[[addon]]
+name = "Target Nameplate Indicator"
+source = "wowi:21391"
+flavors = ["mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["TargetNameplateIndicator"]

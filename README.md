@@ -157,6 +157,7 @@ bun run build       # dist/wowget for this machine
 bun run build:mac   # dist/wowget for Apple silicon
 bun run build:win   # dist/wowget.exe for 64-bit Windows, cross-compiled from any host
 WOWGET_VERSION=0.1.0 bun run build:release   # dist/release/* for every platform, with SHA256SUMS.txt
+bun run registry:check [--only Questie]       # resolve registry/addons.toml entries on every flavor
 ```
 
 `wowget --version` prints the version compiled in by `build:release` (`dev`
