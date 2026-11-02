@@ -8,8 +8,6 @@ import { join } from "node:path";
 const TARGETS = [
   { target: "bun-darwin-arm64", asset: "wowget-darwin-arm64" },
   { target: "bun-darwin-x64", asset: "wowget-darwin-x64" },
-  { target: "bun-linux-x64", asset: "wowget-linux-x64" },
-  { target: "bun-linux-arm64", asset: "wowget-linux-arm64" },
   { target: "bun-windows-x64", asset: "wowget-windows-x64.exe" },
 ];
 

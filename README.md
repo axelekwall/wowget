@@ -11,10 +11,9 @@ Status: MVP. See [docs/PLAN.md](docs/PLAN.md) for the roadmap,
 
 ## Install
 
-Prebuilt binaries for macOS (Apple silicon and Intel), Linux and 64-bit
-Windows are attached to every [release](https://github.com/axelekwall/wowget/releases).
+Prebuilt binaries for macOS (Apple silicon and Intel) and 64-bit Windows are attached to every [release](https://github.com/axelekwall/wowget/releases).
 
-macOS or Linux:
+macOS:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/axelekwall/wowget/main/install.sh | sh
@@ -27,7 +26,7 @@ irm https://raw.githubusercontent.com/axelekwall/wowget/main/install.ps1 | iex
 ```
 
 The scripts download the binary for your platform, verify its SHA-256 checksum
-and put it in `~/.local/bin` (macOS, Linux) or `%LOCALAPPDATA%\wowget\bin`
+and put it in `~/.local/bin` (macOS) or `%LOCALAPPDATA%\wowget\bin`
 (Windows, added to your user `PATH`). Set `WOWGET_VERSION=0.1.0` to pin a
 version and `WOWGET_INSTALL_DIR` to choose the directory.
 

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs wowget on macOS or Linux from the GitHub releases.
+# Installs wowget on macOS from the GitHub releases.
 #   curl -fsSL https://raw.githubusercontent.com/axelekwall/wowget/main/install.sh | sh
 # Environment:
 #   WOWGET_VERSION      version to install, e.g. 0.1.0 (default: latest release)
@@ -12,7 +12,6 @@ install_dir="${WOWGET_INSTALL_DIR:-$HOME/.local/bin}"
 
 case "$(uname -s)" in
   Darwin) os="darwin" ;;
-  Linux) os="linux" ;;
   *) echo "wowget: unsupported OS $(uname -s); on Windows use install.ps1" >&2; exit 1 ;;
 esac
 case "$(uname -m)" in
