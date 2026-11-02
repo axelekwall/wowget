@@ -1,6 +1,8 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { addonTocs, parseToc } from "./flavor.ts";
+import type { RegistryEntry } from "./registry.ts";
+import type { CatalogEntry } from "./search/wowi-catalog.ts";
 import { defaultAddonName, parseSource } from "./sources/parse.ts";
 import type { State } from "./state.ts";
 import { isAddonFolder } from "./zip.ts";
@@ -11,6 +13,14 @@ export interface UnmanagedAddon {
   folders: string[];
   version: string | null;
   source: string | null;
+  /** WoWInterface sources whose folder list includes this addon's folder; not adopted automatically. */
+  suggestions?: string[];
+}
+
+/** Lists that name addons by their folders, consulted when a folder's TOC names no source. */
+export interface ReconcileHints {
+  registry?: RegistryEntry[];
+  catalog?: CatalogEntry[];
 }
 
 interface FolderMeta {
@@ -18,6 +28,36 @@ interface FolderMeta {
   version: string | null;
   source: string | null;
   deps: string[];
+  /** Set when the source came from the registry rather than the TOC. */
+  registryName?: string;
+}
+
+const MAX_SUGGESTIONS = 3;
+
+/** Folder name (lower-case) to the registry entry listing it, leaving out folders that several entries list. */
+function registryFolders(entries: RegistryEntry[]): Map<string, RegistryEntry> {
+  const owners = new Map<string, RegistryEntry | null>();
+  for (const entry of entries) {
+    for (const folder of entry.folders) {
+      const key = folder.toLowerCase();
+      const current = owners.get(key);
+      owners.set(key, current === undefined || current === entry ? entry : null);
+    }
+  }
+  return new Map([...owners].filter((kv): kv is [string, RegistryEntry] => kv[1] !== null));
+}
+
+/** Up to MAX_SUGGESTIONS catalogue sources for a group: exact folder-set matches first, then by downloads. */
+function catalogSuggestions(catalog: CatalogEntry[], root: string, folders: string[]): string[] {
+  const rootKey = root.toLowerCase();
+  const wanted = new Set(folders.map((f) => f.toLowerCase()));
+  const exact = (e: CatalogEntry) =>
+    e.folders.length === wanted.size && e.folders.every((f) => wanted.has(f.toLowerCase())) ? 0 : 1;
+  return catalog
+    .filter((e) => e.folders.some((f) => f.toLowerCase() === rootKey))
+    .sort((a, b) => exact(a) - exact(b) || b.downloadsMonthly - a.downloadsMonthly)
+    .slice(0, MAX_SUGGESTIONS)
+    .map((e) => `wowi:${e.id}`);
 }
 
 const GITHUB_SLUG = /^([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9._-]+)$/;
@@ -113,7 +153,12 @@ async function readFolderMeta(targetDir: string, folder: string): Promise<Folder
  * Scans `targetDir` for addon folders not owned by any active install on `targetName`, grouping
  * companion folders with their parent addon.
  */
-export async function scanUnmanaged(targetDir: string, targetName: string, state: State): Promise<UnmanagedAddon[]> {
+export async function scanUnmanaged(
+  targetDir: string,
+  targetName: string,
+  state: State,
+  hints: ReconcileHints = {},
+): Promise<UnmanagedAddon[]> {
   let entries;
   try {
     entries = await readdir(targetDir, { withFileTypes: true });
@@ -174,6 +219,19 @@ export async function scanUnmanaged(targetDir: string, targetName: string, state
     groups.set(root, list);
   }
 
+  // A group whose TOCs name no source takes it from the registry entry listing one of its
+  // folders, root first. Grouping comes first so a companion folder never gets a source that
+  // differs from its parent's TOC source.
+  const byRegistryFolder = registryFolders(hints.registry ?? []);
+  for (const [root, members] of groups) {
+    if (members.some((m) => m.source)) continue;
+    const entry = [root, ...members].map((m) => byRegistryFolder.get(m.folder.toLowerCase())).find(Boolean);
+    if (entry) {
+      root.source = entry.source;
+      root.registryName = entry.name;
+    }
+  }
+
   // Merge groups that resolved to the same detected source.
   const bySource = new Map<string, FolderMeta[]>();
   const unmerged: [FolderMeta, FolderMeta[]][] = [];
@@ -200,12 +258,19 @@ export async function scanUnmanaged(targetDir: string, targetName: string, state
     const folders = members.map((m) => m.folder).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
     const version = root.version ?? members.find((m) => m.version)?.version ?? null;
     let name = root.folder;
-    if (source) {
+    const registryName = members.find((m) => m.registryName && m.source === source)?.registryName;
+    if (registryName) name = registryName;
+    else if (source) {
       const preferred = defaultAddonName(parseSource(source));
       const match = members.find((m) => m.folder.toLowerCase() === preferred.toLowerCase());
       if (match) name = match.folder;
     }
-    out.push({ name, target: targetName, folders, version, source });
+    const addon: UnmanagedAddon = { name, target: targetName, folders, version, source };
+    if (!source && hints.catalog?.length) {
+      const suggestions = catalogSuggestions(hints.catalog, root.folder, folders);
+      if (suggestions.length) addon.suggestions = suggestions;
+    }
+    out.push(addon);
   }
   return out.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
 }

@@ -19,8 +19,12 @@ Commands:
   target list                           show the targets and whether their AddOns directories exist
   target add <name> --path P --flavor F add a target
   target remove <name>                  uninstall everything on a target and remove it
-  add <source> [--name N] [--prerelease] [--pin ID]
-                                        install an addon and add it to the manifest
+  search <query...> [--flavor F | --all-flavors] [--github] [--limit N] [--refresh]
+                                        find addons in the registry and on WoWInterface
+                                        (and GitHub with --github); filters on the targets' flavors
+  add <source|name> [--name N] [--prerelease] [--pin ID]
+                                        install an addon and add it to the manifest; a bare name
+                                        is looked up in the addon registry
   remove <name>                         uninstall an addon and drop it from the manifest
   list                                  show manifest addons and what is installed
   outdated                              check every addon for a newer release
@@ -33,7 +37,7 @@ Commands:
   doctor [--clean]                      check targets, TOC interfaces and cache health
   self-update [--check]                 replace this binary with the latest wowget release
 
-add, remove, list, outdated, update, install, rollback, reconcile and doctor act on every target
+search, add, remove, list, outdated, update, install, rollback, reconcile and doctor act on every target
 unless filtered with -t/--target, which can be repeated. "add -t" records the targets
 in the manifest; "remove -t" removes the addon from those targets only.
 
@@ -45,6 +49,10 @@ Options:
   --adopt             with reconcile: install and add matched addons to the manifest
   --clean             with doctor: remove leftover temp folders and unreferenced cache dirs
   --check             with self-update: only report whether a newer release exists
+  --all-flavors       with search: do not filter on flavors
+  --github            with search: also search GitHub repositories tagged wow-addon
+  --limit <n>         with search: show at most n results (default 20)
+  --refresh           with search: download the WoWInterface catalogue even if the copy is recent
   --manifest <path>   manifest file (default $WOWGET_MANIFEST, else ${manifestPath(undefined, { ...process.env, WOWGET_MANIFEST: undefined })})
   --json              print the result as JSON
   --force             install over unmanaged folders and unverifiable flavors;
@@ -54,14 +62,44 @@ Options:
   --version           show the version
 `;
 
-type Flag = "path" | "flavor" | "name" | "prerelease" | "pin" | "target" | "game-dir" | "adopt" | "clean" | "check";
-const FLAGS: Flag[] = ["path", "flavor", "name", "prerelease", "pin", "target", "game-dir", "adopt", "clean", "check"];
+type Flag =
+  | "path"
+  | "flavor"
+  | "name"
+  | "prerelease"
+  | "pin"
+  | "target"
+  | "game-dir"
+  | "adopt"
+  | "clean"
+  | "check"
+  | "all-flavors"
+  | "github"
+  | "limit"
+  | "refresh";
+const FLAGS: Flag[] = [
+  "path",
+  "flavor",
+  "name",
+  "prerelease",
+  "pin",
+  "target",
+  "game-dir",
+  "adopt",
+  "clean",
+  "check",
+  "all-flavors",
+  "github",
+  "limit",
+  "refresh",
+];
 
 const COMMAND_FLAGS: Record<string, Flag[]> = {
   init: ["path", "flavor", "name", "game-dir"],
   "target list": [],
   "target add": ["path", "flavor"],
   "target remove": [],
+  search: ["target", "flavor", "all-flavors", "github", "limit", "refresh"],
   add: ["name", "prerelease", "pin", "target"],
   remove: ["target"],
   list: ["target"],
@@ -81,6 +119,7 @@ const POSITIONALS: Record<string, [min: number, max: number]> = {
   "target list": [0, 0],
   "target add": [1, 1],
   "target remove": [1, 1],
+  search: [1, Infinity],
   add: [1, 1],
   remove: [1, 1],
   list: [0, 0],
@@ -119,6 +158,10 @@ function parse(argv: string[]) {
         adopt: { type: "boolean" },
         clean: { type: "boolean" },
         check: { type: "boolean" },
+        "all-flavors": { type: "boolean" },
+        github: { type: "boolean" },
+        limit: { type: "string" },
+        refresh: { type: "boolean" },
       },
     });
   } catch (err) {
@@ -138,7 +181,13 @@ function progressRenderer(verbose: boolean) {
   const write = (text: string) => process.stderr.write(text);
   return {
     onEvent(event: ProgressEvent) {
-      if (event.type === "download:start") {
+      if (event.type === "catalog:download") {
+        this.flush();
+        write("Downloading the WoWInterface addon list\n");
+      } else if (event.type === "registry:stale") {
+        this.flush();
+        write(`wowget: warning: ${event.message}\n`);
+      } else if (event.type === "download:start") {
         this.flush();
         write(`${event.addon}: downloading ${event.filename}`);
         openLine = true;
@@ -227,9 +276,35 @@ function render(command: string, result: unknown): string {
       for (const name of r.removedAddons) lines.push(`  removed ${name} from the manifest (it had no other target)`);
       return lines.join("\n");
     }
+    case "search": {
+      const r = result as ops.SearchResult;
+      if (!r.results.length) {
+        return r.flavors ? `No addons found for ${r.flavors.join(", ")}; --all-flavors searches every flavor.` : "No addons found.";
+      }
+      // The "*" column only appears when a result is already in the manifest.
+      const marked = r.results.some((a) => a.inManifest);
+      return table([
+        [...(marked ? [""] : []), "NAME", "SOURCE", "FLAVORS", "POPULARITY", "UPDATED"],
+        ...r.results.map((a) => [
+          ...(marked ? [a.inManifest ? "*" : ""] : []),
+          a.name,
+          a.source,
+          // Nothing about a GitHub result's releases is known, so it gets a single "?".
+          a.origin === "github"
+            ? "?"
+            : Object.entries(a.flavors)
+                .map(([f, support]) => (support === "unknown" ? `${f}?` : f))
+                .join(" ") || "?",
+          a.downloadsMonthly !== null ? `${a.downloadsMonthly}/month` : a.stars !== null ? `${a.stars} stars` : "",
+          a.updatedAt?.slice(0, 10) ?? "",
+        ]),
+      ]);
+    }
     case "add": {
       const r = result as ops.AddResult;
-      return r.addons.map((a) => `Added ${r.name} ${a.version} to ${a.target} (${a.folders.join(", ")})`).join("\n");
+      const lines = r.addons.map((a) => `Added ${r.name} ${a.version} to ${a.target} (${a.folders.join(", ")})`);
+      if (r.registryName !== undefined) lines.unshift(`Using ${r.source} for "${r.registryName}" from the addon registry`);
+      return lines.join("\n");
     }
     case "remove": {
       const r = result as ops.RemoveResult;
@@ -306,7 +381,7 @@ function render(command: string, result: unknown): string {
           a.target,
           a.version ?? "-",
           a.status === "error" ? `error: ${a.error}` : a.status,
-          a.source ?? "-",
+          a.source ?? (a.suggestions ? `maybe ${a.suggestions.join(", ")}` : "-"),
           a.folders.join(", "),
         ]),
       ]);
@@ -360,6 +435,11 @@ function notes(result: unknown): { name: string; note: string }[] {
   });
 }
 
+function warnings(result: unknown): string[] {
+  const list = (result as { warnings?: unknown }).warnings;
+  return Array.isArray(list) ? list.filter((w): w is string => typeof w === "string") : [];
+}
+
 function hasErrors(result: unknown): boolean {
   const r = result as { addons?: { status: string }[]; issues?: unknown[] };
   if (Array.isArray(r.addons) && r.addons.some((a) => a.status === "error")) return true;
@@ -411,6 +491,11 @@ async function main(argv: string[]): Promise<number> {
       throw new UsageError(`Unknown flavor "${values.flavor}"; expected one of ${FLAVORS.join(", ")}.`);
     }
     const flavor = values.flavor as Flavor | undefined;
+    let limit: number | undefined;
+    if (values.limit !== undefined) {
+      limit = /^[1-9][0-9]*$/.test(values.limit) ? Number(values.limit) : NaN;
+      if (!Number.isSafeInteger(limit)) throw new UsageError("--limit must be a positive whole number.");
+    }
 
     const manifest = manifestPath(values.manifest);
     let result: unknown;
@@ -447,6 +532,17 @@ async function main(argv: string[]): Promise<number> {
         onEvent: (e) => progress.onEvent(e),
       };
       if (key === "target remove") result = await ops.targetRemove({ ...base, name: args[0]! });
+      else if (key === "search") {
+        result = await ops.search({
+          ...base,
+          query: args.join(" "),
+          flavor,
+          allFlavors: values["all-flavors"],
+          github: values.github,
+          limit,
+          refresh: values.refresh,
+        });
+      }
       else if (key === "add") {
         result = await ops.add({ ...base, source: args[0]!, name: values.name, prerelease: values.prerelease, pin: values.pin });
       } else if (key === "remove") result = await ops.remove({ ...base, name: args[0]! });
@@ -463,6 +559,7 @@ async function main(argv: string[]): Promise<number> {
     progress.flush();
     process.stdout.write(`${values.json ? JSON.stringify(result, null, 2) : render(key, result)}\n`);
     for (const { name, note } of notes(result)) process.stderr.write(`wowget: note: ${name}: ${note}\n`);
+    if (!values.json) for (const warning of warnings(result)) process.stderr.write(`wowget: warning: ${warning}\n`);
     for (const { name, target, dir } of leftoverDirs(result)) {
       process.stderr.write(
         `wowget: warning: ${name} (${target}): could not delete the old folders moved to ${dir}; remove it by hand.\n`,

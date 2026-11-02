@@ -128,6 +128,8 @@ async function folderInterfacesForFlavor(dir: string, flavor: Flavor): Promise<n
 export async function pruneAddonCache(cacheDir: string, state: State, addon: string): Promise<string[]> {
   const keptDirs = new Set([...state.keptZipPaths(addon)].map((p) => resolve(dirname(p))));
   const addonDir = addonCacheDir(cacheDir, addon);
+  // Dot entries are not addon caches, even for an addon whose name starts with ".".
+  if (basename(addonDir).startsWith(".")) return [];
   let entries;
   try {
     entries = await readdir(addonDir, { withFileTypes: true });
@@ -157,7 +159,8 @@ export async function findStaleCacheDirs(cacheDir: string, state: State): Promis
   }
   const stale: string[] = [];
   for (const addonEntry of addonEntries) {
-    if (!addonEntry.isDirectory()) continue;
+    // Dot entries are not addon caches (the search catalogue lives in ".catalog").
+    if (!addonEntry.isDirectory() || addonEntry.name.startsWith(".")) continue;
     const addonDir = join(cacheDir, addonEntry.name);
     const releaseEntries = await readdir(addonDir, { withFileTypes: true }).catch(() => []);
     for (const rel of releaseEntries) {

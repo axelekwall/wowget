@@ -10,7 +10,7 @@ import {
 } from "./doctor.ts";
 import { WowgetError } from "./errors.ts";
 import type { OnEvent } from "./events.ts";
-import type { Flavor } from "./flavor.ts";
+import { FLAVORS, type Flavor } from "./flavor.ts";
 import { HttpClient, type FetchFn } from "./http.ts";
 import {
   install as installRelease,
@@ -43,6 +43,11 @@ import {
 } from "./manifest.ts";
 import { cacheDir as defaultCacheDir, expandHome, gameDirCandidates } from "./paths.ts";
 import { scanUnmanaged, type UnmanagedAddon } from "./reconcile.ts";
+import { findRegistryEntry, loadRegistry, normaliseName, type RegistryEntry } from "./registry.ts";
+import { searchGithub } from "./search/github-search.ts";
+import { rankRows, type Origin, type SearchRow } from "./search/index.ts";
+import { registryRows } from "./search/registry.ts";
+import { catalogRow, loadCatalog, readCachedCatalog } from "./search/wowi-catalog.ts";
 import { sourceFor } from "./sources/index.ts";
 import { defaultAddonName, parseSource } from "./sources/parse.ts";
 import type { Http, Resolved } from "./sources/types.ts";
@@ -449,6 +454,7 @@ export async function targetRemove(opts: TargetRemoveOptions): Promise<TargetRem
 // add
 
 export interface AddOptions extends OpsOptions {
+  /** A source string, or an addon name looked up in the registry. */
   source: string;
   name?: string;
   prerelease?: boolean;
@@ -469,6 +475,8 @@ export interface AddEntry {
 export interface AddResult {
   name: string;
   source: string;
+  /** The name given on `add` when the source came from the registry. */
+  registryName?: string;
   /** The `targets` list written to the manifest; absent when the addon is on every target. */
   targets?: string[];
   addons: AddEntry[];
@@ -505,8 +513,30 @@ async function undoAdd(state: State, name: string, done: AddDone): Promise<void>
   if (done.previous) state.reactivateInstall(done.previous.id);
 }
 
+/** The registry entry for an `add` argument without a source kind; a source error when there is none. */
+async function registryEntryFor(ctx: Context, name: string): Promise<RegistryEntry> {
+  const registry = await loadRegistry(ctx.http, ctx.opts.env);
+  if (registry.stale) ctx.opts.onEvent?.({ type: "registry:stale", message: registry.stale });
+  const entry = findRegistryEntry(registry.entries, name);
+  if (!entry) {
+    const hint = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(name)
+      ? `Did you mean "github:${name}"?`
+      : `Try "wowget search ${name}", or give a source such as github:owner/repo.`;
+    throw new WowgetError("source", `"${name}" is not in the addon registry. ${hint}`);
+  }
+  return entry;
+}
+
 export async function add(opts: AddOptions): Promise<AddResult> {
+  if (opts.source.trim() === "") throw new WowgetError("usage", "add needs a source or an addon name.");
   const ctx = await context(opts);
+  if (!opts.source.includes(":")) {
+    const entry = await registryEntryFor(ctx, opts.source);
+    // An addon already in the manifest with this source keeps its name, as with "add <source>".
+    const known = ctx.manifest.addons.some((a) => a.source === entry.source);
+    const result = await add({ ...opts, source: entry.source, name: opts.name ?? (known ? undefined : entry.name) });
+    return { ...result, registryName: opts.source };
+  }
   const spec = parseSource(opts.source);
   if (opts.prerelease && spec.kind !== "github") {
     throw new WowgetError("usage", "--prerelease only applies to GitHub sources.");
@@ -1213,9 +1243,13 @@ export interface ReconcileResult {
 export async function reconcile(opts: ReconcileOptions): Promise<ReconcileResult> {
   const ctx = await context(opts);
   const targets = [...ctx.targets].sort((a, b) => byName(a.name, b.name));
+  const registry = await loadRegistry(ctx.http, opts.env);
+  if (registry.stale) opts.onEvent?.({ type: "registry:stale", message: registry.stale });
+  // The cached catalogue only: reconcile does not download it.
+  const hints = { registry: registry.entries, catalog: await readCachedCatalog(ctx.cacheDir) };
   const discovered: { target: NamedTarget; group: UnmanagedAddon }[] = [];
   for (const target of targets) {
-    for (const group of await scanUnmanaged(target.path, target.name, opts.state)) {
+    for (const group of await scanUnmanaged(target.path, target.name, opts.state, hints)) {
       discovered.push({ target, group });
     }
   }
@@ -1333,4 +1367,107 @@ export async function doctor(opts: DoctorOptions): Promise<DoctorResult> {
   }
 
   return { targets, issues, cleaned };
+}
+
+// search
+
+export interface SearchOptions
+  extends Pick<OpsOptions, "manifestPath" | "state" | "targets" | "cacheDir" | "fetch" | "env" | "onEvent"> {
+  query: string;
+  flavor?: Flavor;
+  allFlavors?: boolean;
+  github?: boolean;
+  /** Defaults to 20. */
+  limit?: number;
+  refresh?: boolean;
+}
+
+export interface SearchResultEntry {
+  name: string;
+  source: string;
+  origin: Origin;
+  /** Flavors the addon supports ("yes") or may support ("unknown"); the filter's flavors come first. */
+  flavors: Partial<Record<Flavor, "yes" | "unknown">>;
+  description: string | null;
+  downloadsMonthly: number | null;
+  stars: number | null;
+  updatedAt: string | null;
+  url: string | null;
+  inManifest: boolean;
+}
+
+export interface SearchResult {
+  results: SearchResultEntry[];
+  /** The flavors results were filtered on; null when there was no filter. */
+  flavors: Flavor[] | null;
+  /** Sources that failed or are stale. */
+  warnings: string[];
+}
+
+/** The flavors to filter on: --flavor, else the selected targets', else none. */
+function searchFlavors(opts: SearchOptions, manifest: Manifest | undefined): Flavor[] | undefined {
+  // Unknown -t names are an error even when --flavor or --all-flavors makes them irrelevant.
+  const targets = manifest && opts.targets?.length ? selectTargets(manifest, opts.manifestPath, opts.targets) : undefined;
+  if (opts.allFlavors) {
+    if (opts.flavor) throw new WowgetError("usage", "--flavor and --all-flavors cannot be combined.");
+    return undefined;
+  }
+  if (opts.flavor) return [opts.flavor];
+  if (!manifest || !manifest.targets.length) return undefined;
+  return [...new Set((targets ?? manifest.targets).map((t) => t.flavor))];
+}
+
+function resultEntry(row: SearchRow, filter: Flavor[] | undefined, manifest: Manifest | undefined): SearchResultEntry {
+  const flavors: SearchResultEntry["flavors"] = {};
+  for (const f of [...(filter ?? []), ...FLAVORS]) {
+    const support = row.flavors[f];
+    if (support === "yes" || support === "unknown") flavors[f] = support;
+  }
+  return {
+    name: row.name,
+    source: row.source,
+    origin: row.origin,
+    flavors,
+    description: row.description ?? null,
+    downloadsMonthly: row.downloadsMonthly ?? null,
+    stars: row.stars ?? null,
+    updatedAt: row.updatedAt ?? null,
+    url: row.url ?? null,
+    inManifest: manifest?.addons.some((a) => a.source.toLowerCase() === row.source.toLowerCase()) ?? false,
+  };
+}
+
+export async function search(opts: SearchOptions): Promise<SearchResult> {
+  const query = opts.query.trim();
+  if (!normaliseName(query)) throw new WowgetError("usage", "search needs a query with at least one letter or digit.");
+  const limit = opts.limit ?? 20;
+  if (!Number.isInteger(limit) || limit < 1) throw new WowgetError("usage", "--limit must be a positive whole number.");
+
+  let manifest: Manifest | undefined;
+  try {
+    manifest = await readManifest(opts.manifestPath);
+  } catch (err) {
+    // Search works without a manifest, unless targets were asked for.
+    if (!(err instanceof WowgetError && err.code === "not_found") || opts.targets?.length) throw err;
+  }
+  const flavors = searchFlavors(opts, manifest);
+  const http = new HttpClient({ state: opts.state, fetch: opts.fetch, env: opts.env });
+  const warnings: string[] = [];
+
+  const [registry, catalog, github] = await Promise.all([
+    loadRegistry(http, opts.env),
+    loadCatalog({ http, cacheDir: opts.cacheDir ?? defaultCacheDir(), refresh: opts.refresh, onEvent: opts.onEvent }),
+    opts.github
+      ? searchGithub(http, query).catch((err) => {
+          warnings.push(`GitHub search failed: ${message(err)}`);
+          return [];
+        })
+      : Promise.resolve([]),
+  ]);
+  if (registry.stale) warnings.unshift(registry.stale);
+  if (catalog.warning) warnings.push(catalog.warning);
+
+  const rows = [...registryRows(registry.entries), ...catalog.entries.map(catalogRow), ...github];
+  const ranked = rankRows(rows, query, { flavors, limit });
+  return { results: ranked.map((row) => resultEntry(row, flavors, manifest)), flavors: flavors ?? null, warnings };
 }

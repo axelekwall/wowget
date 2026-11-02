@@ -162,7 +162,12 @@ name, its aliases (registry) and its folder names:
 3. substring match
 4. every query word (split on whitespace, then normalised) is a substring
 
-Rows with no tier are dropped. Sort by tier, then source rank (registry,
+A row that matches on folder names only ranks half a tier below the same match
+on its name or an alias, so an addon named after the query comes before one
+that merely ships a folder with that name. GitHub rows that match none of
+these were matched by GitHub on their description or topics; they are kept
+after every other match. Other rows with no tier are dropped. Sort
+by tier, then source rank (registry,
 WoWInterface, GitHub), then popularity (WoWInterface `UIDownloadMonthly`,
 GitHub stars; the registry has none and keeps file order), then name.
 
@@ -182,8 +187,9 @@ unknown), popularity, last updated, and `*` when the source is already in the
 manifest. GitHub rows show `?` for flavors because nothing about their
 releases is fetched during search.
 
-`--json` (the global flag) prints `{ "results": [...], "warnings": [...] }`.
-`warnings` lists sources that failed or are stale. Each result:
+`--json` (the global flag) prints `{ "results": [...], "flavors": [...], "warnings": [...] }`.
+`flavors` is the filter that was applied, or `null`; `warnings` lists sources
+that failed or are stale. Each result:
 
 ```json
 {

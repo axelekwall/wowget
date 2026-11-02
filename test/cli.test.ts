@@ -13,6 +13,7 @@ async function run(args: string[], root: string) {
     WOWGET_CACHE_DIR: join(root, "cache"),
     WOWGET_MANIFEST: undefined,
     GITHUB_TOKEN: undefined,
+    WOWGET_REGISTRY_URL: "off",
   };
   const proc = Bun.spawn([process.execPath, CLI, ...args], { env, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([
@@ -97,6 +98,15 @@ describe("cli", () => {
     expect(JSON.parse(json.stdout)).toEqual({
       error: { code: "not_found", message: expect.stringContaining("Manifest not found") },
     });
+  });
+
+  test("search validates its query and flags before touching the network", async () => {
+    const root = await tempDir();
+    const manifest = `--manifest=${join(root, "wowget.toml")}`;
+    for (const args of [["search"], ["search", "!!!"], ["search", "dbm", "--limit", "0"], ["search", "dbm", "--flavor", "x"], ["list", "--github"]]) {
+      const result = await run([...args, manifest], root);
+      expect([args.join(" "), result.code]).toEqual([args.join(" "), 2]);
+    }
   });
 
   test("unpin, reconcile, and doctor CLI commands", async () => {
