@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { useTempDirs } from "./helpers/tmp.ts";
 
@@ -89,5 +90,36 @@ describe("cli", () => {
     expect(JSON.parse(json.stdout)).toEqual({
       error: { code: "not_found", message: expect.stringContaining("Manifest not found") },
     });
+  });
+
+  test("unpin, reconcile, and doctor CLI commands", async () => {
+    const root = await tempDir();
+    const manifestPath = join(root, "wowget.toml");
+    const manifest = `--manifest=${manifestPath}`;
+    const addonsDir = join(root, "AddOns");
+    expect((await run(["init", "--path", addonsDir, manifest], root)).code).toBe(0);
+
+    await mkdir(join(addonsDir, "Details"), { recursive: true });
+    await writeFile(
+      join(addonsDir, "Details", "Details_Forever.toc"),
+      "## Interface: 16001\n## Version: 1.2.3\n## X-GitHub: Tercioo/Details-Damage-Meter\n",
+    );
+
+    const rec = await run(["reconcile", manifest], root);
+    expect(rec.code).toBe(0);
+    expect(rec.stdout).toMatch(/Details\s+forever\s+1\.2\.3\s+unmanaged\s+github:Tercioo\/Details-Damage-Meter\s+Details/);
+
+    await Bun.write(
+      manifestPath,
+      `${await Bun.file(manifestPath).text()}\n[[addon]]\nname = "Details"\nsource = "github:Tercioo/Details-Damage-Meter"\npin = "1.2.3"\n`,
+    );
+
+    const unpinned = await run(["unpin", "Details", manifest], root);
+    expect(unpinned.code).toBe(0);
+    expect(unpinned.stdout).toBe("Unpinned Details (was 1.2.3)\n");
+
+    const doc = await run(["doctor", manifest], root);
+    expect(doc.code).toBe(0);
+    expect(doc.stdout).toContain("No issues found.");
   });
 });

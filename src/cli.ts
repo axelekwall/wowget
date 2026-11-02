@@ -24,16 +24,23 @@ Commands:
   outdated                              check every addon for a newer release
   update [name...]                      install newer releases (all addons by default)
   install                               install manifest addons that are not installed
+  pin <name> [release]                  freeze an addon at its installed release or a given release
+  unpin <name>                          remove the release pin from an addon
+  rollback <name>                       reinstall the previous release of an addon from the cache
+  reconcile [--adopt]                   find hand-installed addons and optionally adopt them
+  doctor [--clean]                      check targets, TOC interfaces and cache health
 
-add, remove, list, outdated, update and install act on every target unless
-filtered with -t/--target, which can be repeated. "add -t" records the targets
+add, remove, list, outdated, update, install, rollback, reconcile and doctor act on every target
+unless filtered with -t/--target, which can be repeated. "add -t" records the targets
 in the manifest; "remove -t" removes the addon from those targets only.
 
-Sources: github:owner/repo, url:https://...
+Sources: github:owner/repo, wowi:<id>, url:https://...
 Flavors: ${FLAVORS.join(", ")}
 
 Options:
   -t, --target <name> act on this target only (repeatable)
+  --adopt             with reconcile: install and add matched addons to the manifest
+  --clean             with doctor: remove leftover temp folders and unreferenced cache dirs
   --manifest <path>   manifest file (default $WOWGET_MANIFEST, else ${manifestPath(undefined, { ...process.env, WOWGET_MANIFEST: undefined })})
   --json              print the result as JSON
   --force             install over unmanaged folders and unverifiable flavors
@@ -42,8 +49,8 @@ Options:
   --version           show the version
 `;
 
-type Flag = "path" | "flavor" | "name" | "prerelease" | "pin" | "target" | "game-dir";
-const FLAGS: Flag[] = ["path", "flavor", "name", "prerelease", "pin", "target", "game-dir"];
+type Flag = "path" | "flavor" | "name" | "prerelease" | "pin" | "target" | "game-dir" | "adopt" | "clean";
+const FLAGS: Flag[] = ["path", "flavor", "name", "prerelease", "pin", "target", "game-dir", "adopt", "clean"];
 
 const COMMAND_FLAGS: Record<string, Flag[]> = {
   init: ["path", "flavor", "name", "game-dir"],
@@ -56,6 +63,11 @@ const COMMAND_FLAGS: Record<string, Flag[]> = {
   outdated: ["target"],
   update: ["target"],
   install: ["target"],
+  pin: [],
+  unpin: [],
+  rollback: ["target"],
+  reconcile: ["target", "adopt"],
+  doctor: ["target", "clean"],
 };
 
 const POSITIONALS: Record<string, [min: number, max: number]> = {
@@ -69,6 +81,11 @@ const POSITIONALS: Record<string, [min: number, max: number]> = {
   outdated: [0, 0],
   update: [0, Infinity],
   install: [0, 0],
+  pin: [1, 2],
+  unpin: [1, 1],
+  rollback: [1, 1],
+  reconcile: [0, 0],
+  doctor: [0, 0],
 };
 
 class UsageError extends Error {}
@@ -92,6 +109,8 @@ function parse(argv: string[]) {
         pin: { type: "string" },
         target: { type: "string", short: "t", multiple: true },
         "game-dir": { type: "string" },
+        adopt: { type: "boolean" },
+        clean: { type: "boolean" },
       },
     });
   } catch (err) {
@@ -112,6 +131,7 @@ function progressRenderer(verbose: boolean) {
   return {
     onEvent(event: ProgressEvent) {
       if (event.type === "download:start") {
+        this.flush();
         write(`${event.addon}: downloading ${event.filename}`);
         openLine = true;
       } else if (event.type === "download:done" && openLine) {
@@ -245,6 +265,63 @@ function render(command: string, result: unknown): string {
         }),
       ]);
     }
+    case "pin": {
+      const r = result as ops.PinResult;
+      const lines = r.addons.map((a) => `Installed ${r.name} ${a.version} on ${a.target} (${a.folders.join(", ")})`);
+      lines.push(`Pinned ${r.name} to ${r.pin}`);
+      return lines.join("\n");
+    }
+    case "unpin": {
+      const r = result as ops.UnpinResult;
+      return r.previousPin !== undefined ? `Unpinned ${r.name} (was ${r.previousPin})` : `${r.name} was not pinned`;
+    }
+    case "rollback": {
+      const r = result as ops.RollbackResult;
+      const lines = r.addons.map(
+        (a) => `Rolled back ${a.name} on ${a.target}: ${a.from ?? "none"} -> ${a.to} (${a.folders.join(", ")})`,
+      );
+      if (r.pinned !== undefined) {
+        lines.push(`Pinned ${r.name} to ${r.pinned}; run "wowget unpin ${r.name}" to resume updates.`);
+      } else {
+        const why = r.notPinned === "partial" ? "the rollback did not cover all its targets" : "its targets are on different releases";
+        lines.push(`${r.name} was not pinned because ${why}; the next update reinstalls the newer release.`);
+      }
+      return lines.join("\n");
+    }
+    case "reconcile": {
+      const r = result as ops.ReconcileResult;
+      if (!r.addons.length) return "No unmanaged addon folders found.";
+      return table([
+        ["NAME", "TARGET", "VERSION", "STATUS", "SOURCE", "FOLDERS"],
+        ...r.addons.map((a) => [
+          a.name,
+          a.target,
+          a.version ?? "-",
+          a.status === "error" ? `error: ${a.error}` : a.status,
+          a.source ?? "-",
+          a.folders.join(", "),
+        ]),
+      ]);
+    }
+    case "doctor": {
+      const r = result as ops.DoctorResult;
+      const lines = [
+        table([
+          ["TARGET", "FLAVOR", "CLIENT", "EXISTS", "PATH"],
+          ...r.targets.map((t) => [
+            t.name,
+            t.flavor,
+            t.clientInterface !== undefined ? `${t.clientInterface} (${t.clientVersion})` : "-",
+            t.exists ? "yes" : "no",
+            t.path,
+          ]),
+        ]),
+      ];
+      for (const path of r.cleaned) lines.push(`Cleaned ${path}`);
+      if (!r.issues.length) lines.push("No issues found.");
+      else for (const issue of r.issues) lines.push(`Issue [${issue.kind}]: ${issue.message}`);
+      return lines.join("\n");
+    }
     default:
       return renderUpdate(result as ops.UpdateResult);
   }
@@ -257,9 +334,23 @@ function leftoverDirs(result: unknown): { name: string; target: string; dir: str
   return addons.flatMap((e) => (e.leftoverDir ? [{ name: e.name, target: e.target, dir: e.leftoverDir }] : []));
 }
 
+/** Source notes from the rows of a result, once per distinct addon and message. */
+function notes(result: unknown): { name: string; note: string }[] {
+  const addons = (result as { addons?: { name: string; note?: string }[] }).addons;
+  if (!Array.isArray(addons)) return [];
+  const seen = new Set<string>();
+  return addons.flatMap((e) => {
+    if (!e.note || seen.has(`${e.name}\0${e.note}`)) return [];
+    seen.add(`${e.name}\0${e.note}`);
+    return [{ name: e.name, note: e.note }];
+  });
+}
+
 function hasErrors(result: unknown): boolean {
-  const addons = (result as { addons?: { status: string }[] }).addons;
-  return Array.isArray(addons) && addons.some((a) => a.status === "error");
+  const r = result as { addons?: { status: string }[]; issues?: unknown[] };
+  if (Array.isArray(r.addons) && r.addons.some((a) => a.status === "error")) return true;
+  if (Array.isArray(r.issues) && r.issues.length > 0) return true;
+  return false;
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -322,6 +413,8 @@ async function main(argv: string[]): Promise<number> {
     } else if (key === "target add") {
       if (values.path === undefined || flavor === undefined) throw new UsageError('"target add" needs --path and --flavor.');
       result = await ops.targetAdd({ manifestPath: manifest, name: args[0]!, path: values.path, flavor });
+    } else if (key === "unpin") {
+      result = await ops.unpin({ manifestPath: manifest, name: args[0]! });
     } else {
       state = openState(stateDbPath());
       const base: ops.OpsOptions = {
@@ -338,11 +431,16 @@ async function main(argv: string[]): Promise<number> {
       else if (key === "list") result = await ops.list(base);
       else if (key === "outdated") result = await ops.outdated(base);
       else if (key === "update") result = await ops.update({ ...base, names: args });
+      else if (key === "pin") result = await ops.pin({ ...base, name: args[0]!, pin: args[1] });
+      else if (key === "rollback") result = await ops.rollback({ ...base, name: args[0]! });
+      else if (key === "reconcile") result = await ops.reconcile({ ...base, adopt: values.adopt });
+      else if (key === "doctor") result = await ops.doctor({ ...base, clean: values.clean });
       else result = await ops.install(base);
     }
 
     progress.flush();
     process.stdout.write(`${values.json ? JSON.stringify(result, null, 2) : render(key, result)}\n`);
+    for (const { name, note } of notes(result)) process.stderr.write(`wowget: note: ${name}: ${note}\n`);
     for (const { name, target, dir } of leftoverDirs(result)) {
       process.stderr.write(
         `wowget: warning: ${name} (${target}): could not delete the old folders moved to ${dir}; remove it by hand.\n`,

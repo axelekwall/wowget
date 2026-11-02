@@ -155,6 +155,29 @@ export class State {
     return row ? this.toRecord(row) : undefined;
   }
 
+  /**
+   * The install to roll back to: the latest install of another release recorded before the active
+   * release was first installed. Measuring from the first install of the active release means a
+   * rollback followed by another rollback steps further back instead of returning to where it was.
+   */
+  getPreviousInstall(target: string, addon: string): InstallRecord | undefined {
+    const active = this.getActiveInstall(target, addon);
+    const row = (
+      active
+        ? this.db
+            .query(
+              `SELECT * FROM installs WHERE target = ?1 AND addon = ?2 AND active = 0 AND release_id != ?3
+               AND id < (SELECT MIN(id) FROM installs WHERE target = ?1 AND addon = ?2 AND release_id = ?3)
+               ORDER BY id DESC LIMIT 1`,
+            )
+            .get(target, addon.toLowerCase(), active.releaseId)
+        : this.db
+            .query("SELECT * FROM installs WHERE target = ? AND addon = ? AND active = 0 ORDER BY id DESC LIMIT 1")
+            .get(target, addon.toLowerCase())
+    ) as InstallRow | null;
+    return row ? this.toRecord(row) : undefined;
+  }
+
   /** Active installs on `target`, or on every target, ordered by addon then target. */
   listActiveInstalls(target?: string): InstallRecord[] {
     const rows = (
@@ -163,6 +186,26 @@ export class State {
         : this.db.query("SELECT * FROM installs WHERE active = 1 AND target = ? ORDER BY addon").all(target)
     ) as InstallRow[];
     return rows.map((r) => this.toRecord(r));
+  }
+
+  /**
+   * Zip paths referenced by the active install or the rollback target (`getPreviousInstall`) on any
+   * target, optionally restricted to one addon.
+   */
+  keptZipPaths(addon?: string): Set<string> {
+    const pairs = (
+      addon === undefined
+        ? this.db.query("SELECT DISTINCT target, addon FROM installs").all()
+        : this.db.query("SELECT DISTINCT target, addon FROM installs WHERE addon = ?").all(addon.toLowerCase())
+    ) as { target: string; addon: string }[];
+    const paths = new Set<string>();
+    for (const { target, addon: name } of pairs) {
+      const active = this.getActiveInstall(target, name);
+      if (active) paths.add(active.zipPath);
+      const prev = this.getPreviousInstall(target, name);
+      if (prev) paths.add(prev.zipPath);
+    }
+    return paths;
   }
 
   /**

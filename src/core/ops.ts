@@ -1,6 +1,13 @@
 import { lstat, mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { detectInstalls, type DetectedInstall } from "./detect.ts";
+import {
+  findStaleCacheDirs,
+  inspectTarget,
+  pruneAddonCache,
+  type DoctorIssue,
+  type DoctorTargetReport,
+} from "./doctor.ts";
 import { WowgetError } from "./errors.ts";
 import type { OnEvent } from "./events.ts";
 import type { Flavor } from "./flavor.ts";
@@ -24,15 +31,18 @@ import {
   parseManifest,
   planRemoveAddon,
   planRemoveTarget,
+  planSetAddonPin,
   planSetAddonTargets,
   readManifest,
   readManifestText,
+  setAddonTargets,
   writePlanned,
   type AddonEntry,
   type Manifest,
   type NamedTarget,
 } from "./manifest.ts";
 import { cacheDir as defaultCacheDir, expandHome, gameDirCandidates } from "./paths.ts";
+import { scanUnmanaged, type UnmanagedAddon } from "./reconcile.ts";
 import { sourceFor } from "./sources/index.ts";
 import { defaultAddonName, parseSource } from "./sources/parse.ts";
 import type { Http, Resolved } from "./sources/types.ts";
@@ -139,6 +149,20 @@ function resolveRow(ctx: Context, { entry, target }: Row): Promise<Resolved> {
   return pending;
 }
 
+const RESOLVE_CONCURRENCY = 6;
+
+/** Warms `ctx.resolutions` with bounded concurrency so sequential row loops do not wait in series. */
+async function preResolve(ctx: Context, rows: Row[]): Promise<void> {
+  const queue = [...rows];
+  const workers = Array.from({ length: Math.min(RESOLVE_CONCURRENCY, queue.length) }, async () => {
+    while (queue.length) {
+      const row = queue.shift()!;
+      await resolveRow(ctx, row).catch(() => {});
+    }
+  });
+  await Promise.all(workers);
+}
+
 function installRow(ctx: Context, { entry, target }: Row, resolved: Resolved, extra?: Pick<InstallOptions, "keepOld">) {
   return installRelease({
     ...extra,
@@ -158,6 +182,19 @@ function installRow(ctx: Context, { entry, target }: Row, resolved: Resolved, ex
 }
 
 /** An install is current when it came from the same source string and release. */
+/**
+ * The active install when the entry is pinned and that release is installed with all its folders.
+ * Such rows are current without asking the source, which for URL and WoWInterface sources can only
+ * serve the latest file and would otherwise report the pin as an error once the source moves on.
+ */
+async function installedAtPin(state: State, row: Row): Promise<InstallRecord | undefined> {
+  const { entry, target } = row;
+  if (entry.pin === undefined) return undefined;
+  const active = state.getActiveInstall(target.name, entry.name);
+  if (!active || active.source !== entry.source || active.releaseId !== entry.pin) return undefined;
+  return (await missingFolders(target.path, active)).length ? undefined : active;
+}
+
 function isCurrent(active: InstallRecord | undefined, entry: AddonEntry, resolved: Resolved): boolean {
   return active !== undefined && active.source === entry.source && active.releaseId === resolved.releaseId;
 }
@@ -426,6 +463,7 @@ export interface AddEntry {
   folders: string[];
   /** Previous copies of replaced folders that could not be deleted. */
   leftoverDir?: string;
+  note?: string;
 }
 
 export interface AddResult {
@@ -473,35 +511,81 @@ export async function add(opts: AddOptions): Promise<AddResult> {
   if (opts.prerelease && spec.kind !== "github") {
     throw new WowgetError("usage", "--prerelease only applies to GitHub sources.");
   }
-  const name = opts.name ?? defaultAddonName(spec);
-  if (findAddon(ctx.manifest, name)) {
-    throw new WowgetError("duplicate", `An addon named "${name}" is already in the manifest.`);
+  const existingBySource = opts.name === undefined ? ctx.manifest.addons.find((a) => a.source === opts.source) : undefined;
+  let inferredName = opts.name ?? existingBySource?.name;
+  if (inferredName === undefined && spec.kind === "wowi") {
+    const probe = await resolveRow(ctx, {
+      entry: { name: defaultAddonName(spec), source: opts.source, prerelease: false, pin: opts.pin },
+      target: ctx.targets[0]!,
+    });
+    inferredName = probe.defaultName;
   }
-  const entry: AddonEntry = { name, source: opts.source, prerelease: opts.prerelease ?? false };
-  if (opts.pin !== undefined) entry.pin = opts.pin;
-  if (ctx.targets.length < ctx.manifest.targets.length) entry.targets = ctx.targets.map((t) => t.name);
-  // Catch an entry the manifest would reject before downloading anything.
-  try {
-    parseManifest(appendAddonText(await readFile(opts.manifestPath, "utf8"), entry));
-  } catch (err) {
-    if (!(err instanceof WowgetError && err.code === "manifest")) throw err;
-    throw new WowgetError("usage", `Cannot add "${name}": ${err.message}`, { cause: err });
+  const existing = findAddon(ctx.manifest, inferredName ?? defaultAddonName(spec));
+  const name = existing?.name ?? inferredName ?? defaultAddonName(spec);
+
+  let entry: AddonEntry;
+  let installTargets: NamedTarget[];
+  let commitManifest: () => Promise<unknown>;
+
+  if (existing) {
+    const existingOn = addonTargets(ctx.manifest, existing);
+    const addedTargets = opts.targets?.length ? ctx.targets.filter((t) => !existingOn.includes(t.name)) : [];
+    if (!addedTargets.length) {
+      throw new WowgetError("duplicate", `An addon named "${name}" is already in the manifest.`);
+    }
+    if (existing.source !== opts.source) {
+      throw new WowgetError(
+        "duplicate",
+        `An addon named "${name}" is already in the manifest with source "${existing.source}".`,
+      );
+    }
+    if (opts.prerelease !== undefined && opts.prerelease !== existing.prerelease) {
+      throw new WowgetError("usage", `Cannot change --prerelease on existing addon "${name}".`);
+    }
+    if (opts.pin !== undefined && opts.pin !== existing.pin) {
+      throw new WowgetError("usage", `Cannot change --pin on existing addon "${name}".`);
+    }
+    const combined = ctx.manifest.targets
+      .map((t) => t.name)
+      .filter((n) => existingOn.includes(n) || addedTargets.some((t) => t.name === n));
+    const nextTargets = combined.length < ctx.manifest.targets.length ? combined : undefined;
+    const text = await readFile(opts.manifestPath, "utf8");
+    const planned = planSetAddonTargets(text, existing.name, nextTargets, opts.manifestPath);
+    entry = { ...existing, ...(nextTargets ? { targets: nextTargets } : {}) };
+    if (!nextTargets) delete entry.targets;
+    installTargets = addedTargets;
+    commitManifest = () => writePlanned(opts.manifestPath, text, planned);
+  } else {
+    entry = { name, source: opts.source, prerelease: opts.prerelease ?? false };
+    if (opts.pin !== undefined) entry.pin = opts.pin;
+    if (ctx.targets.length < ctx.manifest.targets.length) entry.targets = ctx.targets.map((t) => t.name);
+    // Catch an entry the manifest would reject before downloading anything.
+    try {
+      parseManifest(appendAddonText(await readFile(opts.manifestPath, "utf8"), entry));
+    } catch (err) {
+      if (!(err instanceof WowgetError && err.code === "manifest")) throw err;
+      throw new WowgetError("usage", `Cannot add "${name}": ${err.message}`, { cause: err });
+    }
+    installTargets = ctx.targets;
+    commitManifest = () => addAddon(opts.manifestPath, entry);
   }
 
   // A missing target would only fail after the others were installed.
-  for (const target of ctx.targets) {
+  for (const target of installTargets) {
     if (!(await stat(target.path).then((s) => s.isDirectory(), () => false))) {
       throw new WowgetError("io", `Target "${target.name}": ${target.path} does not exist or is not a directory.`);
     }
   }
 
+  const rows = [...installTargets].sort((a, b) => byName(a.name, b.name)).map((target) => ({ entry, target }));
   // Replaced folders are kept until the manifest is written, so a failure can put them back.
   const done: AddDone[] = [];
   try {
-    for (const row of rowsFor(ctx, [entry])) {
+    for (const row of rows) {
       try {
         const previous = opts.state.getActiveInstall(row.target.name, name);
-        const installed = await installRow(ctx, row, await resolveRow(ctx, row), { keepOld: true });
+        const resolved = await resolveRow(ctx, row);
+        const installed = await installRow(ctx, row, resolved, { keepOld: true });
         done.push({
           target: row.target,
           previous,
@@ -512,13 +596,14 @@ export async function add(opts: AddOptions): Promise<AddResult> {
             releaseId: installed.releaseId,
             version: installed.version,
             folders: installed.folders,
+            ...(resolved.note ? { note: resolved.note } : {}),
           },
         });
       } catch (err) {
-        throw ctx.targets.length > 1 ? onTarget(row.target.name, err) : err;
+        throw rows.length > 1 ? onTarget(row.target.name, err) : err;
       }
     }
-    await addAddon(opts.manifestPath, entry);
+    await commitManifest();
   } catch (err) {
     const failed: string[] = [];
     for (const d of [...done].reverse()) {
@@ -540,6 +625,7 @@ export async function add(opts: AddOptions): Promise<AddResult> {
   for (const d of done) {
     if (d.oldDir && !(await removeBestEffort(d.oldDir))) d.entry.leftoverDir = d.oldDir;
   }
+  await pruneAddonCache(ctx.cacheDir, opts.state, name);
   const result: AddResult = { name, source: opts.source, addons: done.map((d) => d.entry) };
   if (entry.targets) result.targets = entry.targets;
   return result;
@@ -645,7 +731,8 @@ export async function list(opts: Pick<OpsOptions, "manifestPath" | "state" | "ta
 
 // outdated
 
-type OnRow<T> = { name: string; target: string } & T;
+/** `note`: something the source did that the user should know, such as skipping newer releases. */
+type OnRow<T> = { name: string; target: string; note?: string } & T;
 
 export type OutdatedEntry = OnRow<
   | { status: "current"; version: string }
@@ -662,24 +749,38 @@ export interface OutdatedResult {
 
 export async function outdated(opts: OpsOptions): Promise<OutdatedResult> {
   const ctx = await context(opts);
+  const rows = rowsFor(ctx, ctx.manifest.addons);
+  const atPin = new Map<Row, InstallRecord>();
+  for (const row of rows) {
+    const active = await installedAtPin(opts.state, row);
+    if (active) atPin.set(row, active);
+  }
+  await preResolve(ctx, rows.filter((r) => !atPin.has(r)));
   const addons: OutdatedEntry[] = [];
-  for (const row of rowsFor(ctx, ctx.manifest.addons)) {
+  for (const row of rows) {
     const { entry, target } = row;
     const ids = { name: entry.name, target: target.name };
+    let note: { note?: string } = {};
+    const pinned = atPin.get(row);
+    if (pinned) {
+      addons.push({ ...ids, status: "current", version: pinned.version ?? pinned.releaseId });
+      continue;
+    }
     try {
       const resolved = await resolveRow(ctx, row);
+      if (resolved.note) note = { note: resolved.note };
       const active = opts.state.getActiveInstall(target.name, entry.name);
       if (!active) {
-        addons.push({ ...ids, status: "not installed", latest: resolved.version });
+        addons.push({ ...ids, ...note, status: "not installed", latest: resolved.version });
         continue;
       }
       const installed = active.version ?? active.releaseId;
       const missing = await missingFolders(target.path, active);
-      if (missing.length) addons.push({ ...ids, status: "missing", installed, latest: resolved.version, missingFolders: missing });
-      else if (isCurrent(active, entry, resolved)) addons.push({ ...ids, status: "current", version: resolved.version });
-      else addons.push({ ...ids, status: "outdated", installed, latest: resolved.version });
+      if (missing.length) addons.push({ ...ids, ...note, status: "missing", installed, latest: resolved.version, missingFolders: missing });
+      else if (isCurrent(active, entry, resolved)) addons.push({ ...ids, ...note, status: "current", version: resolved.version });
+      else addons.push({ ...ids, ...note, status: "outdated", installed, latest: resolved.version });
     } catch (err) {
-      addons.push({ ...ids, status: "error", error: message(err) });
+      addons.push({ ...ids, ...note, status: "error", error: message(err) });
     }
   }
   return { addons };
@@ -725,23 +826,41 @@ export async function update(opts: UpdateOptions): Promise<UpdateResult> {
     }
   }
 
+  const rows = rowsFor(ctx, [...new Set(entries)]);
+  const atPin = new Map<Row, InstallRecord>();
+  for (const row of rows) {
+    const active = await installedAtPin(opts.state, row);
+    if (active) atPin.set(row, active);
+  }
+  await preResolve(ctx, rows.filter((r) => !atPin.has(r)));
   const addons: UpdateEntry[] = [];
-  for (const row of rowsFor(ctx, [...new Set(entries)])) {
+  for (const row of rows) {
     const { entry, target } = row;
     const ids = { name: entry.name, target: target.name };
+    let note: { note?: string } = {};
+    const pinned = atPin.get(row);
+    if (pinned) {
+      addons.push({ ...ids, status: "current", version: pinned.version ?? pinned.releaseId });
+      continue;
+    }
     try {
       const resolved = await resolveRow(ctx, row);
+      if (resolved.note) note = { note: resolved.note };
       const active = opts.state.getActiveInstall(target.name, entry.name);
       if (active) {
         const intact = !(await missingFolders(target.path, active)).length;
-        if (intact && isCurrent(active, entry, resolved)) addons.push({ ...ids, status: "current", version: resolved.version });
-        else addons.push(await reinstall(ctx, row, resolved, active));
+        if (intact && isCurrent(active, entry, resolved)) addons.push({ ...ids, ...note, status: "current", version: resolved.version });
+        else {
+          addons.push({ ...(await reinstall(ctx, row, resolved, active)), ...note });
+          await pruneAddonCache(ctx.cacheDir, opts.state, entry.name);
+        }
         continue;
       }
       const result = await installRow(ctx, row, resolved);
-      addons.push({ ...ids, status: "installed", version: result.version, folders: result.folders, ...leftover(result) });
+      await pruneAddonCache(ctx.cacheDir, opts.state, entry.name);
+      addons.push({ ...ids, ...note, status: "installed", version: result.version, folders: result.folders, ...leftover(result) });
     } catch (err) {
-      addons.push({ ...ids, status: "error", error: message(err) });
+      addons.push({ ...ids, ...note, status: "error", error: message(err) });
     }
   }
   return { addons };
@@ -753,26 +872,465 @@ export async function update(opts: UpdateOptions): Promise<UpdateResult> {
  */
 export async function install(opts: OpsOptions): Promise<UpdateResult> {
   const ctx = await context(opts);
+  const rows = rowsFor(ctx, ctx.manifest.addons);
+  const intact = new Map<Row, InstallRecord>();
+  for (const row of rows) {
+    const active = opts.state.getActiveInstall(row.target.name, row.entry.name);
+    if (active && !(await missingFolders(row.target.path, active)).length) intact.set(row, active);
+  }
+  await preResolve(
+    ctx,
+    rows.filter((r) => !intact.has(r)),
+  );
   const addons: UpdateEntry[] = [];
-  for (const row of rowsFor(ctx, ctx.manifest.addons)) {
+  for (const row of rows) {
     const { entry, target } = row;
     const ids = { name: entry.name, target: target.name };
-    const active = opts.state.getActiveInstall(target.name, entry.name);
-    if (active && !(await missingFolders(target.path, active)).length) {
-      addons.push({ ...ids, status: "skipped", version: active.version ?? active.releaseId });
+    let note: { note?: string } = {};
+    const skipped = intact.get(row);
+    if (skipped) {
+      addons.push({ ...ids, status: "skipped", version: skipped.version ?? skipped.releaseId });
       continue;
     }
+    const active = opts.state.getActiveInstall(target.name, entry.name);
     try {
       const resolved = await resolveRow(ctx, row);
+      if (resolved.note) note = { note: resolved.note };
       if (active) {
-        addons.push(await reinstall(ctx, row, resolved, active));
+        addons.push({ ...(await reinstall(ctx, row, resolved, active)), ...note });
+        await pruneAddonCache(ctx.cacheDir, opts.state, entry.name);
         continue;
       }
       const result = await installRow(ctx, row, resolved);
-      addons.push({ ...ids, status: "installed", version: result.version, folders: result.folders, ...leftover(result) });
+      await pruneAddonCache(ctx.cacheDir, opts.state, entry.name);
+      addons.push({ ...ids, ...note, status: "installed", version: result.version, folders: result.folders, ...leftover(result) });
     } catch (err) {
-      addons.push({ ...ids, status: "error", error: message(err) });
+      addons.push({ ...ids, ...note, status: "error", error: message(err) });
     }
   }
   return { addons };
+}
+
+// pin, unpin, rollback
+
+export interface PinOptions extends OpsOptions {
+  name: string;
+  /** Release id to pin to; when omitted, pins to the active install's releaseId. */
+  pin?: string;
+}
+
+export interface PinResult {
+  name: string;
+  pin: string;
+  /** Targets updated when an explicit releaseId was resolved and installed. */
+  addons: AddEntry[];
+}
+
+export async function pin(opts: PinOptions): Promise<PinResult> {
+  if (opts.pin === "") throw new WowgetError("usage", "Pin must not be empty.");
+  const { text, manifest } = await readManifestText(opts.manifestPath);
+  const entry = findAddon(manifest, opts.name);
+  if (!entry) throw new WowgetError("not_found", `No addon named "${opts.name}" in the manifest.`);
+  const targets = selectTargets(manifest, opts.manifestPath, undefined).filter((t) =>
+    addonTargets(manifest, entry).includes(t.name),
+  );
+
+  if (opts.pin === undefined) {
+    const actives = targets
+      .map((t) => opts.state.getActiveInstall(t.name, entry.name))
+      .filter((r): r is InstallRecord => r !== undefined);
+    if (!actives.length) {
+      throw new WowgetError(
+        "not_found",
+        `${entry.name} is not installed; pass a release id to "wowget pin ${entry.name} <release>".`,
+      );
+    }
+    const releaseIds = [...new Set(actives.map((a) => a.releaseId))];
+    if (releaseIds.length > 1) {
+      const detail = actives.map((a) => `${a.target}=${a.releaseId}`).join(", ");
+      throw new WowgetError(
+        "conflict",
+        `${entry.name} has different releases installed across targets (${detail}); pass an explicit release id to "wowget pin".`,
+      );
+    }
+    const chosen = releaseIds[0]!;
+    const planned = planSetAddonPin(text, entry.name, chosen, opts.manifestPath);
+    await writePlanned(opts.manifestPath, text, planned);
+    return { name: entry.name, pin: chosen, addons: [] };
+  }
+
+  const planned = planSetAddonPin(text, entry.name, opts.pin, opts.manifestPath);
+  const ctx = await context({ ...opts, targets: undefined });
+  const pinnedEntry: AddonEntry = { ...entry, pin: opts.pin };
+  const allRows = rowsFor(ctx, [pinnedEntry]);
+  const rows: Row[] = [];
+  for (const row of allRows) {
+    const active = opts.state.getActiveInstall(row.target.name, entry.name);
+    if (active && active.releaseId === opts.pin && !(await missingFolders(row.target.path, active)).length) continue;
+    rows.push(row);
+  }
+  for (const { target } of rows) {
+    if (!(await stat(target.path).then((s) => s.isDirectory(), () => false))) {
+      throw new WowgetError("io", `Target "${target.name}": ${target.path} does not exist or is not a directory.`);
+    }
+  }
+
+  const done: AddDone[] = [];
+  try {
+    for (const row of rows) {
+      try {
+        const previous = opts.state.getActiveInstall(row.target.name, entry.name);
+        const installed = await installRow(ctx, row, await resolveRow(ctx, row), { keepOld: true });
+        done.push({
+          target: row.target,
+          previous,
+          oldDir: installed.oldDir,
+          entry: {
+            name: entry.name,
+            target: row.target.name,
+            releaseId: installed.releaseId,
+            version: installed.version,
+            folders: installed.folders,
+          },
+        });
+      } catch (err) {
+        throw rows.length > 1 ? onTarget(row.target.name, err) : err;
+      }
+    }
+    await writePlanned(opts.manifestPath, text, planned);
+  } catch (err) {
+    const failed: string[] = [];
+    for (const d of [...done].reverse()) {
+      try {
+        await undoAdd(opts.state, entry.name, d);
+      } catch (rollbackErr) {
+        const kept = d.oldDir ? `; the replaced folders are in ${d.oldDir}` : "";
+        failed.push(`${d.target.name}: ${message(rollbackErr)}${kept}`);
+      }
+    }
+    if (failed.length) {
+      const code = err instanceof WowgetError ? err.code : "io";
+      throw new WowgetError(
+        code,
+        `${message(err)} Undoing the install of ${entry.name} also failed (${failed.join("; ")}).`,
+        { cause: err },
+      );
+    }
+    throw err;
+  }
+  for (const d of done) {
+    if (d.oldDir && !(await removeBestEffort(d.oldDir))) d.entry.leftoverDir = d.oldDir;
+  }
+  return { name: entry.name, pin: opts.pin, addons: done.map((d) => d.entry) };
+}
+
+export interface UnpinOptions extends Pick<OpsOptions, "manifestPath"> {
+  name: string;
+}
+
+export interface UnpinResult {
+  name: string;
+  previousPin?: string;
+}
+
+export async function unpin(opts: UnpinOptions): Promise<UnpinResult> {
+  const { text, manifest } = await readManifestText(opts.manifestPath);
+  const entry = findAddon(manifest, opts.name);
+  if (!entry) throw new WowgetError("not_found", `No addon named "${opts.name}" in the manifest.`);
+  const planned = planSetAddonPin(text, entry.name, undefined, opts.manifestPath);
+  await writePlanned(opts.manifestPath, text, planned);
+  return { name: entry.name, ...(entry.pin !== undefined ? { previousPin: entry.pin } : {}) };
+}
+
+export interface RollbackOptions extends OpsOptions {
+  name: string;
+}
+
+export interface RollbackEntry {
+  name: string;
+  target: string;
+  from: string | null;
+  to: string;
+  releaseId: string;
+  folders: string[];
+  leftoverDir?: string;
+}
+
+export interface RollbackResult {
+  name: string;
+  addons: RollbackEntry[];
+  /** The release the manifest now pins, so `update` keeps the rollback. */
+  pinned?: string;
+  /**
+   * Why no pin was written: the rollback covered only some of the addon's targets ("partial") or
+   * left them on different releases ("mixed"). The next `update` reinstalls the newer release then.
+   */
+  notPinned?: "partial" | "mixed";
+}
+
+export async function rollback(opts: RollbackOptions): Promise<RollbackResult> {
+  const loaded = await load(opts);
+  const entry = findAddon(loaded.manifest, opts.name);
+  if (!entry) throw new WowgetError("not_found", `No addon named "${opts.name}" in the manifest.`);
+  const rows = rowsFor(loaded, [entry]);
+  if (!rows.length) {
+    const on = addonTargets(loaded.manifest, entry).join(", ");
+    throw new WowgetError(
+      "usage",
+      `${entry.name} is not on target ${loaded.targets.map((t) => t.name).join(", ")}; it is on ${on}.`,
+    );
+  }
+
+  const plans: { row: Row; active?: InstallRecord; previous: InstallRecord }[] = [];
+  const { text: manifestText } = await readManifestText(opts.manifestPath);
+  for (const row of rows) {
+    if (!(await stat(row.target.path).then((s) => s.isDirectory(), () => false))) {
+      throw new WowgetError("io", `Target "${row.target.name}": ${row.target.path} does not exist or is not a directory.`);
+    }
+    const active = opts.state.getActiveInstall(row.target.name, entry.name);
+    const previous = opts.state.getPreviousInstall(row.target.name, entry.name);
+    if (!previous) {
+      throw new WowgetError("not_found", `${row.target.name}: no previous install recorded for ${entry.name}.`);
+    }
+    if (!(await Bun.file(previous.zipPath).exists())) {
+      throw new WowgetError(
+        "not_found",
+        `${row.target.name}: cached zip for ${entry.name} ${previous.version ?? previous.releaseId} (${previous.zipPath}) is missing.`,
+      );
+    }
+    plans.push({ row, active, previous });
+  }
+
+  // Without a pin the next update would reinstall the newer release. The pin applies to every
+  // target, so it is only written when the rollback covers them all and lands on one release.
+  const releaseIds = new Set(plans.map((p) => p.previous.releaseId));
+  const coversAll = rows.length === addonTargets(loaded.manifest, entry).length;
+  const pinTo = coversAll && releaseIds.size === 1 ? [...releaseIds][0]! : undefined;
+  const plannedManifest = pinTo !== undefined ? planSetAddonPin(manifestText, entry.name, pinTo, opts.manifestPath) : undefined;
+  const notPinned = pinTo !== undefined ? undefined : !coversAll ? "partial" : "mixed";
+
+  const cacheDir = opts.cacheDir ?? defaultCacheDir();
+  const done: (AddDone & { rollbackEntry: RollbackEntry })[] = [];
+  try {
+    for (const { row, active, previous } of plans) {
+      try {
+        const resolved: Resolved = {
+          source: previous.source,
+          releaseId: previous.releaseId,
+          version: previous.version ?? previous.releaseId,
+          filename: previous.filename,
+          downloadUrl: `file://${previous.zipPath}`,
+          flavorVerified: false,
+          localPath: previous.zipPath,
+        };
+        const installed = await installRelease({
+          target: row.target.name,
+          addon: entry.name,
+          resolved,
+          targetDir: row.target.path,
+          flavor: row.target.flavor,
+          state: opts.state,
+          force: opts.force,
+          cacheDir,
+          sha256: previous.sha256,
+          onEvent: opts.onEvent,
+          keepOld: true,
+        });
+        const item: AddEntry = {
+          name: entry.name,
+          target: row.target.name,
+          releaseId: installed.releaseId,
+          version: installed.version,
+          folders: installed.folders,
+        };
+        done.push({
+          target: row.target,
+          previous: active,
+          oldDir: installed.oldDir,
+          entry: item,
+          rollbackEntry: {
+            name: entry.name,
+            target: row.target.name,
+            from: active ? (active.version ?? active.releaseId) : null,
+            to: installed.version,
+            releaseId: installed.releaseId,
+            folders: installed.folders,
+          },
+        });
+      } catch (err) {
+        throw plans.length > 1 ? onTarget(row.target.name, err) : err;
+      }
+    }
+    if (plannedManifest !== undefined) await writePlanned(opts.manifestPath, manifestText, plannedManifest);
+  } catch (err) {
+    const failed: string[] = [];
+    for (const d of [...done].reverse()) {
+      try {
+        await undoAdd(opts.state, entry.name, d);
+      } catch (rollbackErr) {
+        const kept = d.oldDir ? `; the replaced folders are in ${d.oldDir}` : "";
+        failed.push(`${d.target.name}: ${message(rollbackErr)}${kept}`);
+      }
+    }
+    if (failed.length) {
+      const code = err instanceof WowgetError ? err.code : "io";
+      throw new WowgetError(
+        code,
+        `${message(err)} Undoing the rollback of ${entry.name} also failed (${failed.join("; ")}).`,
+        { cause: err },
+      );
+    }
+    throw err;
+  }
+  for (const d of done) {
+    if (d.oldDir && !(await removeBestEffort(d.oldDir))) d.rollbackEntry.leftoverDir = d.oldDir;
+  }
+  return {
+    name: entry.name,
+    addons: done.map((d) => d.rollbackEntry),
+    ...(pinTo !== undefined ? { pinned: pinTo } : { notPinned: notPinned! }),
+  };
+}
+
+// reconcile
+
+export interface ReconcileOptions extends OpsOptions {
+  adopt?: boolean;
+}
+
+export type ReconcileStatus = "unmanaged" | "adopted" | "unmatched" | "error";
+
+export interface ReconcileEntry extends UnmanagedAddon {
+  status: ReconcileStatus;
+  error?: string;
+  leftoverDir?: string;
+}
+
+export interface ReconcileResult {
+  addons: ReconcileEntry[];
+}
+
+export async function reconcile(opts: ReconcileOptions): Promise<ReconcileResult> {
+  const ctx = await context(opts);
+  const targets = [...ctx.targets].sort((a, b) => byName(a.name, b.name));
+  const discovered: { target: NamedTarget; group: UnmanagedAddon }[] = [];
+  for (const target of targets) {
+    for (const group of await scanUnmanaged(target.path, target.name, opts.state)) {
+      discovered.push({ target, group });
+    }
+  }
+  if (!opts.adopt) {
+    return {
+      addons: discovered.map(({ group }) => ({
+        ...group,
+        status: group.source ? "unmanaged" : "unmatched",
+      })),
+    };
+  }
+
+  const addons: ReconcileEntry[] = [];
+  for (const { target, group } of discovered) {
+    if (!group.source) {
+      addons.push({ ...group, status: "unmatched" });
+      continue;
+    }
+    try {
+      const manifest = await readManifest(opts.manifestPath);
+      const bySource = manifest.addons.find((a) => a.source === group.source);
+      const byNameMatch = findAddon(manifest, group.name);
+      if (byNameMatch && byNameMatch.source !== group.source) {
+        throw new WowgetError(
+          "conflict",
+          `Manifest already has "${byNameMatch.name}" with source "${byNameMatch.source}".`,
+        );
+      }
+      const existing = bySource ?? byNameMatch;
+      const addonName = existing?.name ?? group.name;
+      const tempEntry: AddonEntry = existing ?? { name: addonName, source: group.source, prerelease: false };
+      const row: Row = { entry: tempEntry, target };
+      const resolved = await resolveRow(ctx, row);
+      const installed = await installRelease({
+        target: target.name,
+        addon: addonName,
+        resolved,
+        targetDir: target.path,
+        flavor: target.flavor,
+        state: opts.state,
+        force: opts.force,
+        adoptFolders: group.folders,
+        cacheDir: ctx.cacheDir,
+        fetch: opts.fetch,
+        onEvent: opts.onEvent,
+      });
+      if (!existing) {
+        await addAddon(opts.manifestPath, {
+          name: addonName,
+          source: group.source,
+          prerelease: false,
+          ...(manifest.targets.length > 1 ? { targets: [target.name] } : {}),
+        });
+      } else {
+        const on = addonTargets(manifest, existing);
+        if (!on.includes(target.name)) {
+          const combined = manifest.targets.map((t) => t.name).filter((n) => on.includes(n) || n === target.name);
+          const nextTargets = combined.length < manifest.targets.length ? combined : undefined;
+          await setAddonTargets(opts.manifestPath, existing.name, nextTargets);
+        }
+      }
+      addons.push({
+        name: addonName,
+        target: target.name,
+        folders: installed.folders,
+        version: installed.version,
+        source: group.source,
+        status: "adopted",
+        ...leftover(installed),
+      });
+    } catch (err) {
+      addons.push({ ...group, status: "error", error: message(err) });
+    }
+  }
+  return { addons };
+}
+
+// doctor
+
+export interface DoctorOptions extends Pick<OpsOptions, "manifestPath" | "state" | "targets" | "cacheDir"> {
+  clean?: boolean;
+}
+
+export interface DoctorResult {
+  targets: DoctorTargetReport[];
+  issues: DoctorIssue[];
+  cleaned: string[];
+}
+
+export async function doctor(opts: DoctorOptions): Promise<DoctorResult> {
+  const loaded = await load(opts);
+  const clean = opts.clean ?? false;
+  const cacheDir = opts.cacheDir ?? defaultCacheDir();
+  const targets: DoctorTargetReport[] = [];
+  const issues: DoctorIssue[] = [];
+  const cleaned: string[] = [];
+
+  for (const target of loaded.targets) {
+    const res = await inspectTarget(target, loaded.manifest, opts.state, clean);
+    targets.push(res.report);
+    issues.push(...res.issues);
+    cleaned.push(...res.cleaned);
+  }
+
+  for (const dir of await findStaleCacheDirs(cacheDir, opts.state)) {
+    if (clean && (await removeBestEffort(dir))) {
+      cleaned.push(dir);
+    } else {
+      issues.push({
+        kind: "stale_cache",
+        path: dir,
+        message: `cache: unreferenced release directory ${dir}.`,
+      });
+    }
+  }
+
+  return { targets, issues, cleaned };
 }

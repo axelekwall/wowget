@@ -75,6 +75,16 @@ function parseTargets(data: Record<string, unknown>, file?: string): NamedTarget
   });
 }
 
+/**
+ * Why `name` cannot be an addon name, or undefined when it can. Names become cache directory
+ * names, where "." and ".." would point at the cache itself or its parent.
+ */
+export function addonNameProblem(name: string): string | undefined {
+  if (name.trim() === "") return "must not be blank";
+  if (name.trim() === "." || name.trim() === "..") return 'must not be "." or ".."';
+  return undefined;
+}
+
 export function parseManifest(text: string, file?: string): Manifest {
   let data: unknown;
   try {
@@ -103,6 +113,8 @@ export function parseManifest(text: string, file?: string): Manifest {
     if (!isTable(raw)) fail(file, `${where} must be a table`);
     checkKeys(raw, ADDON_KEYS, where, file);
     const name = requireString(raw, "name", where, file);
+    const nameProblem = addonNameProblem(name);
+    if (nameProblem) fail(file, `${where}: name "${name}" ${nameProblem}`);
     const source = requireString(raw, "source", where, file);
     try {
       parseSource(source);
@@ -172,6 +184,10 @@ export function renderManifest(targets: NamedTarget[]): string {
 
 function renderTargetsLine(targets: string[]): string {
   return `targets = [${targets.map(tomlString).join(", ")}]`;
+}
+
+function renderPinLine(pin: string): string {
+  return `pin = ${tomlString(pin)}`;
 }
 
 function renderAddon(entry: AddonEntry): string {
@@ -299,6 +315,20 @@ function valueEnd(lines: string[], start: number, stop: number): number {
   return start + 1;
 }
 
+/** Line index of the unquoted key `key` inside `[header + 1, end)`, skipping multi-line values. */
+function findBlockKeyLine(lines: string[], header: number, end: number, key: string): number {
+  const re = new RegExp(`^\\s*${key}\\s*=`);
+  for (let i = header + 1; i < end; ) {
+    if (isBlankOrComment(lines[i]!)) {
+      i++;
+      continue;
+    }
+    if (re.test(lines[i]!)) return i;
+    i = valueEnd(lines, i, end);
+  }
+  return -1;
+}
+
 /**
  * Returns `text` with the `targets =` line of the addon block named `name` replaced, inserted
  * after its `source =` line, or deleted when `targets` is undefined.
@@ -307,21 +337,35 @@ export function setAddonTargetsText(text: string, name: string, targets: string[
   const lines = text.split("\n");
   const header = findAddonHeader(lines, name);
   const end = blockEnd(lines, header);
-  const keyLine = (key: string) => {
-    const re = new RegExp(`^\\s*${key}\\s*=`);
-    for (let i = header + 1; i < end; i++) if (re.test(lines[i]!)) return i;
-    return -1;
-  };
-  const existing = keyLine("targets");
+  const existing = findBlockKeyLine(lines, header, end, "targets");
   if (existing >= 0) {
     const stop = valueEnd(lines, existing, end);
     const replacement = targets === undefined ? [] : [renderTargetsLine(targets)];
     return [...lines.slice(0, existing), ...replacement, ...lines.slice(stop)].join("\n");
   }
   if (targets === undefined) return text;
-  const source = keyLine("source");
+  const source = findBlockKeyLine(lines, header, end, "source");
   const at = source >= 0 ? valueEnd(lines, source, end) : header + 1;
   return [...lines.slice(0, at), renderTargetsLine(targets), ...lines.slice(at)].join("\n");
+}
+
+/**
+ * Returns `text` with the `pin =` line of the addon block named `name` replaced, appended at the
+ * end of the block's keys, or deleted when `pin` is undefined.
+ */
+export function setAddonPinText(text: string, name: string, pin: string | undefined): string {
+  const lines = text.split("\n");
+  const header = findAddonHeader(lines, name);
+  const end = blockEnd(lines, header);
+  const existing = findBlockKeyLine(lines, header, end, "pin");
+  if (existing >= 0) {
+    const stop = valueEnd(lines, existing, end);
+    const replacement = pin === undefined ? [] : [renderPinLine(pin)];
+    return [...lines.slice(0, existing), ...replacement, ...lines.slice(stop)].join("\n");
+  }
+  if (pin === undefined) return text;
+  const [, blockStop] = blockRange(lines, header);
+  return [...lines.slice(0, blockStop), renderPinLine(pin), ...lines.slice(blockStop)].join("\n");
 }
 
 async function readText(path: string): Promise<string> {
@@ -537,4 +581,27 @@ export function planSetAddonTargets(text: string, name: string, targets: string[
 export async function setAddonTargets(path: string, name: string, targets: string[] | undefined): Promise<Manifest> {
   const text = await readText(path);
   return writePlannedText(path, text, planSetAddonTargets(text, name, targets, path));
+}
+
+/**
+ * Returns `text` with the addon's `pin` set, checked to parse back to the expected manifest;
+ * `undefined` removes the key.
+ */
+export function planSetAddonPin(text: string, name: string, pin: string | undefined, path = "the manifest"): string {
+  if (pin === "") throw new WowgetError("usage", "Pin must not be empty.");
+  const manifest = parseManifest(text, path);
+  const entry = findAddon(manifest, name);
+  if (!entry) throw new WowgetError("not_found", `No addon named "${name}" in the manifest.`);
+  const updated: AddonEntry = { ...entry };
+  if (pin === undefined) delete updated.pin;
+  else updated.pin = pin;
+  const next = setAddonPinText(text, entry.name, pin);
+  checkPlanned(path, next, { ...manifest, addons: manifest.addons.map((a) => (a === entry ? updated : a)) });
+  return next;
+}
+
+/** Sets or clears (`undefined`) the addon's `pin` in the manifest. */
+export async function setAddonPin(path: string, name: string, pin: string | undefined): Promise<Manifest> {
+  const text = await readText(path);
+  return writePlannedText(path, text, planSetAddonPin(text, name, pin, path));
 }
