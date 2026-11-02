@@ -243,3 +243,7 @@ zips; sources tested against recorded responses.
   - After every write, re-parse the file and refuse the write if it no
     longer parses or the addon set is not what was expected.
   - Reading uses Bun's native TOML import or `smol-toml`.
+- **Terminal UI.** Decided 2026-11-02. A TUI on OpenTUI is the first
+  interface for users who do not want the commands; see
+  [SPEC-TUI.md](SPEC-TUI.md). It stays a layer over the same core and
+  manifest, so it is not the GUI/store in the risk table.
