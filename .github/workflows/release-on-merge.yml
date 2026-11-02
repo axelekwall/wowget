@@ -1,0 +1,44 @@
+name: Release on merge
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Only print the next version
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One release at a time; a queued run sees the tag the previous one created.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.next.outputs.tag }}
+      release: ${{ steps.next.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - id: next
+        run: bun scripts/release-version.ts
+
+  release:
+    needs: version
+    if: needs.version.outputs.release == 'true' && !inputs.dry_run
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.version.outputs.tag }}

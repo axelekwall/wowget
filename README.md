@@ -164,12 +164,31 @@ for other builds).
 
 ### Releasing
 
-Push a tag and the release workflow builds the binaries, publishes a GitHub
-release with generated notes, then downloads and runs each binary on its
-platform. A tag with a `-` suffix (`v0.2.0-beta.1`) becomes a pre-release.
+Every push to `main` is checked for a release. Commit headers follow
+[Conventional Commits](https://www.conventionalcommits.org/), and the ones
+since the last `vX.Y.Z` tag decide the next version: a breaking change (`feat!:`
+or a `BREAKING CHANGE:` footer) bumps the major version, `feat` the minor and
+`fix` or `perf` the patch. Other types (`docs`, `ci`, `test`, `chore`,
+`refactor`, ...) do not release. Before 1.0 a breaking change bumps the minor
+version. Pull requests are squash-merged, so their title is the header that
+counts, or the commit's own header when there is one commit; a check rejects
+titles that do not follow the format.
+
+The release workflow then builds the binaries, publishes a GitHub release
+with generated notes and creates the tag, then downloads and runs each binary
+on its platform. Run "Release on merge" by hand with "dry run" to see the next
+version without releasing, or locally:
 
 ```sh
-git tag v0.1.0 && git push origin v0.1.0
+bun scripts/release-version.ts
+```
+
+Pushing a tag by hand still releases it; a tag with a `-` suffix
+(`v0.4.0-beta.1`) becomes a pre-release and is ignored when computing the
+next version.
+
+```sh
+git tag v0.4.0-beta.1 && git push origin v0.4.0-beta.1
 ```
 
 ## License
