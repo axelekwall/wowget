@@ -15,6 +15,8 @@ export interface Resolved {
   flavorVerified: boolean;
   /** A file already on disk (for the URL source, the copy in the cache). */
   localPath?: string;
+  /** Suggested addon name from the source metadata when none was given on `add`. */
+  defaultName?: string;
 }
 
 export interface HttpRequestOptions {
@@ -65,6 +67,6 @@ export interface ResolveContext {
 }
 
 export interface Source {
-  kind: "github" | "url";
+  kind: "github" | "wowi" | "url";
   resolve(ctx: ResolveContext): Promise<Resolved>;
 }

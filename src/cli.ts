@@ -32,7 +32,7 @@ add, remove, list, outdated, update, install and rollback act on every target un
 filtered with -t/--target, which can be repeated. "add -t" records the targets
 in the manifest; "remove -t" removes the addon from those targets only.
 
-Sources: github:owner/repo, url:https://...
+Sources: github:owner/repo, wowi:<id>, url:https://...
 Flavors: ${FLAVORS.join(", ")}
 
 Options:

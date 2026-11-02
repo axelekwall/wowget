@@ -488,8 +488,17 @@ export async function add(opts: AddOptions): Promise<AddResult> {
   if (opts.prerelease && spec.kind !== "github") {
     throw new WowgetError("usage", "--prerelease only applies to GitHub sources.");
   }
-  const existing = findAddon(ctx.manifest, opts.name ?? defaultAddonName(spec));
-  const name = existing?.name ?? opts.name ?? defaultAddonName(spec);
+  const existingBySource = opts.name === undefined ? ctx.manifest.addons.find((a) => a.source === opts.source) : undefined;
+  let inferredName = opts.name ?? existingBySource?.name;
+  if (inferredName === undefined && spec.kind === "wowi") {
+    const probe = await resolveRow(ctx, {
+      entry: { name: defaultAddonName(spec), source: opts.source, prerelease: false, pin: opts.pin },
+      target: ctx.targets[0]!,
+    });
+    inferredName = probe.defaultName;
+  }
+  const existing = findAddon(ctx.manifest, inferredName ?? defaultAddonName(spec));
+  const name = existing?.name ?? inferredName ?? defaultAddonName(spec);
 
   let entry: AddonEntry;
   let installTargets: NamedTarget[];

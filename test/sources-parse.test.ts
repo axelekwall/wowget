@@ -18,11 +18,19 @@ describe("parseSource", () => {
     expect(defaultAddonName(parseSource("url:https://example.invalid/a%zz.zip"))).toBe("a%zz");
   });
 
+  test("wowi", () => {
+    const spec = parseSource("wowi:26270");
+    expect(spec).toEqual({ kind: "wowi", raw: "wowi:26270", id: "26270" });
+    expect(defaultAddonName(spec)).toBe("wowi-26270");
+  });
+
   test("invalid forms name the supported ones", () => {
-    expect(() => parseSource("curse:12345")).toThrow('"github:owner/repo" and "url:https://..."');
+    expect(() => parseSource("curse:12345")).toThrow('"github:owner/repo", "wowi:<id>" and "url:https://..."');
     expect(() => parseSource("Questie/Questie")).toThrow("supported forms");
     expect(() => parseSource("github:Questie")).toThrow("github:owner/repo");
     expect(() => parseSource("github:a/b/c")).toThrow("github:owner/repo");
+    expect(() => parseSource("wowi:abc")).toThrow("wowi:<id>");
+    expect(() => parseSource("wowi:0")).toThrow("wowi:<id>");
     expect(() => parseSource("url:ftp://example.com/a.zip")).toThrow("http and https");
     expect(() => parseSource("url:not a url")).toThrow("Invalid URL source");
   });

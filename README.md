@@ -2,7 +2,7 @@
 
 A small command-line addon manager for World of Warcraft on macOS and Windows.
 Keeps your addon list in a plain TOML manifest, installs from open sources
-(GitHub releases, direct URLs) and updates them in place. No CurseForge
+(GitHub releases, WoWInterface, direct URLs) and updates them in place. No CurseForge
 client, no ads, no browsing UI.
 
 Status: MVP. See [docs/PLAN.md](docs/PLAN.md) for the roadmap,
@@ -59,6 +59,7 @@ wowget target add retail --path DIR --flavor mainline
 wowget target remove retail                   # uninstall everything on it and drop it
 wowget add github:Questie/Questie             # install on every target and add to the manifest
 wowget add github:Questie/Questie -t era      # install on some targets only
+wowget add wowi:26270                         # install from WoWInterface by addon ID
 wowget add url:https://example.com/Foo.zip --name Foo
 wowget list                                   # what is installed, per target (no network)
 wowget outdated                               # check for newer releases

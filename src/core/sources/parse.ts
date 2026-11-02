@@ -2,9 +2,10 @@ import { WowgetError } from "../errors.ts";
 
 export type SourceSpec =
   | { kind: "github"; raw: string; owner: string; repo: string }
+  | { kind: "wowi"; raw: string; id: string }
   | { kind: "url"; raw: string; url: string };
 
-const SUPPORTED = 'supported forms are "github:owner/repo" and "url:https://..."';
+const SUPPORTED = 'supported forms are "github:owner/repo", "wowi:<id>" and "url:https://..."';
 
 export function parseSource(raw: string): SourceSpec {
   const colon = raw.indexOf(":");
@@ -17,6 +18,13 @@ export function parseSource(raw: string): SourceSpec {
       throw new WowgetError("source", `Invalid GitHub source "${raw}"; expected "github:owner/repo".`);
     }
     return { kind: "github", raw, owner: match[1]!, repo: match[2]! };
+  }
+
+  if (kind === "wowi") {
+    if (!/^[1-9][0-9]*$/.test(rest)) {
+      throw new WowgetError("source", `Invalid WoWInterface source "${raw}"; expected "wowi:<id>" with a numeric id.`);
+    }
+    return { kind: "wowi", raw, id: rest };
   }
 
   if (kind === "url") {
@@ -47,6 +55,7 @@ export function decodeSegment(segment: string): string {
 /** Name used on `add` when none is given: the repo name, or the URL's last path segment without ".zip". */
 export function defaultAddonName(spec: SourceSpec): string {
   if (spec.kind === "github") return spec.repo;
+  if (spec.kind === "wowi") return `wowi-${spec.id}`;
   const url = new URL(spec.url);
   const segments = url.pathname.split("/").filter(Boolean);
   const last = segments.length ? decodeSegment(segments[segments.length - 1]!) : "";

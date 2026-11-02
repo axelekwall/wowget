@@ -1,0 +1,106 @@
+import { describe, expect, test } from "bun:test";
+import { zipSync } from "fflate";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { HttpClient } from "../src/core/http.ts";
+import { readManifest } from "../src/core/manifest.ts";
+import * as ops from "../src/core/ops.ts";
+import { wowiSource } from "../src/core/sources/wowi.ts";
+import { openState } from "../src/core/state.ts";
+import { fakeFetch, json } from "./helpers/fetch.ts";
+import { useTempDirs } from "./helpers/tmp.ts";
+
+const tempDir = useTempDirs();
+const API = "https://api.mmoui.com/v3/game/WOW/filedetails/26270.json";
+const DL = "https://cdn.wowinterface.com/downloads/getfile.php?id=26270";
+
+const sampleDetails = [
+  {
+    UID: 26270,
+    UIName: "Leatrix Plus",
+    UIFileName: "Leatrix_Plus-1.15.107.zip",
+    UIVersion: "1.15.107",
+    UIDate: 1730000000000,
+    UIDownload: DL,
+  },
+];
+
+describe("wowi source", () => {
+  test("resolves file details and strips the version suffix for defaultName", async () => {
+    const fake = fakeFetch({ [API]: () => json(sampleDetails) });
+    const http = new HttpClient({ fetch: fake.fetch, env: {} });
+    const resolved = await wowiSource({ raw: "wowi:26270", id: "26270" }).resolve({
+      addon: "wowi-26270",
+      flavor: "forever",
+      prerelease: false,
+      http,
+      cacheDir: "/nonexistent",
+    });
+    expect(resolved).toEqual({
+      source: "wowi:26270",
+      releaseId: "1.15.107",
+      version: "1.15.107",
+      filename: "Leatrix_Plus-1.15.107.zip",
+      downloadUrl: DL,
+      publishedAt: new Date(1730000000000).toISOString(),
+      flavorVerified: false,
+      defaultName: "Leatrix_Plus",
+    });
+  });
+
+  test("honours a matching pin and rejects a mismatched one", async () => {
+    const fake = fakeFetch({ [API]: () => json(sampleDetails) });
+    const http = new HttpClient({ fetch: fake.fetch, env: {} });
+    const src = wowiSource({ raw: "wowi:26270", id: "26270" });
+    const ok = await src.resolve({ addon: "Leatrix_Plus", flavor: "forever", prerelease: false, pin: "1.15.107", http, cacheDir: "/nonexistent" });
+    expect(ok.releaseId).toBe("1.15.107");
+
+    const mismatch = await src
+      .resolve({ addon: "Leatrix_Plus", flavor: "forever", prerelease: false, pin: "1.15.100", http, cacheDir: "/nonexistent" })
+      .catch((e) => e);
+    expect(mismatch.code).toBe("source");
+    expect(mismatch.message).toContain('pinned to "1.15.100"');
+  });
+
+  test("a 404 is a source error naming the addon id", async () => {
+    const fake = fakeFetch({});
+    const http = new HttpClient({ fetch: fake.fetch, env: {} });
+    const err = await wowiSource({ raw: "wowi:99999", id: "99999" })
+      .resolve({ addon: "x", flavor: "forever", prerelease: false, http, cacheDir: "/nonexistent" })
+      .catch((e) => e);
+    expect(err.code).toBe("source");
+    expect(err.message).toContain("99999 was not found");
+  });
+
+  test("ops.add with wowi:<id> uses the resolved defaultName when --name is omitted", async () => {
+    const root = await tempDir();
+    const state = openState(join(root, "state", "state.db"));
+    try {
+      const manifestPath = join(root, "wowget.toml");
+      const addons = join(root, "AddOns");
+      await ops.init({ manifestPath, path: addons });
+      const text = (s: string) => new TextEncoder().encode(s);
+      const fake = fakeFetch({
+        [API]: () => json(sampleDetails),
+        [DL]: () => new Response(zipSync({ "Leatrix_Plus/Leatrix_Plus_Forever.toc": text(""), "Leatrix_Plus/core.lua": text("ltp") })),
+      });
+      const added = await ops.add({
+        manifestPath,
+        state,
+        cacheDir: join(root, "cache"),
+        fetch: fake.fetch,
+        env: {},
+        source: "wowi:26270",
+      });
+      expect(added.name).toBe("Leatrix_Plus");
+      expect((await readManifest(manifestPath)).addons).toEqual([
+        { name: "Leatrix_Plus", source: "wowi:26270", prerelease: false },
+      ]);
+      expect(await readFile(join(addons, "Leatrix_Plus", "core.lua"), "utf8")).toBe("ltp");
+      // The metadata endpoint is fetched only once during add.
+      expect(fake.requests.filter((r) => r.url === API)).toHaveLength(1);
+    } finally {
+      state.close();
+    }
+  });
+});
