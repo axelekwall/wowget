@@ -12,6 +12,14 @@ import { useTempDirs } from "./helpers/tmp.ts";
 const tempDir = useTempDirs();
 const text = (s: string) => new TextEncoder().encode(s);
 
+// A registry that names none of the folders below, so these tests do not depend on the real one.
+const REGISTRY = "https://registry.test/addons.toml";
+const registryRoute = {
+  [REGISTRY]: () =>
+    new Response('[[addon]]\nname = "Unrelated"\nsource = "wowi:1"\nflavors = ["classic"]\nfolders = ["Unrelated"]\n'),
+};
+const registryEnv = { WOWGET_REGISTRY_URL: REGISTRY };
+
 async function makeFolder(addonsDir: string, name: string, tocText: string): Promise<void> {
   const dir = join(addonsDir, name);
   await mkdir(dir, { recursive: true });
@@ -89,7 +97,8 @@ describe("reconcile", () => {
         manifestPath,
         state,
         cacheDir: join(root, "cache"),
-        env: { WOWGET_REGISTRY_URL: "off" },
+        fetch: fakeFetch(registryRoute).fetch,
+        env: registryEnv,
       });
       expect(report.addons.map((a) => [a.name, a.status, a.source])).toEqual([
         ["Mystery", "unmatched", null],
@@ -99,6 +108,7 @@ describe("reconcile", () => {
       const releases = "https://api.github.com/repos/Questie/Questie/releases?per_page=30";
       const zipUrl = "https://github.com/Questie/Questie/releases/download/v11.2.0/Questie.zip";
       const fake = fakeFetch({
+        ...registryRoute,
         [releases]: () =>
           json([{ tag_name: "v11.2.0", draft: false, prerelease: false, assets: [{ name: "Questie.zip", browser_download_url: zipUrl }] }]),
         [zipUrl]: () =>
@@ -110,7 +120,7 @@ describe("reconcile", () => {
         state,
         cacheDir: join(root, "cache"),
         fetch: fake.fetch,
-        env: {},
+        env: registryEnv,
         adopt: true,
       });
       expect(adopted.addons).toEqual([
@@ -150,10 +160,11 @@ describe("reconcile", () => {
       await ops.init({ manifestPath, path: addons });
       const sharedZip = "https://example.test/Shared.zip";
       const routes: Parameters<typeof fakeFetch>[0] = {
+        ...registryRoute,
         [sharedZip]: () => new Response(zipSync({ "Shared/Shared_Forever.toc": text(""), "Shared/core.lua": text("managed") })),
       };
       const fake = fakeFetch(routes);
-      const opts = { manifestPath, state, cacheDir: join(root, "cache"), fetch: fake.fetch, env: {} };
+      const opts = { manifestPath, state, cacheDir: join(root, "cache"), fetch: fake.fetch, env: registryEnv };
       await ops.add({ ...opts, source: `url:${sharedZip}` });
       await makeFolder(addons, "Foo", "## Interface: 16001\n## X-GitHub: Foo/Foo\n");
 

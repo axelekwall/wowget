@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { OnEvent } from "../events.ts";
@@ -34,7 +35,33 @@ export function catalogPath(cacheDir: string): string {
   return join(cacheDir, ".catalog", "wowi.json");
 }
 
-const str = (v: unknown) => (typeof v === "string" && v !== "" ? v : undefined);
+const NAMED_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+
+/** WoWInterface names and authors arrive HTML-escaped ("MountMod (new &amp; improved)"). */
+export function decodeEntities(text: string): string {
+  return text.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (whole, code: string) => {
+    if (code[0] !== "#") return NAMED_ENTITIES[code.toLowerCase()] ?? whole;
+    const n = code[1] === "x" || code[1] === "X" ? Number.parseInt(code.slice(2), 16) : Number(code.slice(1));
+    return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : whole;
+  });
+}
+
+const str = (v: unknown) => (typeof v === "string" && v !== "" ? decodeEntities(v) : undefined);
+const isStringList = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === "string");
+
+/** True when `value` has the shape this binary writes, so a copy from another version is never trusted blindly. */
+function isCatalogEntry(value: unknown): value is CatalogEntry {
+  if (typeof value !== "object" || value === null) return false;
+  const e = value as Record<string, unknown>;
+  return (
+    typeof e.id === "string" &&
+    typeof e.name === "string" &&
+    typeof e.downloadsMonthly === "number" &&
+    isStringList(e.versions) &&
+    isStringList(e.folders) &&
+    ["author", "version", "updatedAt", "url"].every((k) => e[k] === undefined || typeof e[k] === "string")
+  );
+}
 
 /** Keeps the used fields of a filelist response, dropping entries without an id or a name. */
 export function projectCatalog(raw: unknown): CatalogEntry[] {
@@ -43,7 +70,7 @@ export function projectCatalog(raw: unknown): CatalogEntry[] {
   for (const item of raw) {
     if (typeof item !== "object" || item === null) continue;
     const e = item as Record<string, unknown>;
-    const id = str(String(e.UID ?? ""));
+    const id = typeof e.UID === "string" || typeof e.UID === "number" ? String(e.UID) : undefined;
     const name = str(e.UIName);
     if (!id || !/^[1-9][0-9]*$/.test(id) || !name) continue;
     const date = Number(e.UIDate);
@@ -99,12 +126,26 @@ export function catalogRow(entry: CatalogEntry): SearchRow {
   return row;
 }
 
+/** The cached copy, or undefined when it is missing, unreadable or not in this binary's format. */
 async function readCopy(cacheDir: string): Promise<CatalogEntry[] | undefined> {
   try {
-    const data = JSON.parse(await readFile(catalogPath(cacheDir), "utf8"));
-    return Array.isArray(data) ? (data as CatalogEntry[]) : undefined;
+    const data: unknown = JSON.parse(await readFile(catalogPath(cacheDir), "utf8"));
+    return Array.isArray(data) && data.every(isCatalogEntry) ? data : undefined;
   } catch {
     return undefined;
+  }
+}
+
+async function saveCopy(cacheDir: string, entries: CatalogEntry[]): Promise<void> {
+  const path = catalogPath(cacheDir);
+  await mkdir(join(cacheDir, ".catalog"), { recursive: true });
+  // A unique temp name, so two runs refreshing at once do not write over each other's file.
+  const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
+  try {
+    await writeFile(tmp, JSON.stringify(entries));
+    await rename(tmp, path);
+  } finally {
+    await rm(tmp, { force: true });
   }
 }
 
@@ -136,19 +177,22 @@ export async function loadCatalog(opts: {
   const copy = await readCopy(opts.cacheDir);
   if (copy && at !== undefined && now - at < CATALOG_MAX_AGE_MS && !opts.refresh) return { entries: copy };
 
+  let entries: CatalogEntry[];
   try {
     opts.onEvent?.({ type: "catalog:download", url: CATALOG_URL });
     const result = await opts.http.getConditional(CATALOG_URL, {});
-    const entries = projectCatalog(JSON.parse(new TextDecoder().decode(result.body!)));
-    const path = catalogPath(opts.cacheDir);
-    await mkdir(join(opts.cacheDir, ".catalog"), { recursive: true });
-    const tmp = `${path}.tmp`;
-    try {
-      await writeFile(tmp, JSON.stringify(entries));
-      await rename(tmp, path);
-    } finally {
-      await rm(tmp, { force: true });
+    entries = projectCatalog(JSON.parse(new TextDecoder().decode(result.body!)));
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    if (copy) {
+      const age = at === undefined ? "an unknown time" : `${Math.max(0, Math.round((now - at) / 3_600_000))} hours`;
+      return { entries: copy, warning: `WoWInterface catalogue refresh failed (${reason}); using the copy from ${age} ago.` };
     }
+    return { entries: [], warning: `WoWInterface catalogue unavailable: ${reason}` };
+  }
+  // The download is used even when it cannot be kept for the next run.
+  try {
+    await saveCopy(opts.cacheDir, entries);
     opts.http.writeRecord(RECORD_KEY, {
       etag: null,
       lastModified: null,
@@ -157,10 +201,6 @@ export async function loadCatalog(opts: {
     return { entries };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    if (copy) {
-      const age = at === undefined ? "an unknown time" : `${Math.max(0, Math.round((now - at) / 3_600_000))} hours`;
-      return { entries: copy, warning: `WoWInterface catalogue refresh failed (${reason}); using the copy from ${age} ago.` };
-    }
-    return { entries: [], warning: `WoWInterface catalogue unavailable: ${reason}` };
+    return { entries, warning: `Could not save the WoWInterface catalogue for the next run: ${reason}` };
   }
 }

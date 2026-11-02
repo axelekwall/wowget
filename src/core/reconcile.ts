@@ -178,16 +178,6 @@ export async function scanUnmanaged(
   }
   if (!metas.length) return [];
 
-  const byRegistryFolder = registryFolders(hints.registry ?? []);
-  for (const meta of metas) {
-    if (meta.source) continue;
-    const entry = byRegistryFolder.get(meta.folder.toLowerCase());
-    if (entry) {
-      meta.source = entry.source;
-      meta.registryName = entry.name;
-    }
-  }
-
   const byLower = new Map(metas.map((m) => [m.folder.toLowerCase(), m]));
 
   // Find the parent folder of a companion folder by explicit dependency or name prefix.
@@ -227,6 +217,19 @@ export async function scanUnmanaged(
     const list = groups.get(root) ?? [];
     list.push(meta);
     groups.set(root, list);
+  }
+
+  // A group whose TOCs name no source takes it from the registry entry listing one of its
+  // folders, root first. Grouping comes first so a companion folder never gets a source that
+  // differs from its parent's TOC source.
+  const byRegistryFolder = registryFolders(hints.registry ?? []);
+  for (const [root, members] of groups) {
+    if (members.some((m) => m.source)) continue;
+    const entry = [root, ...members].map((m) => byRegistryFolder.get(m.folder.toLowerCase())).find(Boolean);
+    if (entry) {
+      root.source = entry.source;
+      root.registryName = entry.name;
+    }
   }
 
   // Merge groups that resolved to the same detected source.

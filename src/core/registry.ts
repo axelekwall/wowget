@@ -158,7 +158,10 @@ export async function loadRegistry(http: Http, env: Record<string, string | unde
   const url = env.WOWGET_REGISTRY_URL || REGISTRY_URL;
   if (url === "off") return { entries: parseRegistry(snapshotText).entries };
   try {
-    return { entries: parseRegistry(new TextDecoder().decode(await http.getBytes(url))).entries };
+    const { entries } = parseRegistry(new TextDecoder().decode(await http.getBytes(url)));
+    // A file this binary can read none of is as good as no file.
+    if (!entries.length) throw new Error(`${url} has no addon entries this version of wowget can read`);
+    return { entries };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     return { entries: parseRegistry(snapshotText).entries, stale: `Using the built-in addon registry: ${reason}` };

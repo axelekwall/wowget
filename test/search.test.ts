@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { zipSync } from "fflate";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { findStaleCacheDirs } from "../src/core/doctor.ts";
 import { HttpClient } from "../src/core/http.ts";
 import { readManifest } from "../src/core/manifest.ts";
 import * as ops from "../src/core/ops.ts";
@@ -13,9 +14,11 @@ import {
   CATALOG_MAX_AGE_MS,
   CATALOG_URL,
   catalogPath,
+  decodeEntities,
   flavorsForVersions,
   loadCatalog,
   projectCatalog,
+  readCachedCatalog,
 } from "../src/core/search/wowi-catalog.ts";
 import { openState } from "../src/core/state.ts";
 import { fakeFetch, json } from "./helpers/fetch.ts";
@@ -307,6 +310,147 @@ describe("reconcile hints", () => {
         { name: "FooBars", target: "era", folders: ["FooBars"], version: "1.0", source: null, suggestions: ["wowi:7"] },
         { name: "Mystery", target: "era", folders: ["Mystery"], version: "1.0", source: null },
       ]);
+    } finally {
+      state.close();
+    }
+  });
+});
+
+describe("review fixes", () => {
+  test("a companion folder joins its parent's TOC source instead of taking a registry source", async () => {
+    const root = await tempDir();
+    const state = openState(join(root, "state", "state.db"));
+    try {
+      const addons = join(root, "AddOns");
+      const toc = async (name: string, body: string) => {
+        await mkdir(join(addons, name), { recursive: true });
+        await writeFile(join(addons, name, `${name}.toc`), body);
+      };
+      await toc("BigWigs", "## Version: 1\n## X-WoWI-ID: 5086\n");
+      for (const name of ["BigWigs_Core", "BigWigs_Options"]) await toc(name, "## Dependencies: BigWigs\n");
+      const registry = parseRegistry(`
+[[addon]]
+name = "BigWigs"
+source = "github:BigWigsMods/BigWigs"
+flavors = ["classic"]
+folders = ["BigWigs", "BigWigs_Core", "BigWigs_Options"]
+`).entries;
+      expect(await scanUnmanaged(addons, "era", state, { registry })).toEqual([
+        { name: "BigWigs", target: "era", folders: ["BigWigs", "BigWigs_Core", "BigWigs_Options"], version: "1", source: "wowi:5086" },
+      ]);
+      // Without a TOC source the whole group takes the registry source and name.
+      await writeFile(join(addons, "BigWigs", "BigWigs.toc"), "## Version: 1\n");
+      const fromRegistry = await scanUnmanaged(addons, "era", state, { registry });
+      expect(fromRegistry.map((a) => [a.name, a.source, a.folders.length])).toEqual([["BigWigs", "github:BigWigsMods/BigWigs", 3]]);
+    } finally {
+      state.close();
+    }
+  });
+
+  test("reconcile reports a registry match under the registry name", async () => {
+    const root = await tempDir();
+    const state = openState(join(root, "state", "state.db"));
+    try {
+      const manifestPath = join(root, "wowget.toml");
+      const addons = join(root, "AddOns");
+      await ops.init({ manifestPath, path: addons });
+      await mkdir(join(addons, "Foo_Options"), { recursive: true });
+      await writeFile(join(addons, "Foo_Options", "Foo_Options.toc"), "## Version: 2\n");
+      const fake = fakeFetch({ [REGISTRY]: () => new Response(REGISTRY_TEXT) });
+      const report = await ops.reconcile({
+        manifestPath,
+        state,
+        cacheDir: join(root, "cache"),
+        fetch: fake.fetch,
+        env: { WOWGET_REGISTRY_URL: REGISTRY },
+      });
+      expect(report.addons.map((a) => [a.name, a.status, a.source])).toEqual([["Foo", "unmanaged", "wowi:42"]]);
+    } finally {
+      state.close();
+    }
+  });
+
+  test("bare-name add on another target extends the entry that has the same source", async () => {
+    const root = await tempDir();
+    const state = openState(join(root, "state", "state.db"));
+    try {
+      const manifestPath = join(root, "wowget.toml");
+      await ops.init({ manifestPath, path: join(root, "one") });
+      await ops.targetAdd({ manifestPath, name: "two", path: join(root, "two"), flavor: "forever" });
+      const DL = "https://cdn.wowinterface.com/downloads/getfile.php?id=42";
+      const events: string[] = [];
+      const fake = fakeFetch({
+        [REGISTRY]: () => new Response(REGISTRY_TEXT),
+        "https://api.mmoui.com/v3/game/WOW/filedetails/42.json": () =>
+          json([{ UID: 42, UIName: "Foo", UIFileName: "FooAddon-1.0.zip", UIVersion: "1.0", UIDownload: DL }]),
+        [DL]: () => new Response(zipSync({ "FooAddon/FooAddon_Forever.toc": text("") })),
+      });
+      const opts = {
+        manifestPath,
+        state,
+        cacheDir: join(root, "cache"),
+        fetch: fake.fetch,
+        env: { WOWGET_REGISTRY_URL: REGISTRY },
+        onEvent: (e: { type: string }) => events.push(e.type),
+      };
+      await ops.add({ ...opts, source: "wowi:42", targets: ["forever"] });
+      const extended = await ops.add({ ...opts, source: "foo", targets: ["two"] });
+      expect(extended.name).toBe("FooAddon");
+      expect((await readManifest(manifestPath)).addons).toEqual([{ name: "FooAddon", source: "wowi:42", prerelease: false }]);
+      expect(events).not.toContain("registry:stale");
+
+      const offline = { ...opts, fetch: fakeFetch({}).fetch };
+      await ops.add({ ...offline, source: "questie" }).catch(() => {});
+      expect(events).toContain("registry:stale");
+      const slash = await ops.add({ ...offline, source: "Questie/Questie-x" }).catch((e) => e);
+      expect(slash.message).toContain('Did you mean "github:Questie/Questie-x"?');
+      await expect(ops.add({ ...opts, source: " " })).rejects.toMatchObject({ code: "usage" });
+    } finally {
+      state.close();
+    }
+  });
+
+  test("a cached catalogue in another shape is ignored, and a failed save still returns the download", async () => {
+    const cacheDir = await tempDir();
+    await mkdir(join(cacheDir, ".catalog"), { recursive: true });
+    await writeFile(catalogPath(cacheDir), JSON.stringify([{ id: "1", name: "X" }, null]));
+    expect(await readCachedCatalog(cacheDir)).toEqual([]);
+    const fake = fakeFetch({ [CATALOG_URL]: () => json(FILELIST) });
+    const http = new HttpClient({ fetch: fake.fetch, env: {} });
+    expect((await loadCatalog({ http, cacheDir })).entries).toHaveLength(3);
+
+    const notADir = join(await tempDir(), "file");
+    await writeFile(notADir, "");
+    const unsaved = await loadCatalog({ http, cacheDir: notADir });
+    expect(unsaved.entries).toHaveLength(3);
+    expect(unsaved.warning).toContain("Could not save the WoWInterface catalogue");
+  });
+
+  test("HTML entities in WoWInterface names are decoded", () => {
+    expect(decodeEntities("MountMod (new &amp; improved) &#54392;&#x41;&bogus;")).toBe(`MountMod (new & improved) ${String.fromCodePoint(54392)}A&bogus;`);
+    expect(projectCatalog([{ UID: 1, UIName: "A &amp; B" }])[0]!.name).toBe("A & B");
+  });
+
+  test("a fetched registry with no readable entries falls back to the built-in copy", async () => {
+    const fake = fakeFetch({ [REGISTRY]: () => new Response('[[addon]]\nname = "New"\nsource = "tukui:elvui"\n') });
+    const loaded = await loadRegistry(new HttpClient({ fetch: fake.fetch, env: {} }), { WOWGET_REGISTRY_URL: REGISTRY });
+    expect(loaded.stale).toContain("no addon entries this version of wowget can read");
+    expect(loaded.entries.length).toBeGreaterThan(50);
+  });
+
+  test("search rejects unknown targets even with --all-flavors, and doctor skips dot directories", async () => {
+    const root = await tempDir();
+    const state = openState(join(root, "state", "state.db"));
+    try {
+      const manifestPath = join(root, "wowget.toml");
+      await ops.init({ manifestPath, path: join(root, "AddOns") });
+      const fake = fakeFetch({ [REGISTRY]: () => new Response(REGISTRY_TEXT), [CATALOG_URL]: () => json(FILELIST) });
+      const base = { manifestPath, state, cacheDir: join(root, "cache"), fetch: fake.fetch, env: { WOWGET_REGISTRY_URL: REGISTRY } };
+      await expect(ops.search({ ...base, query: "foo", targets: ["nope"], allFlavors: true })).rejects.toMatchObject({ code: "usage" });
+
+      await mkdir(join(root, "cache", ".catalog", "sub"), { recursive: true });
+      await mkdir(join(root, "cache", "someaddon", "v1"), { recursive: true });
+      expect(await findStaleCacheDirs(join(root, "cache"), state)).toEqual([join(root, "cache", "someaddon", "v1")]);
     } finally {
       state.close();
     }

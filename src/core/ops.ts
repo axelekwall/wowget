@@ -43,7 +43,7 @@ import {
 } from "./manifest.ts";
 import { cacheDir as defaultCacheDir, expandHome, gameDirCandidates } from "./paths.ts";
 import { scanUnmanaged, type UnmanagedAddon } from "./reconcile.ts";
-import { findRegistryEntry, loadRegistry, type RegistryEntry } from "./registry.ts";
+import { findRegistryEntry, loadRegistry, normaliseName, type RegistryEntry } from "./registry.ts";
 import { searchGithub } from "./search/github-search.ts";
 import { rankRows, type Origin, type SearchRow } from "./search/index.ts";
 import { registryRows } from "./search/registry.ts";
@@ -519,19 +519,22 @@ async function registryEntryFor(ctx: Context, name: string): Promise<RegistryEnt
   if (registry.stale) ctx.opts.onEvent?.({ type: "registry:stale", message: registry.stale });
   const entry = findRegistryEntry(registry.entries, name);
   if (!entry) {
-    throw new WowgetError(
-      "source",
-      `"${name}" is not in the addon registry. Try "wowget search ${name}", or give a source such as github:owner/repo.`,
-    );
+    const hint = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(name)
+      ? `Did you mean "github:${name}"?`
+      : `Try "wowget search ${name}", or give a source such as github:owner/repo.`;
+    throw new WowgetError("source", `"${name}" is not in the addon registry. ${hint}`);
   }
   return entry;
 }
 
 export async function add(opts: AddOptions): Promise<AddResult> {
+  if (opts.source.trim() === "") throw new WowgetError("usage", "add needs a source or an addon name.");
   const ctx = await context(opts);
   if (!opts.source.includes(":")) {
     const entry = await registryEntryFor(ctx, opts.source);
-    const result = await add({ ...opts, source: entry.source, name: opts.name ?? entry.name });
+    // An addon already in the manifest with this source keeps its name, as with "add <source>".
+    const known = ctx.manifest.addons.some((a) => a.source === entry.source);
+    const result = await add({ ...opts, source: entry.source, name: opts.name ?? (known ? undefined : entry.name) });
     return { ...result, registryName: opts.source };
   }
   const spec = parseSource(opts.source);
@@ -1403,13 +1406,15 @@ export interface SearchResult {
 
 /** The flavors to filter on: --flavor, else the selected targets', else none. */
 function searchFlavors(opts: SearchOptions, manifest: Manifest | undefined): Flavor[] | undefined {
+  // Unknown -t names are an error even when --flavor or --all-flavors makes them irrelevant.
+  const targets = manifest && opts.targets?.length ? selectTargets(manifest, opts.manifestPath, opts.targets) : undefined;
   if (opts.allFlavors) {
     if (opts.flavor) throw new WowgetError("usage", "--flavor and --all-flavors cannot be combined.");
     return undefined;
   }
   if (opts.flavor) return [opts.flavor];
-  if (!manifest || (!manifest.targets.length && !opts.targets?.length)) return undefined;
-  return [...new Set(selectTargets(manifest, opts.manifestPath, opts.targets).map((t) => t.flavor))];
+  if (!manifest || !manifest.targets.length) return undefined;
+  return [...new Set((targets ?? manifest.targets).map((t) => t.flavor))];
 }
 
 function resultEntry(row: SearchRow, filter: Flavor[] | undefined, manifest: Manifest | undefined): SearchResultEntry {
@@ -1434,7 +1439,7 @@ function resultEntry(row: SearchRow, filter: Flavor[] | undefined, manifest: Man
 
 export async function search(opts: SearchOptions): Promise<SearchResult> {
   const query = opts.query.trim();
-  if (!query) throw new WowgetError("usage", "search needs a query.");
+  if (!normaliseName(query)) throw new WowgetError("usage", "search needs a query with at least one letter or digit.");
   const limit = opts.limit ?? 20;
   if (!Number.isInteger(limit) || limit < 1) throw new WowgetError("usage", "--limit must be a positive whole number.");
 

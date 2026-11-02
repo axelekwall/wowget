@@ -128,6 +128,8 @@ async function folderInterfacesForFlavor(dir: string, flavor: Flavor): Promise<n
 export async function pruneAddonCache(cacheDir: string, state: State, addon: string): Promise<string[]> {
   const keptDirs = new Set([...state.keptZipPaths(addon)].map((p) => resolve(dirname(p))));
   const addonDir = addonCacheDir(cacheDir, addon);
+  // Dot entries are not addon caches, even for an addon whose name starts with ".".
+  if (basename(addonDir).startsWith(".")) return [];
   let entries;
   try {
     entries = await readdir(addonDir, { withFileTypes: true });

@@ -289,9 +289,12 @@ function render(command: string, result: unknown): string {
           ...(marked ? [a.inManifest ? "*" : ""] : []),
           a.name,
           a.source,
-          Object.entries(a.flavors)
-            .map(([f, support]) => (support === "unknown" ? `${f}?` : f))
-            .join(" ") || "?",
+          // Nothing about a GitHub result's releases is known, so it gets a single "?".
+          a.origin === "github"
+            ? "?"
+            : Object.entries(a.flavors)
+                .map(([f, support]) => (support === "unknown" ? `${f}?` : f))
+                .join(" ") || "?",
           a.downloadsMonthly !== null ? `${a.downloadsMonthly}/month` : a.stars !== null ? `${a.stars} stars` : "",
           a.updatedAt?.slice(0, 10) ?? "",
         ]),

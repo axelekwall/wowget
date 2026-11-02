@@ -100,6 +100,15 @@ describe("cli", () => {
     });
   });
 
+  test("search validates its query and flags before touching the network", async () => {
+    const root = await tempDir();
+    const manifest = `--manifest=${join(root, "wowget.toml")}`;
+    for (const args of [["search"], ["search", "!!!"], ["search", "dbm", "--limit", "0"], ["search", "dbm", "--flavor", "x"], ["list", "--github"]]) {
+      const result = await run([...args, manifest], root);
+      expect([args.join(" "), result.code]).toEqual([args.join(" "), 2]);
+    }
+  });
+
   test("unpin, reconcile, and doctor CLI commands", async () => {
     const root = await tempDir();
     const manifestPath = join(root, "wowget.toml");
