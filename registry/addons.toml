@@ -352,6 +352,12 @@ flavors = ["mainline"]
 folders = ["ls_UI", "ls_UI_Options"]
 
 [[addon]]
+name = "ls_Toasts"
+source = "github:ls-/ls_Toasts"
+flavors = ["mainline"]
+folders = ["ls_Toasts"]
+
+[[addon]]
 name = "Macro Toolkit"
 source = "github:NumyAddon/MacroToolkit"
 flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
