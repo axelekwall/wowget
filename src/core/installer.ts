@@ -97,6 +97,23 @@ function isReadableZip(bytes: Uint8Array): boolean {
   }
 }
 
+/**
+ * The error for a download that is an HTML page rather than a zip, or undefined when it is not
+ * one. WoWInterface lists a new upload before moderators approve it and serves a page saying so
+ * until then.
+ */
+function webPageError(resolved: Resolved, bytes: Uint8Array): WowgetError | undefined {
+  const head = new TextDecoder().decode(bytes.subarray(0, 1024)).trimStart().toLowerCase();
+  if (!head.startsWith("<!doctype html") && !head.startsWith("<html") && !head.includes("<html")) return undefined;
+  if (resolved.source.startsWith("wowi:")) {
+    return new WowgetError(
+      "network",
+      `WoWInterface served a web page instead of ${resolved.filename}; the new version is probably still awaiting approval there. Try again later.`,
+    );
+  }
+  return new WowgetError("network", `${resolved.downloadUrl} returned a web page instead of the zip ${resolved.filename}.`);
+}
+
 async function exists(path: string): Promise<boolean> {
   try {
     await lstat(path);
@@ -150,6 +167,12 @@ export async function fetchToCache(opts: {
       bytes = await download(addon, resolved, opts.fetch ?? globalThis.fetch, onEvent);
       await Bun.write(part, bytes);
     }
+    // Checked before the checksums, so a web page served in place of the zip is not reported as corruption.
+    try {
+      readZip(bytes);
+    } catch (err) {
+      throw webPageError(resolved, bytes) ?? err;
+    }
     const hash = sha256Hex(bytes);
     if (expected && hash !== expected) {
       throw new WowgetError("network", `Checksum mismatch for ${resolved.filename}: expected ${expected}, got ${hash}.`);
@@ -157,7 +180,6 @@ export async function fetchToCache(opts: {
     if (!md5Matches(bytes)) {
       throw new WowgetError("network", `Checksum mismatch for ${resolved.filename}: the source lists MD5 ${expectedMd5}.`);
     }
-    readZip(bytes);
     await rename(part, zipPath);
     onEvent?.({ type: "download:done", addon, bytes: bytes.length, sha256: hash, cached: false });
     return { zipPath, bytes, sha256: hash };

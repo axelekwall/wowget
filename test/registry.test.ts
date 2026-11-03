@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { zipSync } from "fflate";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { checkEntry } from "../scripts/check-registry.ts";
+import { checkEntry, rewriteEntry } from "../scripts/check-registry.ts";
 import { HttpClient } from "../src/core/http.ts";
 import { normaliseName, parseRegistry } from "../src/core/registry.ts";
 import { fakeFetch, json } from "./helpers/fetch.ts";
@@ -126,5 +126,39 @@ describe("checkEntry", () => {
       'lists mainline, which does not install: Foo: TOC support is "no"',
       'lists folders ["Foo","Foo_Options"], installs ["Foo"]',
     ]);
+  });
+});
+
+describe("rewriteEntry", () => {
+  const text = `# header
+[[addon]]
+name = "A"
+source = "wowi:1"
+flavors = ["classic"]
+folders = ["A"]
+
+# B keeps its comment
+[[addon]]
+name = "B"
+aliases = ["bee"]
+source = "wowi:2"
+flavors = ["classic"] # was retail too
+folders = ["B"]
+`;
+
+  test("replaces only the named entry's flavors and folders", () => {
+    const out = rewriteEntry(text, "B", { flavors: ["forever", "classic"], folders: ["B", "B_Options"] });
+    expect(out).toBe(
+      text
+        .replace('flavors = ["classic"] # was retail too', 'flavors = ["forever", "classic"]')
+        .replace('folders = ["B"]', 'folders = ["B", "B_Options"]'),
+    );
+    expect(parseRegistry(out, { strict: true }).problems).toEqual([]);
+  });
+
+  test("refuses unknown names and multi-line arrays", () => {
+    expect(() => rewriteEntry(text, "C", { flavors: ["classic"], folders: ["C"] })).toThrow("no [[addon]]");
+    const multi = text.replace('folders = ["A"]', 'folders = [\n  "A",\n]');
+    expect(() => rewriteEntry(multi, "A", { flavors: ["classic"], folders: ["A"] })).toThrow("not a one-line array");
   });
 });

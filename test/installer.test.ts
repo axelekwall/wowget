@@ -4,7 +4,7 @@ import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises
 import { chmodSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ProgressEvent } from "../src/core/events.ts";
-import { cachedZipPath, install, uninstall } from "../src/core/installer.ts";
+import { cachedZipPath, fetchToCache, install, uninstall } from "../src/core/installer.ts";
 import type { Resolved } from "../src/core/sources/types.ts";
 import { openState, State, type NewInstall } from "../src/core/state.ts";
 import { useTempDirs } from "./helpers/tmp.ts";
@@ -327,7 +327,8 @@ describe("install", () => {
     const opts = { addon: "Details", resolved, target: "forever", targetDir: env.addons, flavor: "forever" as const, state: env.state, cacheDir: env.cache, fetch };
     const cached = cachedZipPath(env.cache, "Details", "r1", "Details.zip");
 
-    expect((await install(opts).catch((e) => e)).code).toBe("zip");
+    // A web page in place of the zip is the server's doing, so it is a network error, not a zip one.
+    expect((await install(opts).catch((e) => e)).code).toBe("network");
     expect(await readdir(join(env.cache, "details", "r1"))).toEqual([]);
 
     await writeFile(cached, zip.subarray(0, zip.length - 10));
@@ -444,5 +445,27 @@ describe("uninstall", () => {
       removedFolders: [],
       wasInstalled: false,
     });
+  });
+});
+
+describe("fetchToCache", () => {
+  test("names a web page served in place of a zip, and still reports files that are not zips", async () => {
+    const cacheDir = await tempDir();
+    const serve = (body: string) => async () => new Response(body, { headers: { "content-type": "text/html" } });
+    const page = await fetchToCache({
+      addon: "Details",
+      resolved: remoteRelease("https://example.test/Details.zip"),
+      cacheDir,
+      fetch: serve("  <html><body>Sign in to download</body></html>"),
+    }).catch((e) => e);
+    expect(page.message).toBe("https://example.test/Details.zip returned a web page instead of the zip Details.zip.");
+
+    const garbage = await fetchToCache({
+      addon: "Details",
+      resolved: remoteRelease("https://example.test/Details.zip", "r2"),
+      cacheDir,
+      fetch: serve("not a zip"),
+    }).catch((e) => e);
+    expect(garbage.code).toBe("zip");
   });
 });

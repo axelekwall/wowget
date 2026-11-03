@@ -83,10 +83,22 @@ description = "Quest helper for Classic"  # optional, one line
    runs. `unknown` counts as not supported.
 4. Compares the supported set with `flavors` and the extracted folder names
    with `folders`. Prints one line per mismatch and exits 1 if there is any.
+   With `--write` it puts the values it found into the file instead,
+   rewriting only those two lines of each entry; an entry that installs on no
+   flavor is left for a person. `--report <file>` writes a Markdown summary.
+5. An error reaching a source (a failed download, a checksum the source lists
+   wrongly) is reported but does not fail the run, because it says the source
+   is broken rather than that the entry is wrong. A GitHub rate limit does
+   fail it.
 
-The CI workflow runs it on pull requests that touch `registry/` and weekly on
-a schedule, with `GITHUB_TOKEN` set. A failed scheduled run is the signal that
-an entry needs updating; the script never edits the file.
+The CI workflow runs the check on pull requests that touch `registry/` or the
+source code. A daily scheduled run (also startable by hand) runs it with
+`--write` and, when an entry changed, opens a pull request titled
+`chore(registry): update flavors and folders from the sources` from the
+`registry/update` branch, or refreshes the one already open. The run fails
+when an entry needs a person, so the failure shows in the Actions tab. A PR
+opened with the workflow token starts no workflows, so that PR shows no CI
+checks; the scheduled run already did the check.
 
 ### Seeding
 

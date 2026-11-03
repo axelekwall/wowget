@@ -142,4 +142,32 @@ describe("wowi source", () => {
       state.close();
     }
   });
+
+  test("a web page served for a file awaiting approval is reported as that, not as a bad checksum", async () => {
+    const root = await tempDir();
+    const state = openState(join(root, "state", "state.db"));
+    try {
+      const manifestPath = join(root, "wowget.toml");
+      const addons = join(root, "AddOns");
+      await ops.init({ manifestPath, path: addons });
+      const page = "<!DOCTYPE html>\n<html><head><title>World of Warcraft AddOns</title></head>"
+        + "<body>This file has not yet been approved for download!!</body></html>";
+      const fake = fakeFetch({
+        [API]: () => json([{ ...sampleDetails[0], UIMD5: "0".repeat(32) }]),
+        [DL]: () => new Response(page, { headers: { "content-type": "text/html; charset=ISO-8859-1" } }),
+      });
+      const cacheDir = join(root, "cache");
+      const err = await ops
+        .add({ manifestPath, state, cacheDir, fetch: fake.fetch, env: {}, source: "wowi:26270" })
+        .catch((e) => e);
+      expect(err.code).toBe("network");
+      expect(err.message).toBe(
+        "WoWInterface served a web page instead of Leatrix_Plus-1.15.107.zip; the new version is probably still awaiting approval there. Try again later.",
+      );
+      expect(await readdir(addons)).toEqual([]);
+      expect(await readdir(cacheDir, { recursive: true })).not.toContain(expect.stringContaining(".zip"));
+    } finally {
+      state.close();
+    }
+  });
 });
