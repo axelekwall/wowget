@@ -165,7 +165,7 @@ folders = ["TidyPlates_ThreatPlates"]
 [[addon]]
 name = "HandyNotes"
 source = "github:Nevcairiel/HandyNotes"
-flavors = ["mainline", "classic", "bcc", "cata", "mists"]
+flavors = ["forever", "mainline", "classic", "bcc", "cata", "mists"]
 folders = ["HandyNotes"]
 
 [[addon]]
@@ -245,7 +245,7 @@ folders = ["ShadowedUF_Options", "ShadowedUnitFrames"]
 [[addon]]
 name = "GatherMate2"
 source = "github:Nevcairiel/GatherMate2"
-flavors = ["mainline", "classic", "bcc", "mists"]
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
 folders = ["GatherMate2", "GatherMate2Storage_Dragonflight", "GatherMate2Storage_Midnight", "GatherMate2Storage_TheWarWithin"]
 
 [[addon]]
@@ -682,7 +682,7 @@ folders = ["CandyBuckets"]
 [[addon]]
 name = "ActionbarPlus"
 source = "wowi:26522"
-flavors = ["mainline", "classic", "bcc", "wrath", "cata", "mists"]
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
 folders = ["ActionbarPlus", "ActionbarPlus-BarsUI", "ActionbarPlus-Core", "ActionbarPlus-OptionsUI"]
 
 [[addon]]
