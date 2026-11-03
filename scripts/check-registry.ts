@@ -1,10 +1,16 @@
 /**
  * Checks registry/addons.toml against the sources: every entry must install on exactly the
- * flavors it lists and produce exactly the folders it lists. Never edits the file.
+ * flavors it lists and produce exactly the folders it lists.
  *
- *   bun run registry:check [--only <name>]... [--file <path>]
+ *   bun run registry:check [--only <name>]... [--file <path>] [--write] [--report <path>]
+ *
+ * --write puts the flavors and folders found into the file for entries that differ.
+ * --report writes a Markdown summary of the changes and problems (for the update PR).
+ * Exits 1 on mismatches it did not write, invalid entries or a GitHub rate limit. Other errors
+ * reaching a source (a failed download, a checksum the source lists wrongly) are reported but
+ * do not fail the run: they say the source is broken, not that the entry is wrong.
  */
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -135,13 +141,45 @@ async function mapLimited<T, R>(items: T[], limit: number, fn: (item: T) => Prom
 
 const tomlList = (values: string[]) => `[${values.map((v) => JSON.stringify(v)).join(", ")}]`;
 
+/**
+ * Replaces the `flavors` and `folders` lines of the `[[addon]]` block named `name`, leaving every
+ * other line as it is. Both keys must be on one line each, as the registry writes them.
+ */
+export function rewriteEntry(text: string, name: string, found: { flavors: string[]; folders: string[] }): string {
+  const lines = text.split("\n");
+  const nameLine = lines.findIndex((l) => l.trim() === `name = ${JSON.stringify(name)}`);
+  if (nameLine === -1) throw new Error(`no [[addon]] with name = ${JSON.stringify(name)}`);
+  let start = nameLine;
+  while (start > 0 && lines[start]!.trim() !== "[[addon]]") start--;
+  let end = nameLine + 1;
+  while (end < lines.length && lines[end]!.trim() !== "[[addon]]") end++;
+  for (const [key, values] of [["flavors", found.flavors], ["folders", found.folders]] as const) {
+    const i = lines.findIndex((l, n) => n >= start && n < end && new RegExp(`^${key}\\s*=`).test(l.trim()));
+    if (i === -1 || !/\]\s*(#.*)?$/.test(lines[i]!)) throw new Error(`${name}: ${key} is not a one-line array`);
+    lines[i] = `${key} = ${tomlList(values)}`;
+  }
+  return lines.join("\n");
+}
+
+interface Outcome {
+  entry: RegistryEntry;
+  report?: EntryReport;
+  error?: WowgetError | Error;
+}
+
 async function main(argv: string[]): Promise<number> {
   const { values } = parseArgs({
     args: argv,
-    options: { only: { type: "string", multiple: true }, file: { type: "string" } },
+    options: {
+      only: { type: "string", multiple: true },
+      file: { type: "string" },
+      write: { type: "boolean" },
+      report: { type: "string" },
+    },
   });
   const file = values.file ?? join(import.meta.dir, "..", "registry", "addons.toml");
-  const { entries, problems } = parseRegistry(await readFile(file, "utf8"), { strict: true });
+  let text = await readFile(file, "utf8");
+  const { entries, problems } = parseRegistry(text, { strict: true });
   for (const problem of problems) console.error(`invalid  ${problem}`);
   if (problems.length) return 1;
 
@@ -154,34 +192,73 @@ async function main(argv: string[]): Promise<number> {
 
   const http = new HttpClient();
   const workDir = await mkdtemp(join(tmpdir(), "wowget-registry-"));
-  let failed = 0;
+  let outcomes: Outcome[];
   try {
-    await mapLimited(selected, 4, async (entry) => {
-      const lines: string[] = [];
+    outcomes = await mapLimited(selected, 4, async (entry): Promise<Outcome> => {
       try {
-        const report = await checkEntry(entry, { http, workDir: join(workDir, normaliseName(entry.name)) });
-        if (report.mismatches.length === 0) {
-          lines.push(`ok       ${entry.name} (${report.supported.join(", ")})`);
-        } else {
-          failed++;
-          lines.push(`mismatch ${entry.name} (${entry.source})`);
-          for (const m of report.mismatches) lines.push(`  ${m}`);
-          if (report.supported.length) {
-            lines.push(`  found: flavors = ${tomlList(report.supported)}`);
-            lines.push(`         folders = ${tomlList(report.folders)}`);
-          }
-        }
+        return { entry, report: await checkEntry(entry, { http, workDir: join(workDir, normaliseName(entry.name)) }) };
       } catch (err) {
-        failed++;
-        lines.push(`error    ${entry.name} (${entry.source}): ${err instanceof Error ? err.message : String(err)}`);
+        return { entry, error: err instanceof Error ? err : new Error(String(err)) };
       }
-      console.log(lines.join("\n"));
     });
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
-  console.log(`\n${selected.length - failed} of ${selected.length} entries match.`);
-  return failed ? 1 : 0;
+
+  const updated: string[] = [];
+  const unfixed: string[] = [];
+  const errors: string[] = [];
+  let rateLimited = false;
+  for (const { entry, report, error } of outcomes) {
+    if (error) {
+      if (error instanceof WowgetError && error.code === "rate_limited") rateLimited = true;
+      console.log(`error    ${entry.name} (${entry.source}): ${error.message}`);
+      errors.push(`- **${entry.name}** (\`${entry.source}\`): ${error.message}`);
+      continue;
+    }
+    if (report!.mismatches.length === 0) {
+      console.log(`ok       ${entry.name} (${report!.supported.join(", ")})`);
+      continue;
+    }
+    console.log(`mismatch ${entry.name} (${entry.source})`);
+    for (const m of report!.mismatches) console.log(`  ${m}`);
+    const details = report!.mismatches.map((m) => `  - ${m}`).join("\n");
+    // An entry that installs nowhere needs a person: drop it or find another source.
+    if (!report!.supported.length) {
+      unfixed.push(`- **${entry.name}** (\`${entry.source}\`)\n${details}`);
+      continue;
+    }
+    console.log(`  found: flavors = ${tomlList(report!.supported)}`);
+    console.log(`         folders = ${tomlList(report!.folders)}`);
+    if (!values.write) {
+      unfixed.push(`- **${entry.name}** (\`${entry.source}\`)\n${details}`);
+      continue;
+    }
+    try {
+      text = rewriteEntry(text, entry.name, { flavors: report!.supported, folders: report!.folders });
+      updated.push(`- **${entry.name}** (\`${entry.source}\`)\n${details}`);
+    } catch (err) {
+      unfixed.push(`- **${entry.name}** (\`${entry.source}\`): ${err instanceof Error ? err.message : String(err)}\n${details}`);
+    }
+  }
+  if (updated.length) await writeFile(file, text);
+
+  const ok = outcomes.length - updated.length - unfixed.length - errors.length;
+  console.log(
+    `\n${ok} of ${outcomes.length} entries match` +
+      (updated.length ? `, ${updated.length} updated` : "") +
+      (unfixed.length ? `, ${unfixed.length} mismatched` : "") +
+      (errors.length ? `, ${errors.length} could not be checked` : "") +
+      ".",
+  );
+  if (values.report) {
+    const sections: string[] = [];
+    if (updated.length) sections.push(`### Updated from what installs today\n\n${updated.join("\n")}`);
+    if (unfixed.length) sections.push(`### Needs a person\n\n${unfixed.join("\n")}`);
+    if (errors.length) sections.push(`### Could not be checked (source problems, not changed)\n\n${errors.join("\n")}`);
+    await writeFile(values.report, `${sections.join("\n\n") || "Every entry matches."}\n`);
+  }
+  return unfixed.length || rateLimited ? 1 : 0;
 }
 
 if (import.meta.main) process.exitCode = await main(process.argv.slice(2));
