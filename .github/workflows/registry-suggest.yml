@@ -1,0 +1,123 @@
+name: Registry suggestion
+
+# Turns an issue from the "Suggest registry addons" form into a pull request that adds the
+# suggested addons which install on at least one flavor. See docs/SPEC-REGISTRY-SUGGEST.md.
+on:
+  issues:
+    types: [opened, edited, labeled]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Number of the suggestion issue to process
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: registry-suggest-${{ github.event.issue.number || inputs.issue }}
+  cancel-in-progress: true
+
+jobs:
+  # Downloads and extracts the suggested addons, so it holds no write permission. The issue body
+  # is untrusted: it only ever reaches the script as a file.
+  check:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.issue.state == 'open' &&
+       contains(github.event.issue.labels.*.name, 'registry') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'registry'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    env:
+      ISSUE: ${{ github.event.issue.number || inputs.issue }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - name: Read the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$ISSUE" =~ ^[0-9]+$ ]] || { echo "Not an issue number: $ISSUE"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/out"
+          gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
+      - name: Check the suggested addons
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          bun scripts/suggest-registry.ts --body "$RUNNER_TEMP/body.md" --report "$RUNNER_TEMP/out/report.md"
+          cp registry/addons.toml "$RUNNER_TEMP/out/addons.toml"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: registry-suggestion
+          path: ${{ runner.temp }}/out
+          retention-days: 3
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    env:
+      ISSUE: ${{ github.event.issue.number || inputs.issue }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: registry-suggestion
+          path: ${{ runner.temp }}/out
+      - name: Open, update or close the pull request
+        run: |
+          set -euo pipefail
+          current=registry/addons.toml
+          proposed="$RUNNER_TEMP/out/addons.toml"
+          report="$RUNNER_TEMP/out/report.md"
+          # The script only appends entries; anything else is not published.
+          if ! head -c "$(wc -c < "$current")" "$proposed" | cmp -s - "$current"; then
+            echo "The proposed registry changes existing lines; not publishing it."
+            exit 1
+          fi
+          cp "$proposed" "$current"
+
+          branch="registry/suggest-$ISSUE"
+          title="chore(registry): add addons suggested in #$ISSUE"
+          existing=$(gh pr list --head "$branch" --state open --json number --jq '.[].number')
+          if git diff --quiet -- "$current"; then
+            if [ -n "$existing" ]; then
+              gh pr close "$existing" --delete-branch --comment "The issue no longer suggests an addon that can be added."
+            fi
+            { echo "No addon from this issue can be added yet."; echo; cat "$report"; } > "$RUNNER_TEMP/comment.md"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git switch -C "$branch"
+            git commit -q -m "$title" -- "$current"
+            git push --force origin "$branch"
+            {
+              echo "Adds the addons suggested in #$ISSUE that install on at least one flavor, with the flavors and folders the registry check found. Add aliases or a description before merging if they help."
+              echo
+              echo "Closes #$ISSUE"
+              echo
+              cat "$report"
+            } > "$RUNNER_TEMP/body.md"
+            if [ -n "$existing" ]; then
+              gh pr edit "$existing" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+            else
+              gh pr create --base main --head "$branch" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+            fi
+            url=$(gh pr view "$branch" --json url --jq .url)
+            { echo "Thanks! The addons that install are in $url."; echo; cat "$report"; } > "$RUNNER_TEMP/comment.md"
+          fi
+          printf '\nEdit this issue to run the check again.\n' >> "$RUNNER_TEMP/comment.md"
+          gh issue comment "$ISSUE" --edit-last --body-file "$RUNNER_TEMP/comment.md" 2>/dev/null ||
+            gh issue comment "$ISSUE" --body-file "$RUNNER_TEMP/comment.md"

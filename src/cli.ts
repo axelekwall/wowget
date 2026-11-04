@@ -35,6 +35,8 @@ Commands:
   rollback <name>                       reinstall the previous release of an addon from the cache
   reconcile [--adopt]                   find hand-installed addons and optionally adopt them
   doctor [--clean]                      check targets, TOC interfaces and cache health
+  suggest [name...] [--print]           open a GitHub issue that proposes the manifest addons
+                                        missing from the addon registry
   self-update [--check]                 replace this binary with the latest wowget release
 
 search, add, remove, list, outdated, update, install, rollback, reconcile and doctor act on every target
@@ -53,6 +55,7 @@ Options:
   --github            with search: also search GitHub repositories tagged wow-addon
   --limit <n>         with search: show at most n results (default 20)
   --refresh           with search: download the WoWInterface catalogue even if the copy is recent
+  --print             with suggest: print the issue URL without opening a browser
   --manifest <path>   manifest file (default $WOWGET_MANIFEST, else ${manifestPath(undefined, { ...process.env, WOWGET_MANIFEST: undefined })})
   --json              print the result as JSON
   --force             install over unmanaged folders and unverifiable flavors;
@@ -76,7 +79,8 @@ type Flag =
   | "all-flavors"
   | "github"
   | "limit"
-  | "refresh";
+  | "refresh"
+  | "print";
 const FLAGS: Flag[] = [
   "path",
   "flavor",
@@ -92,6 +96,7 @@ const FLAGS: Flag[] = [
   "github",
   "limit",
   "refresh",
+  "print",
 ];
 
 const COMMAND_FLAGS: Record<string, Flag[]> = {
@@ -112,6 +117,7 @@ const COMMAND_FLAGS: Record<string, Flag[]> = {
   reconcile: ["target", "adopt"],
   doctor: ["target", "clean"],
   "self-update": ["check"],
+  suggest: ["print"],
 };
 
 const POSITIONALS: Record<string, [min: number, max: number]> = {
@@ -132,6 +138,7 @@ const POSITIONALS: Record<string, [min: number, max: number]> = {
   reconcile: [0, 0],
   doctor: [0, 0],
   "self-update": [0, 0],
+  suggest: [0, Infinity],
 };
 
 class UsageError extends Error {}
@@ -162,6 +169,7 @@ function parse(argv: string[]) {
         github: { type: "boolean" },
         limit: { type: "string" },
         refresh: { type: "boolean" },
+        print: { type: "boolean" },
       },
     });
   } catch (err) {
@@ -405,6 +413,25 @@ function render(command: string, result: unknown): string {
       else for (const issue of r.issues) lines.push(`Issue [${issue.kind}]: ${issue.message}`);
       return lines.join("\n");
     }
+    case "suggest": {
+      const r = result as ops.SuggestResult;
+      if (!r.addons.length) return "No addons in the manifest.";
+      const status = (a: ops.SuggestEntry) =>
+        a.status === "listed"
+          ? `in the registry${a.registryName !== a.name ? ` as ${a.registryName}` : ""}`
+          : a.status === "url"
+            ? "url: sources cannot be in the registry"
+            : "not in the registry";
+      const lines = [table([["NAME", "SOURCE", "STATUS"], ...r.addons.map((a) => [a.name, a.source, status(a)])])];
+      if (r.url) {
+        const count = r.addons.filter((a) => a.status === "suggested").length;
+        const what = count === 1 ? "the addon" : `the ${count} addons`;
+        lines.push("", `Submit this issue to suggest ${what} for the registry; a bot checks them and opens a pull request:`, r.url);
+      } else {
+        lines.push("", "Nothing to suggest.");
+      }
+      return lines.join("\n");
+    }
     case "self-update": {
       const r = result as SelfUpdateResult;
       if (r.status === "updated") return `Updated wowget ${r.current} -> ${r.latest} at ${r.path}`;
@@ -445,6 +472,22 @@ function hasErrors(result: unknown): boolean {
   if (Array.isArray(r.addons) && r.addons.some((a) => a.status === "error")) return true;
   if (Array.isArray(r.issues) && r.issues.length > 0) return true;
   return false;
+}
+
+/** Opens `url` in the default browser; false when the opener is missing or fails. */
+async function openUrl(url: string): Promise<boolean> {
+  const command =
+    process.platform === "darwin"
+      ? ["open", url]
+      : process.platform === "win32"
+        ? ["rundll32", "url.dll,FileProtocolHandler", url]
+        : ["xdg-open", url];
+  try {
+    const proc = Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    return (await proc.exited) === 0;
+  } catch {
+    return false;
+  }
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -553,6 +596,7 @@ async function main(argv: string[]): Promise<number> {
       else if (key === "rollback") result = await ops.rollback({ ...base, name: args[0]! });
       else if (key === "reconcile") result = await ops.reconcile({ ...base, adopt: values.adopt });
       else if (key === "doctor") result = await ops.doctor({ ...base, clean: values.clean });
+      else if (key === "suggest") result = await ops.suggest({ ...base, names: args });
       else result = await ops.install(base);
     }
 
@@ -560,6 +604,10 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(`${values.json ? JSON.stringify(result, null, 2) : render(key, result)}\n`);
     for (const { name, note } of notes(result)) process.stderr.write(`wowget: note: ${name}: ${note}\n`);
     if (!values.json) for (const warning of warnings(result)) process.stderr.write(`wowget: warning: ${warning}\n`);
+    if (key === "suggest" && !values.print && !values.json) {
+      const url = (result as ops.SuggestResult).url;
+      if (url && !(await openUrl(url))) process.stderr.write("wowget: warning: could not open a browser; open the URL above.\n");
+    }
     for (const { name, target, dir } of leftoverDirs(result)) {
       process.stderr.write(
         `wowget: warning: ${name} (${target}): could not delete the old folders moved to ${dir}; remove it by hand.\n`,

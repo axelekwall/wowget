@@ -37,6 +37,8 @@ export interface EntryReport {
   supported: Flavor[];
   folders: string[];
   mismatches: string[];
+  /** The name the source suggests on `add`, from the first flavor that resolved. */
+  defaultName?: string;
 }
 
 export interface CheckDeps {
@@ -75,6 +77,7 @@ export async function checkEntry(entry: RegistryEntry, deps: CheckDeps): Promise
   };
 
   const results: FlavorResult[] = [];
+  let defaultName: string | undefined;
   for (const flavor of FLAVORS) {
     let resolved: Resolved;
     let folders: { name: string; path: string }[];
@@ -86,6 +89,7 @@ export async function checkEntry(entry: RegistryEntry, deps: CheckDeps): Promise
         http: deps.http,
         cacheDir: join(deps.workDir, "cache"),
       });
+      defaultName ??= resolved.defaultName;
       folders = await extract(resolved);
     } catch (err) {
       if (err instanceof WowgetError && (err.code === "flavor" || err.code === "source" || err.code === "zip")) {
@@ -122,11 +126,11 @@ export async function checkEntry(entry: RegistryEntry, deps: CheckDeps): Promise
   if (supported.length && !sameSet(entry.folders, folders)) {
     mismatches.push(`lists folders ${JSON.stringify(entry.folders)}, installs ${JSON.stringify(folders)}`);
   }
-  return { name: entry.name, results, supported, folders, mismatches };
+  return { name: entry.name, results, supported, folders, mismatches, ...(defaultName ? { defaultName } : {}) };
 }
 
 /** Runs `fn` over `items` with at most `limit` calls in flight, keeping the input order. */
-async function mapLimited<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+export async function mapLimited<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let next = 0;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -139,7 +143,7 @@ async function mapLimited<T, R>(items: T[], limit: number, fn: (item: T) => Prom
   return out;
 }
 
-const tomlList = (values: string[]) => `[${values.map((v) => JSON.stringify(v)).join(", ")}]`;
+export const tomlList = (values: string[]) => `[${values.map((v) => JSON.stringify(v)).join(", ")}]`;
 
 /**
  * Replaces the `flavors` and `folders` lines of the `[[addon]]` block named `name`, leaving every
