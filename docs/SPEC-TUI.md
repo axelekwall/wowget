@@ -172,15 +172,20 @@ CPU.
 
 ## Build and CI
 
-- `release.yml` build job: `bun install --frozen-lockfile --os='*' --cpu='*'`,
-  so every target's native package is present on the Linux runner.
+- `release.yml` build job: `bun install --frozen-lockfile --os='*' --cpu='*'
+  --libc='*'`, so every target's native package is present on the Linux
+  runner. `--libc='*'` is needed because the core chooses between its glibc
+  and musl Linux packages from `OPENTUI_LIBC` at runtime, so Bun has to
+  resolve both whenever it bundles for Linux (the notices step bundles for
+  the host), and a glibc host otherwise skips the musl packages.
 - `release.yml` verify job (macOS and Windows): after installing, run
   `wowget tui --check`. This is the first run of a compiled Windows binary
   with OpenTUI.
-- `ci.yml`: unchanged install (each OS gets its own native package). The TUI
-  tests below run on all three OSes from source.
+- `ci.yml`: the check job installs with `--libc='*'` for the same reason, so
+  `bun run build` works on Linux. Each OS still gets only its own native
+  packages. The TUI tests below run on all three OSes from source.
 - `ci.yml` adds a `release-build` job on `ubuntu-latest` that installs with
-  `--os='*' --cpu='*'` and runs `bun run build:release` with
+  `--os='*' --cpu='*' --libc='*'` and runs `bun run build:release` with
   `WOWGET_VERSION=0.0.0-ci`, so a missing native package fails the PR, not
   the release. A `release-smoke` job then runs the cross-compiled
   darwin-arm64 and windows-x64 binaries on their own runners with

@@ -20,7 +20,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
-      - run: bun install --frozen-lockfile
+      # OpenTUI picks its glibc or musl library at runtime, so a Linux build needs both packages.
+      - run: bun install --frozen-lockfile --libc='*'
       - run: bun run typecheck
       - run: bun test
       - run: bun run build
@@ -34,7 +35,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
-      - run: bun install --frozen-lockfile --os='*' --cpu='*'
+      - run: bun install --frozen-lockfile --os='*' --cpu='*' --libc='*'
       - run: bun run build:release
         env:
           WOWGET_VERSION: 0.0.0-ci

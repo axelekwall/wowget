@@ -26,7 +26,7 @@ jobs:
         with:
           bun-version: 1.4.4
       # Every target's OpenTUI native package, not only the runner's, so each binary can embed its own.
-      - run: bun install --frozen-lockfile --os='*' --cpu='*'
+      - run: bun install --frozen-lockfile --os='*' --cpu='*' --libc='*'
       - run: bun run typecheck
       - run: bun test
       - run: bun run build:release

@@ -214,7 +214,8 @@ state; the manifest stays a text file you can keep in your dotfiles.
 bun run build       # dist/wowget for this machine
 bun run build:mac   # dist/wowget for Apple silicon
 bun run build:win   # dist/wowget.exe for 64-bit Windows, cross-compiled from any host
-bun install --os='*' --cpu='*'                # every platform's terminal UI library, needed by build:release
+bun install --libc='*'                        # on Linux: both glibc and musl terminal UI libraries, needed by every build
+bun install --os='*' --cpu='*' --libc='*'     # every platform's terminal UI library, needed by build:release
 WOWGET_VERSION=0.1.0 bun run build:release   # dist/release/* for every platform, with SHA256SUMS.txt and THIRD-PARTY-NOTICES.txt
 bun run registry:check [--only Questie] [--write]   # check registry/addons.toml entries on every flavor
 ```

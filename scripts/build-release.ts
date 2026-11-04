@@ -1,7 +1,7 @@
 // Builds release binaries for every supported platform into dist/release and
 // writes SHA256SUMS.txt and THIRD-PARTY-NOTICES.txt next to them. The version comes from WOWGET_VERSION
 // (a tag like "v0.1.0" or a bare version) and is compiled into `wowget --version`.
-// Every target's OpenTUI native package must be installed: bun install --os='*' --cpu='*'.
+// Every target's OpenTUI native package must be installed: bun install --os='*' --cpu='*' --libc='*'.
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
