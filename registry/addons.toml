@@ -372,7 +372,7 @@ folders = ["ShestakUI", "ShestakUI_Config"]
 [[addon]]
 name = "IceHUD"
 source = "github:parnic/ice-hud"
-flavors = ["mainline", "classic", "bcc", "mists"]
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
 folders = ["IceHUD", "IceHUD_Options"]
 
 [[addon]]
