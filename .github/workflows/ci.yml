@@ -3,66 +3,65 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ["docs/**", "**/*.md", "LICENSE"]
   pull_request:
+    paths-ignore: ["docs/**", "**/*.md", "LICENSE"]
 
 permissions:
   contents: read
 
+# A new push to a pull request supersedes the run still going for the previous one.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
 jobs:
+  # Bun cross-compiles, so Linux builds every shipped binary. macOS behaves like Linux for
+  # everything the tests cover; the release workflow runs the macOS binary itself.
   check:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
-      # OpenTUI picks its glibc or musl library at runtime, so a Linux build needs both packages.
-      - run: bun install --frozen-lockfile --libc='*'
+      # Every target's OpenTUI native package, not only the runner's, so build:release can embed
+      # each one. OpenTUI picks its glibc or musl library at runtime, so Linux needs both.
+      - run: bun install --frozen-lockfile --os='*' --cpu='*' --libc='*'
       - run: bun run typecheck
       - run: bun test
-      - run: bun run build
-
-  # Cross-compiles the release binaries on Linux as the release workflow does, so a missing
-  # native package fails here and not at release time.
-  release-build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.4
-      - run: bun install --frozen-lockfile --os='*' --cpu='*' --libc='*'
       - run: bun run build:release
         env:
-          WOWGET_VERSION: 0.0.0-ci
+          WOWGET_VERSION: v0.0.0-ci
       - uses: actions/upload-artifact@v4
         with:
           name: release-binaries
           path: dist/release
           retention-days: 3
 
-  # Runs the cross-compiled binaries where they belong and checks the terminal UI library loads.
-  release-smoke:
-    needs: release-build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            asset: wowget-darwin-arm64
-          - os: windows-latest
-            asset: wowget-windows-x64.exe
-    runs-on: ${{ matrix.os }}
+  # Windows has its own path, AppData and file-replacement handling that Linux cannot exercise.
+  test-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bun test
+
+  # Runs the cross-compiled Windows binary and checks the terminal UI library loads in it.
+  windows-binary:
+    needs: check
+    runs-on: windows-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: release-binaries
       - shell: bash
         run: |
-          chmod +x "${{ matrix.asset }}"
-          test "$("./${{ matrix.asset }}" --version)" = "wowget 0.0.0-ci"
-          "./${{ matrix.asset }}" tui --check
+          test "$(./wowget-windows-x64.exe --version)" = "wowget 0.0.0-ci"
+          ./wowget-windows-x64.exe tui --check

@@ -181,16 +181,14 @@ CPU.
 - `release.yml` verify job (macOS and Windows): after installing, run
   `wowget tui --check`. This is the first run of a compiled Windows binary
   with OpenTUI.
-- `ci.yml`: the check job installs with `--libc='*'` for the same reason, so
-  `bun run build` works on Linux. Each OS still gets only its own native
-  packages. The TUI tests below run on all three OSes from source.
-- `ci.yml` adds a `release-build` job on `ubuntu-latest` that installs with
-  `--os='*' --cpu='*' --libc='*'` and runs `bun run build:release` with
-  `WOWGET_VERSION=0.0.0-ci`, so a missing native package fails the PR, not
-  the release. A `release-smoke` job then runs the cross-compiled
-  darwin-arm64 and windows-x64 binaries on their own runners with
-  `--version` and `tui --check`, so a Windows binary that cannot load its
-  native library fails before anything is published.
+- `ci.yml`: the Linux `check` job, which already runs `bun run build:release`,
+  installs with `--os='*' --cpu='*' --libc='*'`, so a missing native package
+  fails the PR, not the release, and uploads the binaries. A `windows-binary`
+  job runs the cross-compiled Windows binary with `--version` and
+  `tui --check`, so a Windows binary that cannot load its native library
+  fails before anything is published. The macOS binary is first run by the
+  release verify job. The TUI tests run from source on Linux and in
+  `test-windows`.
 
 ## Tests
 
