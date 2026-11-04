@@ -7,8 +7,9 @@ client, no ads, no browsing UI.
 
 Status: MVP. See [docs/PLAN.md](docs/PLAN.md) for the roadmap,
 [docs/SPEC-MVP.md](docs/SPEC-MVP.md) for the base behaviour,
-[docs/SPEC-TARGETS-WINDOWS.md](docs/SPEC-TARGETS-WINDOWS.md) for targets and
-[docs/SPEC-SEARCH.md](docs/SPEC-SEARCH.md) for the planned search.
+[docs/SPEC-TARGETS-WINDOWS.md](docs/SPEC-TARGETS-WINDOWS.md) for targets,
+[docs/SPEC-SEARCH.md](docs/SPEC-SEARCH.md) for search and
+[docs/SPEC-TUI.md](docs/SPEC-TUI.md) for the terminal UI.
 
 ## Install
 
@@ -85,7 +86,27 @@ wowget self-update [--check]                  # upgrade wowget itself to the lat
 wowget suggest [name...] [--print]            # propose manifest addons missing from the registry
 wowget remove Questie -t era                  # remove from one target, keep the others
 wowget remove Questie
+wowget tui                                    # the terminal UI (below)
 ```
+
+### Terminal UI
+
+`wowget tui` opens a full-screen view of your addons per target with what is
+installed, the latest release and the status, checked when it opens. Click a
+row or use the arrow keys to move, shift-click or `space` to select several,
+then click a button or press its key:
+
+| Key | Action |
+|---|---|
+| `U` | update every addon in the current tab |
+| `u` | update the selected addons, or the one under the cursor |
+| `r` | check for updates again |
+| `1`–`9`, `Tab` | switch between all targets and a single target |
+| `q` | quit |
+
+A row with an error shows the message at the bottom when the cursor or the
+mouse is on it. Adding, removing and pinning addons are still commands; they
+come to the TUI next (see [docs/SPEC-TUI.md](docs/SPEC-TUI.md)).
 
 ### Search
 
@@ -193,7 +214,8 @@ state; the manifest stays a text file you can keep in your dotfiles.
 bun run build       # dist/wowget for this machine
 bun run build:mac   # dist/wowget for Apple silicon
 bun run build:win   # dist/wowget.exe for 64-bit Windows, cross-compiled from any host
-WOWGET_VERSION=0.1.0 bun run build:release   # dist/release/* for every platform, with SHA256SUMS.txt
+bun install --os='*' --cpu='*'                # every platform's terminal UI library, needed by build:release
+WOWGET_VERSION=0.1.0 bun run build:release   # dist/release/* for every platform, with SHA256SUMS.txt and THIRD-PARTY-NOTICES.txt
 bun run registry:check [--only Questie] [--write]   # check registry/addons.toml entries on every flavor
 ```
 
@@ -232,3 +254,7 @@ git tag v0.4.0-beta.1 && git push origin v0.4.0-beta.1
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+The release binaries include third-party code under its own licences, among
+them OpenTUI's native library, which statically links a decode-only FFmpeg
+(LGPL-2.1-or-later). Each release lists them in `THIRD-PARTY-NOTICES.txt`.
