@@ -5,15 +5,20 @@ Keeps your addon list in a plain TOML manifest, installs from open sources
 (GitHub releases, WoWInterface, direct URLs) and updates them in place. No CurseForge
 client, no ads, no browsing UI.
 
-Status: MVP. See [docs/PLAN.md](docs/PLAN.md) for the roadmap,
-[docs/SPEC-MVP.md](docs/SPEC-MVP.md) for the base behaviour,
-[docs/SPEC-TARGETS-WINDOWS.md](docs/SPEC-TARGETS-WINDOWS.md) for targets,
-[docs/SPEC-SEARCH.md](docs/SPEC-SEARCH.md) for search and
-[docs/SPEC-TUI.md](docs/SPEC-TUI.md) for the terminal UI.
+Status: pre-1.0; commands and the manifest format may still change. The specs
+describe each part: [docs/SPEC-MVP.md](docs/SPEC-MVP.md) for the base
+behaviour, [docs/SPEC-TARGETS-WINDOWS.md](docs/SPEC-TARGETS-WINDOWS.md) for
+targets, [docs/SPEC-SEARCH.md](docs/SPEC-SEARCH.md) for search and the
+registry, [docs/SPEC-REGISTRY-SUGGEST.md](docs/SPEC-REGISTRY-SUGGEST.md) for
+registry suggestions, and [docs/SPEC-TUI.md](docs/SPEC-TUI.md) for the terminal
+UI. [docs/PLAN.md](docs/PLAN.md) is the original plan and the
+decisions behind it.
 
 ## Install
 
 Prebuilt binaries for macOS (Apple silicon and Intel) and 64-bit Windows are attached to every [release](https://github.com/axelekwall/wowget/releases).
+There is no Linux binary; on Linux, build from source with `bun run build`
+(see [Stack](#stack)).
 
 macOS:
 
@@ -168,8 +173,13 @@ holds a game. It tries `/Applications/World of Warcraft` on macOS, and
 on Windows, using the first that has an install. Linux has no default; pass
 `--game-dir`, which (like `WOWGET_GAME_DIR`) replaces the list.
 
-`add`, `remove`, `list`, `outdated`, `update` and `install` act on every target
-unless filtered with `--target <name>` (`-t`), which can be repeated. `add -t` writes the chosen
+Flavors are `forever`, `mainline` (retail), `classic` (Classic Era), `bcc`,
+`wrath`, `cata` and `mists`. `init` gives `_classic_` the flavor of the
+current progressive Classic expansion.
+
+`add`, `remove`, `list`, `outdated`, `update`, `install`, `search`,
+`rollback`, `reconcile` and `doctor` act on every target unless filtered with
+`--target <name>` (`-t`), which can be repeated. `add -t` writes the chosen
 targets to the entry; `remove -t` uninstalls from those targets and removes
 them from the entry, removing the entry when none are left. Release lookups are
 shared between targets of the same flavor within one run.
@@ -184,7 +194,8 @@ installs to the `forever` target.
 `add` also takes `--prerelease` and `--pin <tag>`. `search` takes
 `--limit <n>` (default 20). Global flags: `--manifest
 <path>`, `--json`, `--force` (replace unmanaged folders, skip an inconclusive
-flavor check), `--verbose`. Set `GITHUB_TOKEN` to raise the GitHub API rate
+flavor check; with `self-update`, reinstall the latest release even if it is
+not newer), `--verbose`. Set `GITHUB_TOKEN` to raise the GitHub API rate
 limit.
 
 ### Locations
