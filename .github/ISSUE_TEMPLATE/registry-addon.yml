@@ -1,0 +1,28 @@
+name: Suggest registry addons
+description: Propose addons for the wowget addon registry. `wowget suggest` fills this in for you.
+title: "Registry: add "
+labels: ["registry"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A bot checks every addon below on each game flavor, the same way the registry check does,
+        and opens a pull request with the ones that install. Editing this issue runs it again.
+  - type: textarea
+    id: addons
+    attributes:
+      label: Addons
+      description: |
+        One addon per line: its source, then optionally its name.
+        Sources are `github:owner/repo` or `wowi:<id>`; `url:` sources cannot be in the registry.
+      placeholder: |
+        github:Questie/Questie Questie
+        wowi:7032 TomTom
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything the reviewer should know, such as aliases or a one-line description.

@@ -52,6 +52,7 @@ import { sourceFor } from "./sources/index.ts";
 import { defaultAddonName, parseSource } from "./sources/parse.ts";
 import type { Http, Resolved } from "./sources/types.ts";
 import type { InstallRecord, State } from "./state.ts";
+import { MAX_ISSUE_URL_LENGTH, sourceKey, suggestIssueUrl } from "./suggest.ts";
 
 export interface OpsOptions {
   manifestPath: string;
@@ -1470,4 +1471,62 @@ export async function search(opts: SearchOptions): Promise<SearchResult> {
   const rows = [...registryRows(registry.entries), ...catalog.entries.map(catalogRow), ...github];
   const ranked = rankRows(rows, query, { flavors, limit });
   return { results: ranked.map((row) => resultEntry(row, flavors, manifest)), flavors: flavors ?? null, warnings };
+}
+
+// suggest
+
+export interface SuggestOptions extends Pick<OpsOptions, "manifestPath" | "state" | "fetch" | "env" | "onEvent"> {
+  /** Manifest names to consider; empty or absent means every addon. */
+  names?: string[];
+}
+
+export type SuggestStatus = "suggested" | "listed" | "url";
+
+export interface SuggestEntry {
+  name: string;
+  source: string;
+  status: SuggestStatus;
+  /** The registry entry with the same source, for "listed". */
+  registryName?: string;
+}
+
+export interface SuggestResult {
+  addons: SuggestEntry[];
+  /** The prefilled issue URL; null when nothing is suggested. */
+  url: string | null;
+  warnings: string[];
+}
+
+export async function suggest(opts: SuggestOptions): Promise<SuggestResult> {
+  const manifest = await readManifest(opts.manifestPath);
+  let addons = manifest.addons;
+  if (opts.names?.length) {
+    const unknown = opts.names.filter((n) => !findAddon(manifest, n));
+    if (unknown.length) {
+      throw new WowgetError("usage", `${unknown.map((n) => `"${n}"`).join(", ")} ${unknown.length > 1 ? "are" : "is"} not in the manifest.`);
+    }
+    addons = opts.names.map((n) => findAddon(manifest, n)!);
+  }
+
+  const http = new HttpClient({ state: opts.state, fetch: opts.fetch, env: opts.env });
+  const registry = await loadRegistry(http, opts.env);
+  const listed = new Map(registry.entries.map((e) => [sourceKey(e.source), e.name]));
+  const entries: SuggestEntry[] = [...addons]
+    .sort((a, b) => byName(a.name, b.name))
+    .map((a) => {
+      const registryName = listed.get(sourceKey(a.source));
+      if (registryName !== undefined) return { name: a.name, source: a.source, status: "listed", registryName };
+      if (a.source.startsWith("url:")) return { name: a.name, source: a.source, status: "url" };
+      return { name: a.name, source: a.source, status: "suggested" };
+    });
+
+  const suggested = entries.filter((e) => e.status === "suggested");
+  const url = suggested.length ? suggestIssueUrl(suggested) : null;
+  if (url && url.length > MAX_ISSUE_URL_LENGTH) {
+    throw new WowgetError(
+      "usage",
+      `${suggested.length} addons make the issue URL too long for GitHub; name some of them: wowget suggest <name>...`,
+    );
+  }
+  return { addons: entries, url, warnings: registry.stale ? [registry.stale] : [] };
 }

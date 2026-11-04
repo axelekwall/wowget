@@ -82,6 +82,7 @@ wowget rollback Questie                       # reinstall the previous release f
 wowget reconcile [--adopt]                    # find hand-installed addons and optionally adopt them
 wowget doctor [--clean]                       # verify targets, TOC interfaces and cache health
 wowget self-update [--check]                  # upgrade wowget itself to the latest release
+wowget suggest [name...] [--print]            # propose manifest addons missing from the registry
 wowget remove Questie -t era                  # remove from one target, keep the others
 wowget remove Questie
 ```
@@ -107,6 +108,16 @@ it yet; GitHub results are unchecked. Registry addons can be added by name or
 alias, `wowget add questie`, and `reconcile` uses the registry's folder lists
 to recognise addons installed by hand. Set `WOWGET_REGISTRY_URL` to use
 another registry file, or `off` for the built-in copy only.
+
+### Suggesting addons for the registry
+
+`wowget suggest` lists the addons in your manifest that the registry does not
+have and opens a prefilled GitHub issue that proposes them (`--print` only
+prints its URL). Submitting it needs a GitHub account and nothing else: a
+workflow checks every suggested source on each flavor, the same way the
+registry check does, and opens a pull request with the ones that install. The
+issue can also be filled in by hand, one `<source> [name]` per line. See
+[docs/SPEC-REGISTRY-SUGGEST.md](docs/SPEC-REGISTRY-SUGGEST.md).
 
 ### Targets
 
