@@ -12,7 +12,9 @@
     "verbatimModuleSyntax": true,
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "@opentui/react"
   },
   "include": ["src", "test", "scripts"]
 }

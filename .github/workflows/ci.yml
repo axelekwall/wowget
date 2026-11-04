@@ -24,3 +24,44 @@ jobs:
       - run: bun run typecheck
       - run: bun test
       - run: bun run build
+
+  # Cross-compiles the release binaries on Linux as the release workflow does, so a missing
+  # native package fails here and not at release time.
+  release-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile --os='*' --cpu='*'
+      - run: bun run build:release
+        env:
+          WOWGET_VERSION: 0.0.0-ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-binaries
+          path: dist/release
+          retention-days: 3
+
+  # Runs the cross-compiled binaries where they belong and checks the terminal UI library loads.
+  release-smoke:
+    needs: release-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            asset: wowget-darwin-arm64
+          - os: windows-latest
+            asset: wowget-windows-x64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-binaries
+      - shell: bash
+        run: |
+          chmod +x "${{ matrix.asset }}"
+          test "$("./${{ matrix.asset }}" --version)" = "wowget 0.0.0-ci"
+          "./${{ matrix.asset }}" tui --check

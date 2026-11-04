@@ -1,14 +1,16 @@
 // Builds release binaries for every supported platform into dist/release and
-// writes SHA256SUMS.txt next to them. The version comes from WOWGET_VERSION
+// writes SHA256SUMS.txt and THIRD-PARTY-NOTICES.txt next to them. The version comes from WOWGET_VERSION
 // (a tag like "v0.1.0" or a bare version) and is compiled into `wowget --version`.
+// Every target's OpenTUI native package must be installed: bun install --os='*' --cpu='*'.
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { thirdPartyNotices } from "./notices.ts";
 
 const TARGETS = [
-  { target: "bun-darwin-arm64", asset: "wowget-darwin-arm64" },
-  { target: "bun-darwin-x64", asset: "wowget-darwin-x64" },
-  { target: "bun-windows-x64", asset: "wowget-windows-x64.exe" },
+  { target: "bun-darwin-arm64", asset: "wowget-darwin-arm64", native: "@opentui/core-darwin-arm64" },
+  { target: "bun-darwin-x64", asset: "wowget-darwin-x64", native: "@opentui/core-darwin-x64" },
+  { target: "bun-windows-x64", asset: "wowget-windows-x64.exe", native: "@opentui/core-win32-x64" },
 ];
 
 const raw = process.env.WOWGET_VERSION;
@@ -48,4 +50,7 @@ for (const { target, asset } of targets) {
   sums.push(`${digest}  ${asset}`);
 }
 await writeFile(join(outDir, "SHA256SUMS.txt"), sums.join("\n") + "\n");
-console.log(`wrote ${sums.length} binaries and SHA256SUMS.txt to ${outDir}`);
+const root = join(import.meta.dir, "..");
+const notices = await thirdPartyNotices(root, "src/cli.ts", targets.map((t) => t.native));
+await writeFile(join(outDir, "THIRD-PARTY-NOTICES.txt"), notices);
+console.log(`wrote ${sums.length} binaries, SHA256SUMS.txt and THIRD-PARTY-NOTICES.txt to ${outDir}`);
