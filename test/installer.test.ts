@@ -266,7 +266,7 @@ describe("install", () => {
     try {
       const err = await uninstall({ addon: "Details", target: "forever", targetDir: env.addons, state: env.state }).catch((e) => e);
       expect(err.code).toBe("locked");
-      expect(await readdir(env.addons)).toEqual(["Details", "Details_Extra"]);
+      expect((await readdir(env.addons)).sort()).toEqual(["Details", "Details_Extra"]);
       expect((await readdir(join(env.addons, "Details"))).sort()).toEqual(["Details_Forever.toc", "a.lua"]);
       expect(await readdir(join(env.addons, "Details_Extra", "sub"))).toEqual(["x.lua"]);
       expect(env.state.getActiveInstall("forever", "Details")?.releaseId).toBe("v1");
