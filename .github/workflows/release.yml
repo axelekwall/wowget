@@ -25,7 +25,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
-      - run: bun install --frozen-lockfile
+      # Every target's OpenTUI native package, not only the runner's, so each binary can embed its own.
+      - run: bun install --frozen-lockfile --os='*' --cpu='*' --libc='*'
       - run: bun run typecheck
       - run: bun test
       - run: bun run build:release
@@ -79,6 +80,7 @@ jobs:
           out="$("$WOWGET_INSTALL_DIR/wowget" --version)"
           echo "$out"
           test "$out" = "wowget ${TAG#v}"
+          "$WOWGET_INSTALL_DIR/wowget" tui --check
       - name: install.ps1
         if: runner.os == 'Windows'
         shell: pwsh
@@ -88,3 +90,5 @@ jobs:
           Write-Host $out
           $expected = "wowget " + ($env:TAG -replace '^v', '')
           if ($out -ne $expected) { throw "expected '$expected', got '$out'" }
+          & "$env:WOWGET_INSTALL_DIR\wowget.exe" tui --check
+          if ($LASTEXITCODE -ne 0) { throw "tui --check failed" }

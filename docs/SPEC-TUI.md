@@ -64,12 +64,14 @@ parts disabled), plus libwebp, lcms2, zlib, stb, wuffs and Ghostty code
 under their own permissive licences. Each package carries the licence files.
 Before the first release with the TUI:
 
-- ship those notices with the release (a `THIRD-PARTY-NOTICES.txt` asset
-  built from the native package's `LICENSE*`, `PATENTS-LIBWEBP` and
+- ship those notices with the release. Done: `build:release` writes a
+  `THIRD-PARTY-NOTICES.txt` asset from every bundled package (read from
+  Bun's build metafile, plus their dependencies) and from each target's
+  native package (`LICENSE*`, `PATENTS-LIBWEBP`, `AUTHORS-LIBWEBP`,
   `FFMPEG-SOURCE.md`);
 - confirm that `OTUI_ASSET_ROOT`, which lets a user load their own build of
   the native library, meets LGPL-2.1's replacement requirement for a library
-  embedded in a single-file binary.
+  embedded in a single-file binary. Still open.
 
 ## Library choice
 
@@ -81,7 +83,11 @@ OpenTUI with its React renderer, `@opentui/react` (React 19).
 - Ink was the other candidate in PLAN.md. It has no mouse support of its own.
 - React over the imperative core API because the views are lists and forms
   driven by state that changes while operations run.
-- Pin exact versions (`0.8.1`, not `^0.8.1`). OpenTUI is pre-1.0.
+- Pin exact versions (`0.8.2`, not `^0.8.2`). OpenTUI is pre-1.0.
+- `@opentui/react` imports React DevTools and connects to it on localhost when
+  `DEV=true` is set, which keeps the process running. The bundle cannot leave
+  the module out (Bun hoists the import), so `cli.ts` deletes `DEV` from the
+  environment before it loads the TUI.
 
 ## Entry and dispatch
 
@@ -147,33 +153,42 @@ line when selected.
 
 - The TUI lives in `src/tui/` and imports only from `src/core`. No console I/O
   in the core changes.
-- One mutating operation at a time: the TUI queues update, add, remove, pin,
-  unpin and rollback, and disables their buttons while one runs. Reads (`list`,
-  `outdated`, `search`) may run alongside.
-- `search` already emits `catalog:download`. Ops that emit nothing during long
-  network steps (`outdated`) get `onEvent` calls where the TUI needs a
-  spinner. That is the only core change expected.
+- One operation at a time, the update check included: the action buttons are
+  disabled while one runs. An `outdated` result that landed after an update
+  would show the versions from before it, so reads do not run alongside
+  writes. `search` will be the exception, since it does not touch rows.
+- Update calls go one target at a time with the chosen names, because
+  `ProgressEvent`s name the addon but not the target.
+- No core changes: every row shows a spinner while `outdated` runs, so it
+  needs no events.
 - Windows `locked` errors (WoW is running) show the core's message on the row.
 
 ## Animation
 
-Kept small: spinners on rows waiting on the network, progress bars that ease
-between updates, and a short highlight on a row whose status changed. No
-animation runs when nothing is happening, so an idle TUI uses no CPU.
+Kept small: spinners on rows waiting on the network, download progress bars
+(repainted at most every 50 ms), and a short highlight on a row whose status
+changed. No animation runs when nothing is happening, so an idle TUI uses no
+CPU.
 
 ## Build and CI
 
-- `release.yml` build job: `bun install --frozen-lockfile --os='*' --cpu='*'`,
-  so every target's native package is present on the Linux runner.
+- `release.yml` build job: `bun install --frozen-lockfile --os='*' --cpu='*'
+  --libc='*'`, so every target's native package is present on the Linux
+  runner. `--libc='*'` is needed because the core chooses between its glibc
+  and musl Linux packages from `OPENTUI_LIBC` at runtime, so Bun has to
+  resolve both whenever it bundles for Linux (the notices step bundles for
+  the host), and a glibc host otherwise skips the musl packages.
 - `release.yml` verify job (macOS and Windows): after installing, run
   `wowget tui --check`. This is the first run of a compiled Windows binary
   with OpenTUI.
-- `ci.yml`: unchanged install (each OS gets its own native package). The TUI
-  tests below run on all three OSes from source.
-- `ci.yml` adds a cross-compile step on `ubuntu-latest` that installs with
-  `--os='*' --cpu='*'` and runs `bun run build:release` with
-  `WOWGET_VERSION=0.0.0-ci`, so a missing native package fails the PR, not
-  the release.
+- `ci.yml`: the Linux `check` job, which already runs `bun run build:release`,
+  installs with `--os='*' --cpu='*' --libc='*'`, so a missing native package
+  fails the PR, not the release, and uploads the binaries. A `windows-binary`
+  job runs the cross-compiled Windows binary with `--version` and
+  `tui --check`, so a Windows binary that cannot load its native library
+  fails before anything is published. The macOS binary is first run by the
+  release verify job. The TUI tests run from source on Linux and in
+  `test-windows`.
 
 ## Tests
 

@@ -26,12 +26,19 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
-      - run: bun install --frozen-lockfile
+      # Every target's OpenTUI native package, not only the runner's, so build:release can embed
+      # each one. OpenTUI picks its glibc or musl library at runtime, so Linux needs both.
+      - run: bun install --frozen-lockfile --os='*' --cpu='*' --libc='*'
       - run: bun run typecheck
       - run: bun test
       - run: bun run build:release
         env:
           WOWGET_VERSION: v0.0.0-ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-binaries
+          path: dist/release
+          retention-days: 3
 
   # Windows has its own path, AppData and file-replacement handling that Linux cannot exercise.
   test-windows:
@@ -44,3 +51,17 @@ jobs:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
       - run: bun test
+
+  # Runs the cross-compiled Windows binary and checks the terminal UI library loads in it.
+  windows-binary:
+    needs: check
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-binaries
+      - shell: bash
+        run: |
+          test "$(./wowget-windows-x64.exe --version)" = "wowget 0.0.0-ci"
+          ./wowget-windows-x64.exe tui --check

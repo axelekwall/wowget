@@ -13,10 +13,14 @@
     "registry:check": "bun scripts/check-registry.ts"
   },
   "dependencies": {
-    "fflate": "^0.8.3"
+    "@opentui/core": "0.8.2",
+    "@opentui/react": "0.8.2",
+    "fflate": "^0.8.3",
+    "react": "19.3.1"
   },
   "devDependencies": {
     "@types/bun": "^1.4.4",
+    "@types/react": "19.3.0",
     "typescript": "^7.0.2"
   }
 }

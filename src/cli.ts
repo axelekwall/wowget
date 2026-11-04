@@ -38,6 +38,7 @@ Commands:
   suggest [name...] [--print]           open a GitHub issue that proposes the manifest addons
                                         missing from the addon registry
   self-update [--check]                 replace this binary with the latest wowget release
+  tui                                   open the terminal UI: see what is outdated and update by mouse or keyboard
 
 search, add, remove, list, outdated, update, install, rollback, reconcile and doctor act on every target
 unless filtered with -t/--target, which can be repeated. "add -t" records the targets
@@ -50,7 +51,8 @@ Options:
   -t, --target <name> act on this target only (repeatable)
   --adopt             with reconcile: install and add matched addons to the manifest
   --clean             with doctor: remove leftover temp folders and unreferenced cache dirs
-  --check             with self-update: only report whether a newer release exists
+  --check             with self-update: only report whether a newer release exists;
+                      with tui: only check that the terminal UI library loads
   --all-flavors       with search: do not filter on flavors
   --github            with search: also search GitHub repositories tagged wow-addon
   --limit <n>         with search: show at most n results (default 20)
@@ -118,6 +120,7 @@ const COMMAND_FLAGS: Record<string, Flag[]> = {
   doctor: ["target", "clean"],
   "self-update": ["check"],
   suggest: ["print"],
+  tui: ["check"],
 };
 
 const POSITIONALS: Record<string, [min: number, max: number]> = {
@@ -139,6 +142,7 @@ const POSITIONALS: Record<string, [min: number, max: number]> = {
   doctor: [0, 0],
   "self-update": [0, 0],
   suggest: [0, Infinity],
+  tui: [0, 0],
 };
 
 class UsageError extends Error {}
@@ -541,6 +545,21 @@ async function main(argv: string[]): Promise<number> {
     }
 
     const manifest = manifestPath(values.manifest);
+    if (key === "tui") {
+      // @opentui/react connects to React DevTools on localhost when DEV=true is set at import,
+      // which would keep wowget running; nothing else here reads DEV.
+      delete process.env.DEV;
+      // Imported on demand so the other commands never load the native UI library.
+      const tui = await import("./tui/index.tsx");
+      if (values.check) {
+        process.stdout.write(`ok ${tui.checkTui()}\n`);
+        return 0;
+      }
+      if (!process.stdin.isTTY || !process.stdout.isTTY) throw new UsageError('"tui" needs an interactive terminal.');
+      state = openState(stateDbPath());
+      await tui.runTui({ manifestPath: manifest, state, version: VERSION });
+      return 0;
+    }
     let result: unknown;
     if (key === "self-update") {
       result = await selfUpdate({
