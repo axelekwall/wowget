@@ -102,7 +102,7 @@ describe("suggestEntries", () => {
       ["wowi:42", "listed twice in the issue"],
       ["nope", expect.stringContaining("Unknown source")],
       ["wowi:43", "installs on no flavor"],
-      ["wowi:44", expect.stringContaining('"questie" is already used by Questie')],
+      ["wowi:44", '"questie" is already used by Questie'],
     ]);
     // Only appended: the original file is a prefix and the result is a valid registry.
     expect(outcome.text.startsWith(REGISTRY)).toBe(true);

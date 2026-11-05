@@ -134,7 +134,7 @@ export async function suggestEntries(registryText: string, body: string, deps: S
     // Strict parsing catches name and alias clashes with existing and earlier entries.
     const after = parseRegistry(next, { strict: true }).problems;
     if (after.length) {
-      reject(c.s, after.map((p) => p.replace(/^addon #\d+ /, "")).join("; "));
+      reject(c.s, after.map((p) => p.replace(/^addon #\d+ (\(.*?\): )?/, "")).join("; "));
       continue;
     }
     text = next;
