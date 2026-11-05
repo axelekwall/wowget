@@ -21,14 +21,19 @@ bun scripts/pr-reviews.ts resolve <thread-id>…               resolve threads
 ```
 
 `wait` exits 0 when the head commit is reviewed with nothing unresolved, 1 when threads remain
-(it lists them), and 2 when Codex has not reviewed the head commit in time (20 minutes by
-default). A review usually takes a few minutes.
+(it lists them), and 2 when Codex commented instead of reviewing or has not reviewed the head
+commit in time (20 minutes by default). A review usually takes a few minutes.
 
 ## 1. Wait for the review
 
 Run `bun scripts/pr-reviews.ts wait <pr>`. On exit 0 there is nothing to do; go to step 6. On
-exit 2, check that the PR is not a draft and that the summary comment exists. If Codex still
-has not reviewed the head commit, say so in your report instead of waiting longer.
+exit 2, read what it printed:
+
+- Codex commented instead of reviewing, for example asking for a Codex environment for the
+  repository: that is a setting only the maintainer can change. Report it with the comment's
+  link and stop; don't request another review.
+- A draft: mark it ready for review (`gh pr ready <pr>`), then wait again.
+- No sign of Codex at all: say so in your report instead of waiting longer.
 
 ## 2. Verify every finding
 

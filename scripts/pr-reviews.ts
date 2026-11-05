@@ -5,7 +5,8 @@
 //       (every open PR when none is named; --all includes resolved threads).
 //   bun scripts/pr-reviews.ts wait <pr> [--timeout <minutes>]
 //       polls until Codex has reviewed the PR's head commit, then lists its threads.
-//       Exits 0 when nothing is unresolved, 1 when threads remain, 2 on timeout (default 20 minutes).
+//       Exits 0 when nothing is unresolved, 1 when threads remain, 2 when Codex comments instead
+//       of reviewing or on timeout (default 20 minutes).
 //   bun scripts/pr-reviews.ts reply <thread-id> <body…>
 //   bun scripts/pr-reviews.ts resolve <thread-id>…
 //
@@ -141,11 +142,22 @@ function latestCodexState(pr: PullRequest): CodexState | null {
   return null;
 }
 
+/** Codex's latest comment that is not the review summary, such as a setup problem that blocks reviews. */
+function latestCodexNote(pr: PullRequest): Comment | null {
+  const notes = pr.comments.nodes.filter((c) => isCodex(c.author?.login) && parseCodexState(c.body) === null);
+  return notes.at(-1) ?? null;
+}
+
+function codexThumbsUp(pr: PullRequest): boolean {
+  return pr.reactions.nodes.some((r) => isCodex(r.user?.login));
+}
+
 function codexSummary(pr: PullRequest): string {
   const state = latestCodexState(pr);
   if (state === null) {
-    const thumbsUp = pr.reactions.nodes.some((r) => isCodex(r.user?.login));
-    if (thumbsUp) return "no summary comment; Codex reacted 👍 (no findings)";
+    if (codexThumbsUp(pr)) return "no summary comment; Codex reacted 👍 (no findings)";
+    const note = latestCodexNote(pr);
+    if (note !== null) return `no review; Codex commented: ${excerpt(note.body, 200)} ${note.url}`;
     return pr.isDraft ? "no review yet (draft: mark it ready for review)" : "no review yet";
   }
   const head = pr.headRefOid;
@@ -240,9 +252,16 @@ async function wait(number: number, timeoutMinutes: number): Promise<number> {
   for (;;) {
     const pr = await pullRequest(number);
     const state = latestCodexState(pr);
-    if (codexDone(state, pr.headRefOid)) {
+    // Without a summary comment, a 👍 means Codex found nothing, and any other Codex comment means
+    // it answered without reviewing (for example, no Codex environment for the repository).
+    const answered = state === null && (codexThumbsUp(pr) || latestCodexNote(pr) !== null);
+    if (codexDone(state, pr.headRefOid) || answered) {
       const threads = threadsOf(pr, false);
       print(pr, threads);
+      if (answered && !codexThumbsUp(pr)) {
+        console.error("\nCodex commented instead of reviewing; see its comment above.");
+        return 2;
+      }
       return threads.length === 0 ? 0 : 1;
     }
     if (Date.now() >= deadline) {
