@@ -15,6 +15,8 @@ export interface RegistryEntry {
   folders: string[];
   aliases: string[];
   description?: string;
+  /** Why the entry is switched off: its source installs on no flavor. */
+  disabled?: string;
 }
 
 export interface ParsedRegistry {
@@ -23,7 +25,7 @@ export interface ParsedRegistry {
   problems: string[];
 }
 
-const ENTRY_KEYS = ["name", "source", "flavors", "folders", "aliases", "description"];
+const ENTRY_KEYS = ["name", "source", "flavors", "folders", "aliases", "description", "disabled"];
 
 /** Lower-cased with everything but letters and digits removed, for comparing names and queries. */
 export function normaliseName(text: string): string {
@@ -86,6 +88,9 @@ function parseEntry(raw: unknown, strict: boolean): RegistryEntry | string[] {
   if (raw.description !== undefined && (typeof raw.description !== "string" || raw.description.includes("\n"))) {
     problems.push("description must be a one-line string");
   }
+  if (raw.disabled !== undefined && (typeof raw.disabled !== "string" || raw.disabled === "" || raw.disabled.includes("\n"))) {
+    problems.push("disabled must be a non-empty one-line string");
+  }
 
   if (problems.length) return problems;
   const entry: RegistryEntry = {
@@ -96,6 +101,7 @@ function parseEntry(raw: unknown, strict: boolean): RegistryEntry | string[] {
     aliases: aliases!,
   };
   if (typeof raw.description === "string" && raw.description !== "") entry.description = raw.description;
+  if (typeof raw.disabled === "string") entry.disabled = raw.disabled;
   return entry;
 }
 
@@ -166,6 +172,11 @@ export async function loadRegistry(http: Http, env: Record<string, string | unde
     const reason = err instanceof Error ? err.message : String(err);
     return { entries: parseRegistry(snapshotText).entries, stale: `Using the built-in addon registry: ${reason}` };
   }
+}
+
+/** The entries search and reconcile offer: those not disabled. */
+export function enabledEntries(entries: RegistryEntry[]): RegistryEntry[] {
+  return entries.filter((e) => e.disabled === undefined);
 }
 
 /** The entry whose name or alias equals `name` after normalisation. */

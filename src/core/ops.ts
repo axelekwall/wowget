@@ -43,7 +43,7 @@ import {
 } from "./manifest.ts";
 import { cacheDir as defaultCacheDir, expandHome, gameDirCandidates } from "./paths.ts";
 import { scanUnmanaged, type UnmanagedAddon } from "./reconcile.ts";
-import { findRegistryEntry, loadRegistry, normaliseName, type RegistryEntry } from "./registry.ts";
+import { enabledEntries, findRegistryEntry, loadRegistry, normaliseName, type RegistryEntry } from "./registry.ts";
 import { searchGithub } from "./search/github-search.ts";
 import { rankRows, type Origin, type SearchRow } from "./search/index.ts";
 import { registryRows } from "./search/registry.ts";
@@ -524,6 +524,12 @@ async function registryEntryFor(ctx: Context, name: string): Promise<RegistryEnt
       ? `Did you mean "github:${name}"?`
       : `Try "wowget search ${name}", or give a source such as github:owner/repo.`;
     throw new WowgetError("source", `"${name}" is not in the addon registry. ${hint}`);
+  }
+  if (entry.disabled !== undefined) {
+    throw new WowgetError(
+      "source",
+      `${entry.name} is disabled in the addon registry: ${entry.disabled}. Give its source (${entry.source}) to add it anyway.`,
+    );
   }
   return entry;
 }
@@ -1247,7 +1253,7 @@ export async function reconcile(opts: ReconcileOptions): Promise<ReconcileResult
   const registry = await loadRegistry(ctx.http, opts.env);
   if (registry.stale) opts.onEvent?.({ type: "registry:stale", message: registry.stale });
   // The cached catalogue only: reconcile does not download it.
-  const hints = { registry: registry.entries, catalog: await readCachedCatalog(ctx.cacheDir) };
+  const hints = { registry: enabledEntries(registry.entries), catalog: await readCachedCatalog(ctx.cacheDir) };
   const discovered: { target: NamedTarget; group: UnmanagedAddon }[] = [];
   for (const target of targets) {
     for (const group of await scanUnmanaged(target.path, target.name, opts.state, hints)) {
@@ -1468,7 +1474,7 @@ export async function search(opts: SearchOptions): Promise<SearchResult> {
   if (registry.stale) warnings.unshift(registry.stale);
   if (catalog.warning) warnings.push(catalog.warning);
 
-  const rows = [...registryRows(registry.entries), ...catalog.entries.map(catalogRow), ...github];
+  const rows = [...registryRows(enabledEntries(registry.entries)), ...catalog.entries.map(catalogRow), ...github];
   const ranked = rankRows(rows, query, { flavors, limit });
   return { results: ranked.map((row) => resultEntry(row, flavors, manifest)), flavors: flavors ?? null, warnings };
 }

@@ -41,6 +41,13 @@ name = "Questie"
 source = "github:Questie/Questie"
 flavors = ["classic"]
 folders = ["Questie"]
+
+[[addon]]
+name = "Foo Gone"
+source = "wowi:99"
+flavors = ["classic"]
+folders = ["FooGone"]
+disabled = "installs on no flavor (checked 2026-11-05)"
 `;
 
 const FILELIST = [
@@ -161,7 +168,7 @@ describe("registry loading", () => {
   test("uses the fetched file, falls back to the built-in copy, and skips the network when off", async () => {
     const served = fakeFetch({ [REGISTRY]: () => new Response(REGISTRY_TEXT, { headers: { etag: '"1"' } }) });
     const fetched = await loadRegistry(new HttpClient({ fetch: served.fetch, env: {} }), { WOWGET_REGISTRY_URL: REGISTRY });
-    expect(fetched.entries.map((e) => e.name)).toEqual(["Foo", "Questie"]);
+    expect(fetched.entries.map((e) => e.name)).toEqual(["Foo", "Questie", "Foo Gone"]);
     expect(fetched.stale).toBeUndefined();
 
     const missing = fakeFetch({});
@@ -215,6 +222,7 @@ describe("ops.search", () => {
       const base = { state, cacheDir: join(root, "cache"), fetch: fake.fetch, env: { WOWGET_REGISTRY_URL: REGISTRY } };
       const manifestPath = join(root, "wowget.toml");
 
+      // The disabled "Foo Gone" entry is left out.
       const all = await ops.search({ ...base, manifestPath, query: "foo" });
       expect(all.warnings).toEqual([]);
       expect(all.results.map((r) => [r.name, r.source, r.origin])).toEqual([
@@ -285,6 +293,12 @@ describe("bare-name add", () => {
       const miss = await ops.add({ ...opts, source: "nothing-like-it" }).catch((e) => e);
       expect(miss.code).toBe("source");
       expect(miss.message).toContain('wowget search nothing-like-it');
+
+      const off = await ops.add({ ...opts, source: "foo gone" }).catch((e) => e);
+      expect(off.code).toBe("source");
+      expect(off.message).toBe(
+        "Foo Gone is disabled in the addon registry: installs on no flavor (checked 2026-11-05). Give its source (wowi:99) to add it anyway.",
+      );
     } finally {
       state.close();
     }

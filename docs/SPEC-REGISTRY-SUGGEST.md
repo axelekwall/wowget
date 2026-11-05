@@ -104,8 +104,10 @@ bun scripts/suggest-registry.ts --body <file> [--file registry/addons.toml] [--r
 6. Writes the file and the report. Exits 1 on a usage error or a GitHub rate
    limit, 0 otherwise; rejected suggestions are reported, not failures.
 
-A pull request opened with the workflow token starts no workflows, so the
-pull request shows no Registry check; the workflow already ran it.
+The pull request runs the Registry check like any registry pull request. It
+changes nothing outside `registry/`, so the check fails only on the entries it
+adds; upstream changes to other entries show as warnings and are left to the
+daily update (see SPEC-SEARCH.md).
 
 ## Not in scope
 

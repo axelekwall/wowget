@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { zipSync } from "fflate";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { checkEntry, rewriteEntry } from "../scripts/check-registry.ts";
+import { checkEntry, disabledReason, rewriteEntry, unchangedEntries } from "../scripts/check-registry.ts";
 import { HttpClient } from "../src/core/http.ts";
 import { normaliseName, parseRegistry } from "../src/core/registry.ts";
 import { fakeFetch, json } from "./helpers/fetch.ts";
@@ -83,6 +83,15 @@ folders = ["Other"]
     expect(normaliseName("Prat-3.0")).toBe("prat30");
   });
 
+  test("reads a disabled reason and rejects an empty one", () => {
+    const disabled = QUESTIE.replace('folders = ["Questie"]', 'folders = ["Questie"]\ndisabled = "installs on no flavor"');
+    expect(parseRegistry(disabled, { strict: true }).entries[0]!.disabled).toBe("installs on no flavor");
+    const empty = QUESTIE.replace('folders = ["Questie"]', 'folders = ["Questie"]\ndisabled = ""');
+    expect(parseRegistry(empty, { strict: true }).problems).toEqual([
+      "addon #1 (Questie): disabled must be a non-empty one-line string",
+    ]);
+  });
+
   test("the shipped registry passes strict validation", async () => {
     const text = await readFile(join(import.meta.dir, "..", "registry", "addons.toml"), "utf8");
     const { entries, problems } = parseRegistry(text, { strict: true });
@@ -127,6 +136,52 @@ describe("checkEntry", () => {
       'lists folders ["Foo","Foo_Options"], installs ["Foo"]',
     ]);
   });
+
+  test("a disabled entry matches while it installs nowhere and mismatches once it installs", async () => {
+    const installs = await checkEntry(
+      { name: "Foo", source: "wowi:42", flavors: ["mainline"], folders: ["Old"], aliases: [], disabled: "gone" },
+      deps(await tempDir()),
+    );
+    expect(installs.mismatches).toEqual(["is disabled, but installs on classic"]);
+
+    const missing = fakeFetch({ [API]: () => new Response("not found", { status: 404 }) });
+    const nowhere = await checkEntry(
+      { name: "Foo", source: "wowi:42", flavors: ["classic"], folders: ["Foo"], aliases: [], disabled: "gone" },
+      { http: new HttpClient({ fetch: missing.fetch, env: {} }), workDir: await tempDir(), fetch: missing.fetch },
+    );
+    expect(nowhere.supported).toEqual([]);
+    expect(nowhere.mismatches).toEqual([]);
+    expect(disabledReason(nowhere, "2026-11-05")).toStartWith("installs on no flavor (checked 2026-11-05): ");
+  });
+});
+
+describe("unchangedEntries", () => {
+  test("an entry is unchanged when the base has the same check inputs under its name", () => {
+    const base = `${QUESTIE}
+[[addon]]
+name = "Foo"
+source = "wowi:42"
+flavors = ["classic"]
+folders = ["Foo"]
+`;
+    const head = `${QUESTIE.replace('flavors = ["classic", "forever"]', 'flavors = ["forever", "classic"]')}
+aliases = ["quest helper"]
+
+[[addon]]
+name = "Foo"
+source = "wowi:42"
+flavors = ["classic", "mainline"]
+folders = ["Foo"]
+
+[[addon]]
+name = "New"
+source = "wowi:43"
+flavors = ["classic"]
+folders = ["New"]
+`;
+    // Questie only reordered flavors and gained an alias; Foo changed flavors; New is new.
+    expect(unchangedEntries(parseRegistry(head, { strict: true }).entries, base)).toEqual(new Set(["Questie"]));
+  });
 });
 
 describe("rewriteEntry", () => {
@@ -154,6 +209,17 @@ folders = ["B"]
         .replace('folders = ["B"]', 'folders = ["B", "B_Options"]'),
     );
     expect(parseRegistry(out, { strict: true }).problems).toEqual([]);
+  });
+
+  test("sets, replaces and removes the disabled line", () => {
+    const off = rewriteEntry(text, "A", { disabled: "installs on no flavor" });
+    expect(off).toBe(text.replace('folders = ["A"]', 'folders = ["A"]\ndisabled = "installs on no flavor"'));
+    expect(parseRegistry(off, { strict: true }).entries[0]!.disabled).toBe("installs on no flavor");
+    const again = rewriteEntry(off, "A", { disabled: "still nothing" });
+    expect(again).toBe(text.replace('folders = ["A"]', 'folders = ["A"]\ndisabled = "still nothing"'));
+    expect(rewriteEntry(again, "A", { flavors: ["classic", "bcc"], folders: ["A"], disabled: null })).toBe(
+      text.replace('flavors = ["classic"]\nfolders = ["A"]', 'flavors = ["classic", "bcc"]\nfolders = ["A"]'),
+    );
   });
 
   test("refuses unknown names and multi-line arrays", () => {
