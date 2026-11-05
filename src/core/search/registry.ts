@@ -24,6 +24,7 @@ export function registryRows(entries: RegistryEntry[]): SearchRow[] {
       order,
     };
     if (entry.description) row.description = entry.description;
+    if (entry.disabled !== undefined) row.disabled = true;
     const url = sourceUrl(entry.source);
     if (url) row.url = url;
     return row;

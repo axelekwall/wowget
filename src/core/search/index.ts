@@ -28,13 +28,16 @@ export function matchTier(row: SearchRow, query: string): number | undefined {
 
 const folderKey = (folders: string[]) => [...new Set(folders.map((f) => f.toLowerCase()))].sort().join("\0");
 
-/** Drops WoWInterface and GitHub rows that are the same addon as a registry row. */
+/**
+ * Drops WoWInterface and GitHub rows that are the same addon as a registry row, and disabled
+ * registry rows: the registry found their source installs on no flavor, whichever feed lists it.
+ */
 export function dedupe(rows: SearchRow[]): SearchRow[] {
   const registry = rows.filter((r) => r.origin === "registry");
   const sources = new Set(registry.map((r) => r.source.toLowerCase()));
   const folderSets = new Set(registry.map((r) => folderKey(r.folders)));
   return rows.filter((r) => {
-    if (r.origin === "registry") return true;
+    if (r.origin === "registry") return !r.disabled;
     if (sources.has(r.source.toLowerCase())) return false;
     return !(r.origin === "wowi" && r.folders.length && folderSets.has(folderKey(r.folders)));
   });

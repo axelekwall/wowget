@@ -20,4 +20,6 @@ export interface SearchRow {
   url?: string;
   /** Position in the registry file; registry rows have no popularity and keep this order. */
   order?: number;
+  /** A disabled registry entry: never shown, but still hides other feeds' copies of the addon. */
+  disabled?: boolean;
 }

@@ -211,7 +211,9 @@ describe("GitHub search", () => {
 describe("ops.search", () => {
   const routes = () => ({
     [REGISTRY]: () => new Response(REGISTRY_TEXT),
-    [CATALOG_URL]: () => json(FILELIST),
+    // A WoWInterface copy of the disabled registry entry.
+    [CATALOG_URL]: () =>
+      json([...FILELIST, { UID: "99", UIName: "Foo Gone", UICompatibility: [{ version: "1.15.7", name: "Classic" }], UIDir: ["FooGone"] }]),
   });
 
   test("works without a manifest and filters on the targets' flavors when there is one", async () => {
@@ -222,7 +224,7 @@ describe("ops.search", () => {
       const base = { state, cacheDir: join(root, "cache"), fetch: fake.fetch, env: { WOWGET_REGISTRY_URL: REGISTRY } };
       const manifestPath = join(root, "wowget.toml");
 
-      // The disabled "Foo Gone" entry is left out.
+      // The disabled "Foo Gone" entry is left out, and so is its WoWInterface copy.
       const all = await ops.search({ ...base, manifestPath, query: "foo" });
       expect(all.warnings).toEqual([]);
       expect(all.results.map((r) => [r.name, r.source, r.origin])).toEqual([

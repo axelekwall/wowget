@@ -1474,7 +1474,7 @@ export async function search(opts: SearchOptions): Promise<SearchResult> {
   if (registry.stale) warnings.unshift(registry.stale);
   if (catalog.warning) warnings.push(catalog.warning);
 
-  const rows = [...registryRows(enabledEntries(registry.entries)), ...catalog.entries.map(catalogRow), ...github];
+  const rows = [...registryRows(registry.entries), ...catalog.entries.map(catalogRow), ...github];
   const ranked = rankRows(rows, query, { flavors, limit });
   return { results: ranked.map((row) => resultEntry(row, flavors, manifest)), flavors: flavors ?? null, warnings };
 }
