@@ -57,7 +57,8 @@ description = "Quest helper for Classic"  # optional, one line
 - `aliases`: other names a user might type. Compared after normalisation.
 - `disabled`: optional one-line reason, set by the daily update when the
   entry installs on no flavor. `flavors` and `folders` keep their last
-  checked values. The client leaves a disabled entry out of `search` and
+  checked values. The client leaves a disabled entry out of `search`
+  (along with the WoWInterface and GitHub rows it de-duplicates) and
   reconcile, and bare-name `add` refuses it with the reason. The entry still
   counts as listed for `suggest`, so it is not proposed again. The daily
   update removes the key once the source installs again. Older binaries
