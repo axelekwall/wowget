@@ -209,7 +209,7 @@ async function repository(): Promise<{ owner: string; name: string }> {
 async function pullRequest(number: number): Promise<PullRequest> {
   const { owner, name } = await repository();
   const fields = "number,title,url,headRefName,headRefOid,baseRefName,isDraft";
-  const [meta, comments, threads] = await Promise.all([
+  const [meta, comments] = await Promise.all([
     gh(["pr", "view", String(number), "--json", fields]),
     // REST pages through every comment; Codex edits its one summary comment in place, so it can be
     // far from the end of the list.
@@ -220,20 +220,22 @@ async function pullRequest(number: number): Promise<PullRequest> {
       "--jq",
       ".[] | {author: .user.login, body, url: .html_url, createdAt: .created_at} | @json",
     ]),
-    gh([
-      "api",
-      "graphql",
-      "--paginate",
-      "--slurp",
-      "-f",
-      `query=${THREADS}`,
-      "-f",
-      `owner=${owner}`,
-      "-f",
-      `name=${name}`,
-      "-F",
-      `number=${number}`,
-    ]),
+  ]);
+  // Threads are read after the comments, so a summary that says the review is complete is never
+  // paired with a thread list from before Codex published its findings.
+  const threads = await gh([
+    "api",
+    "graphql",
+    "--paginate",
+    "--slurp",
+    "-f",
+    `query=${THREADS}`,
+    "-f",
+    `owner=${owner}`,
+    "-f",
+    `name=${name}`,
+    "-F",
+    `number=${number}`,
   ]);
   type Page = { data: { repository: { pullRequest: { reviewThreads: { nodes: Thread[] } } } } };
   return {
