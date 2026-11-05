@@ -696,3 +696,15 @@ name = "Target Nameplate Indicator"
 source = "wowi:21391"
 flavors = ["mainline", "classic", "bcc", "wrath", "cata", "mists"]
 folders = ["TargetNameplateIndicator"]
+
+[[addon]]
+name = "DialogKey_Numy"
+source = "github:NumyAddon/DialogKey_Numy"
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["DialogKey_Numy"]
+
+[[addon]]
+name = "YUI-Dialogue"
+source = "github:Peterodox/YUI-Dialogue"
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
+folders = ["DialogueUI"]
