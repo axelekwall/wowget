@@ -55,6 +55,14 @@ description = "Quest helper for Classic"  # optional, one line
   flavors. Used for reconcile and for de-duplicating WoWInterface rows.
   Checked by CI.
 - `aliases`: other names a user might type. Compared after normalisation.
+- `disabled`: optional one-line reason, set by the daily update when the
+  entry installs on no flavor. `flavors` and `folders` keep their last
+  checked values. The client leaves a disabled entry out of `search`
+  (along with the WoWInterface and GitHub rows it de-duplicates) and
+  reconcile, and bare-name `add` refuses it with the reason. The entry still
+  counts as listed for `suggest`, so it is not proposed again. The daily
+  update removes the key once the source installs again. Older binaries
+  ignore the key and treat the entry as enabled.
 - Unknown keys are an error in the check script and are ignored by the
   client, so older binaries keep working when the format grows.
 
@@ -82,23 +90,35 @@ description = "Quest helper for Classic"  # optional, one line
    `folderSupportsFlavor` on each addon folder, the same check the installer
    runs. `unknown` counts as not supported.
 4. Compares the supported set with `flavors` and the extracted folder names
-   with `folders`. Prints one line per mismatch and exits 1 if there is any.
+   with `folders`. A disabled entry matches while it installs on no flavor.
+   Prints one line per mismatch and exits 1 if there is any.
    With `--write` it puts the values it found into the file instead,
-   rewriting only those two lines of each entry; an entry that installs on no
-   flavor is left for a person. `--report <file>` writes a Markdown summary.
-5. An error reaching a source (a failed download, a checksum the source lists
+   rewriting only those lines of each entry: an entry that installs on no
+   flavor gets `disabled`, and a disabled entry that installs again loses it
+   and gets the flavors and folders found. `--report <file>` writes a
+   Markdown summary.
+5. `--base <file>` names the registry the change started from. Entries whose
+   `name`, `source`, `flavors`, `folders` and `disabled` equal an entry of
+   the same name there are unchanged: their mismatches print as warnings
+   (GitHub annotations in Actions) and do not fail the run.
+6. An error reaching a source (a failed download, a checksum the source lists
    wrongly) is reported but does not fail the run, because it says the source
    is broken rather than that the entry is wrong. A GitHub rate limit does
    fail it.
 
 The CI workflow runs the check on pull requests that touch `registry/` or the
-source code. A daily scheduled run (also startable by hand) runs it with
+source code. When the pull request changes nothing outside `registry/`, it
+passes the base branch's file as `--base`. Upstream changes to entries the
+pull request does not touch are the daily update's job, so they cannot block
+a registry pull request such as a suggestion. A pull request that changes
+code checks every entry strictly, so a source regression still fails it.
+
+A daily scheduled run (also startable by hand) runs it with
 `--write` and, when an entry changed, opens a pull request titled
 `chore(registry): update flavors and folders from the sources` from the
-`registry/update` branch, or refreshes the one already open. The run fails
-when an entry needs a person, so the failure shows in the Actions tab. A PR
-opened with the workflow token starts no workflows, so that PR shows no CI
-checks; the scheduled run already did the check.
+`registry/update` branch, or refreshes the one already open. Its report lists
+updated, disabled and re-enabled entries. The run fails only on a rate limit
+or an entry it could not rewrite, so the failure shows in the Actions tab.
 
 ### Seeding
 

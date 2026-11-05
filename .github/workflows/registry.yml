@@ -21,13 +21,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The merge commit and its first parent, the base branch the PR merges into.
+          fetch-depth: 2
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
-      - run: bun run registry:check
+      # A PR that only edits the registry is checked on the entries it changes; upstream changes
+      # to the others warn and are left to the scheduled update. A PR that changes code checks
+      # every entry, so a regression in a source still fails.
+      - name: Check the registry
         env:
           GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet HEAD^1 HEAD -- . ':!registry/'; then
+            git show HEAD^1:registry/addons.toml > "$RUNNER_TEMP/base.toml"
+            bun run registry:check --base "$RUNNER_TEMP/base.toml"
+          else
+            bun run registry:check
+          fi
 
   # Puts what the sources install today into the registry and opens (or refreshes) one PR with it.
   update:
@@ -69,7 +82,7 @@ jobs:
           git commit -q -m "$TITLE" -- registry/addons.toml
           git push --force origin "$BRANCH"
           {
-            echo "The scheduled registry check found entries that no longer match what their sources install, and updated them to what installs today."
+            echo "The scheduled registry check found entries that no longer match what their sources install. It updated them to what installs today, disabled the ones that install on no flavor and re-enabled disabled ones that install again."
             echo
             cat "$RUNNER_TEMP/report.md"
           } > "$RUNNER_TEMP/body.md"
@@ -78,7 +91,7 @@ jobs:
           else
             gh pr create --base main --head "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/body.md"
           fi
-      - name: Fail when an entry needs a person
+      - name: Fail on a rate limit or an entry it could not rewrite
         if: steps.check.outputs.status != '0'
         run: |
           cat "$RUNNER_TEMP/report.md"

@@ -132,7 +132,10 @@ the flavors they are known to install on; WoWInterface results list what
 their authors claim and mark Forever `?`, since WoWInterface has no marker for
 it yet; GitHub results are unchecked. Registry addons can be added by name or
 alias, `wowget add questie`, and `reconcile` uses the registry's folder lists
-to recognise addons installed by hand. Set `WOWGET_REGISTRY_URL` to use
+to recognise addons installed by hand. A daily check keeps each entry's
+flavors and folders in line with what its source installs, and disables an
+entry whose source installs on no flavor until it does again; search and
+reconcile skip disabled entries. Set `WOWGET_REGISTRY_URL` to use
 another registry file, or `off` for the built-in copy only.
 
 ### Suggesting addons for the registry
@@ -228,7 +231,7 @@ bun run build:win   # dist/wowget.exe for 64-bit Windows, cross-compiled from an
 bun install --libc='*'                        # on Linux: both glibc and musl terminal UI libraries, needed by every build
 bun install --os='*' --cpu='*' --libc='*'     # every platform's terminal UI library, needed by build:release
 WOWGET_VERSION=0.1.0 bun run build:release   # dist/release/* for every platform, with SHA256SUMS.txt and THIRD-PARTY-NOTICES.txt
-bun run registry:check [--only Questie] [--write]   # check registry/addons.toml entries on every flavor
+bun run registry:check [--only Questie] [--write] [--base <file>]   # check registry/addons.toml entries on every flavor
 ```
 
 `wowget --version` prints the version compiled in by `build:release` (`dev`

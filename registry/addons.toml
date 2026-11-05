@@ -32,8 +32,8 @@ folders = ["BigWigs", "BigWigs_Core", "BigWigs_MarchOnQuelDanas", "BigWigs_Midni
 [[addon]]
 name = "LittleWigs"
 source = "github:BigWigsMods/LittleWigs"
-flavors = ["mainline", "classic", "bcc", "wrath", "cata", "mists"]
-folders = ["LittleWigs", "LittleWigs_BattleForAzeroth", "LittleWigs_BurningCrusade", "LittleWigs_Cataclysm", "LittleWigs_Classic", "LittleWigs_Dragonflight", "LittleWigs_Legion", "LittleWigs_MistsOfPandaria", "LittleWigs_Shadowlands", "LittleWigs_TheWarWithin", "LittleWigs_WarlordsOfDraenor", "LittleWigs_WrathOfTheLichKing"]
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
+folders = ["LittleWigs", "LittleWigs_BattleForAzeroth", "LittleWigs_BurningCrusade", "LittleWigs_Cataclysm", "LittleWigs_Classic", "LittleWigs_Dragonflight", "LittleWigs_Forever", "LittleWigs_Legion", "LittleWigs_MistsOfPandaria", "LittleWigs_Shadowlands", "LittleWigs_TheWarWithin", "LittleWigs_WarlordsOfDraenor", "LittleWigs_WrathOfTheLichKing"]
 
 [[addon]]
 name = "Plater"
@@ -414,7 +414,7 @@ folders = ["XLoot", "XLoot_Frame", "XLoot_Group", "XLoot_Master", "XLoot_Monitor
 [[addon]]
 name = "Dejunk"
 source = "github:moody/Dejunk"
-flavors = ["forever", "mainline", "classic", "bcc", "cata", "mists"]
+flavors = ["forever", "mainline", "classic", "bcc", "mists"]
 folders = ["Dejunk"]
 
 [[addon]]
@@ -474,7 +474,7 @@ folders = ["NPCScan"]
 [[addon]]
 name = "Caerdon Wardrobe"
 source = "github:Caerdon/CaerdonWardrobe"
-flavors = ["mainline"]
+flavors = ["forever", "mainline"]
 folders = ["CaerdonWardrobe"]
 
 [[addon]]

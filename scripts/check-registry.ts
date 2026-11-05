@@ -1,10 +1,14 @@
 /**
  * Checks registry/addons.toml against the sources: every entry must install on exactly the
- * flavors it lists and produce exactly the folders it lists.
+ * flavors it lists and produce exactly the folders it lists. A disabled entry must install on
+ * no flavor.
  *
- *   bun run registry:check [--only <name>]... [--file <path>] [--write] [--report <path>]
+ *   bun run registry:check [--only <name>]... [--file <path>] [--base <path>] [--write] [--report <path>]
  *
- * --write puts the flavors and folders found into the file for entries that differ.
+ * --write puts the flavors and folders found into the file for entries that differ, disables
+ * entries that install on no flavor and re-enables disabled entries that install again.
+ * --base names the registry the change started from: mismatches in entries it has unchanged
+ * are warnings, since upstream changes to those are the scheduled update's job.
  * --report writes a Markdown summary of the changes and problems (for the update PR).
  * Exits 1 on mismatches it did not write, invalid entries or a GitHub rate limit. Other errors
  * reaching a source (a failed download, a checksum the source lists wrongly) are reported but
@@ -115,6 +119,11 @@ export async function checkEntry(entry: RegistryEntry, deps: CheckDeps): Promise
   const supported = results.filter((r) => r.folders).map((r) => r.flavor);
   const folders = [...new Set(results.flatMap((r) => r.folders ?? []))].sort((a, b) => a.localeCompare(b));
   const mismatches: string[] = [];
+  const report = { name: entry.name, results, supported, folders, mismatches, ...(defaultName ? { defaultName } : {}) };
+  if (entry.disabled !== undefined) {
+    if (supported.length) mismatches.push(`is disabled, but installs on ${supported.join(", ")}`);
+    return report;
+  }
   if (supported.length === 0) mismatches.push("installs on no flavor");
   for (const flavor of entry.flavors) {
     const result = results.find((r) => r.flavor === flavor)!;
@@ -126,7 +135,30 @@ export async function checkEntry(entry: RegistryEntry, deps: CheckDeps): Promise
   if (supported.length && !sameSet(entry.folders, folders)) {
     mismatches.push(`lists folders ${JSON.stringify(entry.folders)}, installs ${JSON.stringify(folders)}`);
   }
-  return { name: entry.name, results, supported, folders, mismatches, ...(defaultName ? { defaultName } : {}) };
+  return report;
+}
+
+/** The `disabled` value for an entry that installs on no flavor: the date and the first reason. */
+export function disabledReason(report: EntryReport, date: string): string {
+  const first = report.results.find((r) => r.reason)?.reason ?? "";
+  const reason = first.replace(/\s+/g, " ").trim();
+  return `installs on no flavor (checked ${date})${reason ? `: ${reason.length > 160 ? `${reason.slice(0, 159)}…` : reason}` : ""}`;
+}
+
+/**
+ * Names of the entries in `entries` that the registry in `baseText` has with the same name,
+ * source, flavors, folders and disabled reason, i.e. whose check result a change did not touch.
+ */
+export function unchangedEntries(entries: RegistryEntry[], baseText: string): Set<string> {
+  const key = (e: RegistryEntry) =>
+    JSON.stringify([
+      e.source,
+      [...e.flavors].sort(),
+      e.folders.map((f) => f.toLowerCase()).sort(),
+      e.disabled ?? null,
+    ]);
+  const base = new Map(parseRegistry(baseText).entries.map((e) => [normaliseName(e.name), key(e)]));
+  return new Set(entries.filter((e) => base.get(normaliseName(e.name)) === key(e)).map((e) => e.name));
 }
 
 /** Runs `fn` over `items` with at most `limit` calls in flight, keeping the input order. */
@@ -145,11 +177,19 @@ export async function mapLimited<T, R>(items: T[], limit: number, fn: (item: T) 
 
 export const tomlList = (values: string[]) => `[${values.map((v) => JSON.stringify(v)).join(", ")}]`;
 
+export interface EntryChange {
+  flavors?: string[];
+  folders?: string[];
+  /** A reason sets the `disabled` line; null removes it. */
+  disabled?: string | null;
+}
+
 /**
- * Replaces the `flavors` and `folders` lines of the `[[addon]]` block named `name`, leaving every
- * other line as it is. Both keys must be on one line each, as the registry writes them.
+ * Replaces the `flavors` and `folders` lines of the `[[addon]]` block named `name` and sets or
+ * removes its `disabled` line, leaving every other line as it is. Each key must be on one line,
+ * as the registry writes them.
  */
-export function rewriteEntry(text: string, name: string, found: { flavors: string[]; folders: string[] }): string {
+export function rewriteEntry(text: string, name: string, change: EntryChange): string {
   const lines = text.split("\n");
   const nameLine = lines.findIndex((l) => l.trim() === `name = ${JSON.stringify(name)}`);
   if (nameLine === -1) throw new Error(`no [[addon]] with name = ${JSON.stringify(name)}`);
@@ -157,10 +197,24 @@ export function rewriteEntry(text: string, name: string, found: { flavors: strin
   while (start > 0 && lines[start]!.trim() !== "[[addon]]") start--;
   let end = nameLine + 1;
   while (end < lines.length && lines[end]!.trim() !== "[[addon]]") end++;
-  for (const [key, values] of [["flavors", found.flavors], ["folders", found.folders]] as const) {
-    const i = lines.findIndex((l, n) => n >= start && n < end && new RegExp(`^${key}\\s*=`).test(l.trim()));
+  const lineOf = (key: string) => lines.findIndex((l, n) => n >= start && n < end && new RegExp(`^${key}\\s*=`).test(l.trim()));
+  for (const [key, values] of [["flavors", change.flavors], ["folders", change.folders]] as const) {
+    if (!values) continue;
+    const i = lineOf(key);
     if (i === -1 || !/\]\s*(#.*)?$/.test(lines[i]!)) throw new Error(`${name}: ${key} is not a one-line array`);
     lines[i] = `${key} = ${tomlList(values)}`;
+  }
+  if (change.disabled !== undefined) {
+    const i = lineOf("disabled");
+    if (change.disabled === null) {
+      if (i !== -1) lines.splice(i, 1);
+    } else if (i !== -1) {
+      lines[i] = `disabled = ${JSON.stringify(change.disabled)}`;
+    } else {
+      const folders = lineOf("folders");
+      if (folders === -1) throw new Error(`${name}: no folders line to put disabled after`);
+      lines.splice(folders + 1, 0, `disabled = ${JSON.stringify(change.disabled)}`);
+    }
   }
   return lines.join("\n");
 }
@@ -171,12 +225,23 @@ interface Outcome {
   error?: WowgetError | Error;
 }
 
+/** A GitHub Actions annotation, so a warning shows on the pull request; plain text elsewhere. */
+function warn(title: string, message: string): void {
+  if (process.env.GITHUB_ACTIONS === "true") {
+    const escape = (v: string) => v.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+    console.log(`::warning title=${escape(title).replace(/[:,]/g, " ")}::${escape(message)}`);
+  } else {
+    console.log(`  warning: ${message}`);
+  }
+}
+
 async function main(argv: string[]): Promise<number> {
   const { values } = parseArgs({
     args: argv,
     options: {
       only: { type: "string", multiple: true },
       file: { type: "string" },
+      base: { type: "string" },
       write: { type: "boolean" },
       report: { type: "string" },
     },
@@ -192,6 +257,14 @@ async function main(argv: string[]): Promise<number> {
   if (only.size && selected.length !== only.size) {
     console.error(`--only matched ${selected.length} of ${only.size} names`);
     return 1;
+  }
+  let unchanged = new Set<string>();
+  if (values.base) {
+    try {
+      unchanged = unchangedEntries(entries, await readFile(values.base, "utf8"));
+    } catch (err) {
+      console.error(`--base ${values.base} could not be read, so every entry counts as changed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   const http = new HttpClient();
@@ -209,56 +282,82 @@ async function main(argv: string[]): Promise<number> {
     await rm(workDir, { recursive: true, force: true });
   }
 
+  const today = new Date().toISOString().slice(0, 10);
   const updated: string[] = [];
+  const disabled: string[] = [];
+  const reenabled: string[] = [];
   const unfixed: string[] = [];
+  const drifted: string[] = [];
   const errors: string[] = [];
   let rateLimited = false;
   for (const { entry, report, error } of outcomes) {
+    const label = `- **${entry.name}** (\`${entry.source}\`)`;
     if (error) {
       if (error instanceof WowgetError && error.code === "rate_limited") rateLimited = true;
       console.log(`error    ${entry.name} (${entry.source}): ${error.message}`);
-      errors.push(`- **${entry.name}** (\`${entry.source}\`): ${error.message}`);
+      errors.push(`${label}: ${error.message}`);
       continue;
     }
     if (report!.mismatches.length === 0) {
-      console.log(`ok       ${entry.name} (${report!.supported.join(", ")})`);
+      console.log(`ok       ${entry.name} (${entry.disabled !== undefined ? "disabled" : report!.supported.join(", ")})`);
       continue;
     }
     console.log(`mismatch ${entry.name} (${entry.source})`);
     for (const m of report!.mismatches) console.log(`  ${m}`);
     const details = report!.mismatches.map((m) => `  - ${m}`).join("\n");
-    // An entry that installs nowhere needs a person: drop it or find another source.
-    if (!report!.supported.length) {
-      unfixed.push(`- **${entry.name}** (\`${entry.source}\`)\n${details}`);
-      continue;
+    if (report!.supported.length) {
+      console.log(`  found: flavors = ${tomlList(report!.supported)}`);
+      console.log(`         folders = ${tomlList(report!.folders)}`);
     }
-    console.log(`  found: flavors = ${tomlList(report!.supported)}`);
-    console.log(`         folders = ${tomlList(report!.folders)}`);
     if (!values.write) {
-      unfixed.push(`- **${entry.name}** (\`${entry.source}\`)\n${details}`);
+      if (unchanged.has(entry.name)) {
+        for (const m of report!.mismatches) warn(`${entry.name} changed upstream`, `${entry.name}: ${m}`);
+        drifted.push(`${label}\n${details}`);
+      } else {
+        unfixed.push(`${label}\n${details}`);
+      }
       continue;
     }
     try {
-      text = rewriteEntry(text, entry.name, { flavors: report!.supported, folders: report!.folders });
-      updated.push(`- **${entry.name}** (\`${entry.source}\`)\n${details}`);
+      if (!report!.supported.length) {
+        const reason = disabledReason(report!, today);
+        text = rewriteEntry(text, entry.name, { disabled: reason });
+        console.log(`  disabled: ${reason}`);
+        disabled.push(`${label}: ${reason}\n${details}`);
+      } else {
+        const wasDisabled = entry.disabled !== undefined;
+        text = rewriteEntry(text, entry.name, {
+          flavors: report!.supported,
+          folders: report!.folders,
+          ...(wasDisabled ? { disabled: null } : {}),
+        });
+        (wasDisabled ? reenabled : updated).push(`${label}\n${details}`);
+      }
     } catch (err) {
-      unfixed.push(`- **${entry.name}** (\`${entry.source}\`): ${err instanceof Error ? err.message : String(err)}\n${details}`);
+      unfixed.push(`${label}: ${err instanceof Error ? err.message : String(err)}\n${details}`);
     }
   }
-  if (updated.length) await writeFile(file, text);
+  const written = updated.length + disabled.length + reenabled.length;
+  if (written) await writeFile(file, text);
 
-  const ok = outcomes.length - updated.length - unfixed.length - errors.length;
+  const ok = outcomes.length - written - unfixed.length - drifted.length - errors.length;
   console.log(
     `\n${ok} of ${outcomes.length} entries match` +
       (updated.length ? `, ${updated.length} updated` : "") +
+      (reenabled.length ? `, ${reenabled.length} re-enabled` : "") +
+      (disabled.length ? `, ${disabled.length} disabled` : "") +
       (unfixed.length ? `, ${unfixed.length} mismatched` : "") +
+      (drifted.length ? `, ${drifted.length} changed upstream but not by this change (warnings)` : "") +
       (errors.length ? `, ${errors.length} could not be checked` : "") +
       ".",
   );
   if (values.report) {
     const sections: string[] = [];
     if (updated.length) sections.push(`### Updated from what installs today\n\n${updated.join("\n")}`);
+    if (reenabled.length) sections.push(`### Re-enabled, they install again\n\n${reenabled.join("\n")}`);
+    if (disabled.length) sections.push(`### Disabled, they install on no flavor\n\n${disabled.join("\n")}`);
     if (unfixed.length) sections.push(`### Needs a person\n\n${unfixed.join("\n")}`);
+    if (drifted.length) sections.push(`### Changed upstream, left for the scheduled update\n\n${drifted.join("\n")}`);
     if (errors.length) sections.push(`### Could not be checked (source problems, not changed)\n\n${errors.join("\n")}`);
     await writeFile(values.report, `${sections.join("\n\n") || "Every entry matches."}\n`);
   }
