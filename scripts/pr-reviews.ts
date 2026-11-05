@@ -206,7 +206,20 @@ async function repository(): Promise<{ owner: string; name: string }> {
   return { owner: repo.owner.login, name: repo.name };
 }
 
+/**
+ * Reads a pull request until its head is the same before and after the review data, so a summary
+ * is never matched to a head that a push replaced while the requests ran.
+ */
 async function pullRequest(number: number): Promise<PullRequest> {
+  for (let attempt = 1; ; attempt++) {
+    const pr = await readPullRequest(number);
+    const head = (await gh(["pr", "view", String(number), "--json", "headRefOid", "--jq", ".headRefOid"])).trim();
+    if (head === pr.headRefOid) return pr;
+    if (attempt === 3) throw new Error(`#${number}: the head kept changing while it was being read`);
+  }
+}
+
+async function readPullRequest(number: number): Promise<PullRequest> {
   const { owner, name } = await repository();
   const fields = "number,title,url,headRefName,headRefOid,baseRefName,isDraft";
   const [meta, comments] = await Promise.all([
