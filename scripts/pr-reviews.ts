@@ -29,14 +29,11 @@ export interface CodexState {
   security: ReviewState | null;
 }
 
-interface Author {
-  login: string;
-}
-
 interface Comment {
-  author: Author | null;
+  author: string | null;
   body: string;
   url: string;
+  createdAt: string;
 }
 
 interface Thread {
@@ -45,7 +42,7 @@ interface Thread {
   isOutdated: boolean;
   path: string;
   line: number | null;
-  comments: { nodes: Comment[] };
+  comments: { nodes: { author: { login: string } | null; body: string; url: string }[] };
 }
 
 interface PullRequest {
@@ -56,19 +53,18 @@ interface PullRequest {
   headRefOid: string;
   baseRefName: string;
   isDraft: boolean;
-  comments: { nodes: Comment[] };
-  reactions: { nodes: { user: Author | null }[] };
-  reviewThreads: { nodes: Thread[] };
+  /** Every conversation comment, oldest first. */
+  comments: Comment[];
+  /** Every review thread. */
+  threads: Thread[];
 }
 
-const QUERY = `
-query($owner: String!, $name: String!, $number: Int!) {
+const THREADS = `
+query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      number title url headRefName headRefOid baseRefName isDraft
-      comments(last: 50) { nodes { author { login } body url } }
-      reactions(content: THUMBS_UP, last: 20) { nodes { user { login } } }
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $endCursor) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           id isResolved isOutdated path line
           comments(first: 50) { nodes { author { login } body url } }
@@ -134,32 +130,51 @@ export function codexDone(state: CodexState | null, head: string): boolean {
 }
 
 function latestCodexState(pr: PullRequest): CodexState | null {
-  for (const comment of [...pr.comments.nodes].reverse()) {
-    if (!isCodex(comment.author?.login)) continue;
+  for (const comment of [...pr.comments].reverse()) {
+    if (!isCodex(comment.author ?? undefined)) continue;
     const state = parseCodexState(comment.body);
     if (state !== null) return state;
   }
   return null;
 }
 
-/** Codex's latest comment that is not the review summary, such as a setup problem that blocks reviews. */
+const REVIEW_REQUEST = /@codex\s+(security\s+)?review\b/i;
+
+/** When the latest `@codex review` comment was posted, or "" when nobody asked. */
+export function lastRequestAt(comments: { body: string; createdAt: string }[]): string {
+  return comments.filter((c) => REVIEW_REQUEST.test(c.body)).at(-1)?.createdAt ?? "";
+}
+
+/**
+ * Codex's latest comment since the last review request that is not the review summary, such as a
+ * setup problem that blocks reviews. Notes from before the request belong to an earlier round.
+ */
 function latestCodexNote(pr: PullRequest): Comment | null {
-  const notes = pr.comments.nodes.filter((c) => isCodex(c.author?.login) && parseCodexState(c.body) === null);
+  const since = lastRequestAt(pr.comments);
+  const notes = pr.comments.filter(
+    (c) => isCodex(c.author ?? undefined) && c.createdAt > since && parseCodexState(c.body) === null,
+  );
   return notes.at(-1) ?? null;
 }
 
-function codexThumbsUp(pr: PullRequest): boolean {
-  return pr.reactions.nodes.some((r) => isCodex(r.user?.login));
+type Outcome = "reviewed" | "note" | "pending";
+
+/**
+ * Where Codex stands on the head commit. Only the summary marker names a commit, so it alone
+ * counts as a review: a 👍 reaction could be left over from an earlier head. A comment without the
+ * marker since the last request means Codex answered without reviewing, such as a setup problem.
+ */
+function codexOutcome(pr: PullRequest): Outcome {
+  if (codexDone(latestCodexState(pr), pr.headRefOid)) return "reviewed";
+  if (latestCodexNote(pr) !== null) return "note";
+  return "pending";
 }
 
 function codexSummary(pr: PullRequest): string {
+  const note = latestCodexNote(pr);
+  if (codexOutcome(pr) === "note" && note !== null) return `no review; Codex commented: ${excerpt(note.body, 200)} ${note.url}`;
   const state = latestCodexState(pr);
-  if (state === null) {
-    if (codexThumbsUp(pr)) return "no summary comment; Codex reacted 👍 (no findings)";
-    const note = latestCodexNote(pr);
-    if (note !== null) return `no review; Codex commented: ${excerpt(note.body, 200)} ${note.url}`;
-    return pr.isDraft ? "no review yet (draft: mark it ready for review)" : "no review yet";
-  }
+  if (state === null) return pr.isDraft ? "no review yet (draft: mark it ready for review)" : "no review yet";
   const head = pr.headRefOid;
   const describe = (label: string, review: ReviewState | null): string | null => {
     if (review?.status == null) return null;
@@ -193,13 +208,49 @@ async function repository(): Promise<{ owner: string; name: string }> {
 
 async function pullRequest(number: number): Promise<PullRequest> {
   const { owner, name } = await repository();
-  const data = await graphql<{ repository: { pullRequest: PullRequest } }>(QUERY, { owner, name, number });
-  return data.repository.pullRequest;
+  const fields = "number,title,url,headRefName,headRefOid,baseRefName,isDraft";
+  const [meta, comments, threads] = await Promise.all([
+    gh(["pr", "view", String(number), "--json", fields]),
+    // REST pages through every comment; Codex edits its one summary comment in place, so it can be
+    // far from the end of the list.
+    gh([
+      "api",
+      "--paginate",
+      `repos/${owner}/${name}/issues/${number}/comments?per_page=100`,
+      "--jq",
+      ".[] | {author: .user.login, body, url: .html_url, createdAt: .created_at} | @json",
+    ]),
+    gh([
+      "api",
+      "graphql",
+      "--paginate",
+      "--slurp",
+      "-f",
+      `query=${THREADS}`,
+      "-f",
+      `owner=${owner}`,
+      "-f",
+      `name=${name}`,
+      "-F",
+      `number=${number}`,
+    ]),
+  ]);
+  type Page = { data: { repository: { pullRequest: { reviewThreads: { nodes: Thread[] } } } } };
+  return {
+    ...(JSON.parse(meta) as Omit<PullRequest, "comments" | "threads">),
+    comments: lines(comments).map((line) => JSON.parse(line) as Comment),
+    threads: (JSON.parse(threads) as Page[]).flatMap((page) => page.data.repository.pullRequest.reviewThreads.nodes),
+  };
+}
+
+function lines(out: string): string[] {
+  return out.split("\n").filter((line) => line.trim() !== "");
 }
 
 async function openNumbers(): Promise<number[]> {
-  const out = await gh(["pr", "list", "--state", "open", "--json", "number", "--limit", "100"]);
-  return (JSON.parse(out) as { number: number }[]).map((pr) => pr.number).sort((a, b) => a - b);
+  const { owner, name } = await repository();
+  const out = await gh(["api", "--paginate", `repos/${owner}/${name}/pulls?state=open&per_page=100`, "--jq", ".[].number"]);
+  return lines(out).map(Number).sort((a, b) => a - b);
 }
 
 function excerpt(body: string, length = 300): string {
@@ -208,7 +259,7 @@ function excerpt(body: string, length = 300): string {
 }
 
 function threadsOf(pr: PullRequest, includeResolved: boolean): Thread[] {
-  return pr.reviewThreads.nodes.filter((thread) => includeResolved || !thread.isResolved);
+  return pr.threads.filter((thread) => includeResolved || !thread.isResolved);
 }
 
 function print(pr: PullRequest, threads: Thread[]): void {
@@ -229,13 +280,12 @@ function print(pr: PullRequest, threads: Thread[]): void {
 }
 
 function toJson(pr: PullRequest, threads: Thread[]) {
-  const codex = latestCodexState(pr);
   return {
     number: pr.number,
     url: pr.url,
     head: pr.headRefOid,
-    codex,
-    codexDone: codexDone(codex, pr.headRefOid),
+    codex: latestCodexState(pr),
+    outcome: codexOutcome(pr),
     threads: threads.map((t) => ({
       id: t.id,
       resolved: t.isResolved,
@@ -251,14 +301,11 @@ async function wait(number: number, timeoutMinutes: number): Promise<number> {
   const deadline = Date.now() + timeoutMinutes * 60_000;
   for (;;) {
     const pr = await pullRequest(number);
-    const state = latestCodexState(pr);
-    // Without a summary comment, a 👍 means Codex found nothing, and any other Codex comment means
-    // it answered without reviewing (for example, no Codex environment for the repository).
-    const answered = state === null && (codexThumbsUp(pr) || latestCodexNote(pr) !== null);
-    if (codexDone(state, pr.headRefOid) || answered) {
+    const outcome = codexOutcome(pr);
+    if (outcome !== "pending") {
       const threads = threadsOf(pr, false);
       print(pr, threads);
-      if (answered && !codexThumbsUp(pr)) {
+      if (outcome === "note") {
         console.error("\nCodex commented instead of reviewing; see its comment above.");
         return 2;
       }

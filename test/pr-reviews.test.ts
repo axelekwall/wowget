@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { codexDone, isCodex, parseCodexState } from "../scripts/pr-reviews.ts";
+import { codexDone, isCodex, lastRequestAt, parseCodexState } from "../scripts/pr-reviews.ts";
 
 const HEAD = "ac26aa9305b6c59638c5e02ac2d488f0dfa8fb49";
 
@@ -42,6 +42,17 @@ describe("codexDone", () => {
   test("does not wait for a security review Codex does not report", () => {
     expect(codexDone(parseCodexState(summary(done, { status: null })), HEAD)).toBe(true);
   });
+});
+
+test("lastRequestAt finds the latest review request", () => {
+  const comments = [
+    { body: "@codex review", createdAt: "2026-11-05T09:00:00Z" },
+    { body: "Fixed in abc1234.", createdAt: "2026-11-05T09:10:00Z" },
+    { body: "@codex security review please", createdAt: "2026-11-05T09:20:00Z" },
+    { body: "mentions @codex reviewers", createdAt: "2026-11-05T09:30:00Z" },
+  ];
+  expect(lastRequestAt(comments)).toBe("2026-11-05T09:20:00Z");
+  expect(lastRequestAt([])).toBe("");
 });
 
 test("isCodex matches the connector with or without the bot suffix", () => {

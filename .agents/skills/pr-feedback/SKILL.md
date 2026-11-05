@@ -8,7 +8,8 @@ description: Wait for the Codex review on a wowget pull request, verify each fin
 Codex reviews each pull request when it is opened or marked ready for review, and again when
 someone comments `@codex review`. A push to an open pull request does not start a new review.
 Findings arrive as inline review threads with a priority badge (P0 is the most severe). Codex
-also keeps one summary comment with the commit it reviewed, and reacts 👍 when it finds nothing.
+also keeps one summary comment naming the commit it reviewed. Only that comment shows a review
+of the head commit; a 👍 reaction can be left over from an earlier commit.
 Human reviewers' threads go through the same steps.
 
 `bun scripts/pr-reviews.ts` does the GitHub side:
