@@ -396,7 +396,7 @@ folders = ["ExtraQuestButton"]
 [[addon]]
 name = "QuickQuest"
 source = "github:p3lim-wow/QuickQuest"
-flavors = ["mainline"]
+flavors = ["forever", "mainline"]
 folders = ["QuickQuest"]
 
 [[addon]]
@@ -462,7 +462,7 @@ folders = ["XIV_Databar_Continued"]
 [[addon]]
 name = "Postal"
 source = "github:paradosi/postal-community-edition"
-flavors = ["mainline", "classic", "bcc", "wrath", "cata", "mists"]
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
 folders = ["Postal"]
 
 [[addon]]
@@ -682,7 +682,7 @@ folders = ["ThreatClassic2"]
 [[addon]]
 name = "Candy Buckets"
 source = "wowi:20450"
-flavors = ["mainline", "classic", "bcc", "wrath", "cata", "mists"]
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
 folders = ["CandyBuckets"]
 
 [[addon]]
