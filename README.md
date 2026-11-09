@@ -183,9 +183,9 @@ flavor = "classic"
 A folder target whose folder is not on this machine is skipped, with a note
 on stderr; naming it with `-t` is an error. An addon added without `-t` stays
 on every target, so `wowget install` on the other machine installs it there.
-`init` writes folder targets when it finds the game in its default location
-or in `WOWGET_GAME_DIR`, and paths with `--game-dir` or `--path`. Older wowget
-versions do not read folder targets.
+`wowget init --portable` writes folder targets for the installs it finds in
+the default location or in `WOWGET_GAME_DIR`; plain `init` writes paths.
+Older wowget versions do not read folder targets.
 
 #### Sharing the manifest between machines
 

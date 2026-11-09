@@ -359,6 +359,8 @@ export interface InitOptions extends GameDirOptions {
   name?: string;
   /** Scanned for version folders when `path` is absent, instead of `gameDirs`. */
   gameDir?: string;
+  /** Write `folder` targets, which every machine locates in its own game directory. */
+  portable?: boolean;
 }
 
 /** A manifest target and where its AddOns directory is on this machine. */
@@ -383,15 +385,18 @@ export interface InitResult {
 }
 
 /**
- * Creates the manifest. Installs found in the default game directories (or WOWGET_GAME_DIR) become
- * `folder` targets, which every machine locates for itself; `--path` and `--game-dir` give `path`
- * targets, since another run would not look in that directory.
+ * Creates the manifest. With `portable`, installs found in the default game directories (or
+ * WOWGET_GAME_DIR) become `folder` targets, which every machine locates for itself; it does not
+ * combine with `path` or `gameDir`, since later runs would not look in that directory.
  */
 export async function init(opts: InitOptions): Promise<InitResult> {
   if (await Bun.file(opts.manifestPath).exists()) {
     throw new WowgetError("manifest_exists", `A manifest already exists at ${opts.manifestPath}.`);
   }
 
+  if (opts.portable && (opts.path !== undefined || opts.gameDir !== undefined)) {
+    throw new WowgetError("usage", "--portable does not apply together with --path or --game-dir; set WOWGET_GAME_DIR instead.");
+  }
   let targets: NamedTarget[];
   let paths: string[];
   if (opts.path !== undefined) {
@@ -422,7 +427,7 @@ export async function init(opts: InitOptions): Promise<InitResult> {
     // the one scanned here; the path is written instead so it cannot point elsewhere later.
     const located = await Promise.all(found.map((d) => findVersionFolder(basename(d.versionDir), candidates)));
     targets = found.map((d, i) =>
-      opts.gameDir === undefined && located[i] === d.addonsDir
+      opts.portable && located[i] === d.addonsDir
         ? { name: d.name, folder: basename(d.versionDir), flavor: d.flavor }
         : { name: d.name, path: d.addonsDir, flavor: d.flavor },
     );

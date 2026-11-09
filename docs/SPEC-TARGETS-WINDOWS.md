@@ -86,11 +86,12 @@ flavor = "classic"
   state rows without touching any files, with a `target:absent` event for
   each install forgotten. Folder names are compared case-insensitively when
   `target add` checks for a clash.
-- `init` scanning the default candidates (or `WOWGET_GAME_DIR`) writes folder
-  targets. `init --game-dir` and `init --path` write `path` targets, since a
-  later run would not look in that directory. A detected folder that an
-  earlier candidate also has is written as a `path`, so it cannot resolve to
-  the other directory later.
+- `init --portable` scans the default candidates (or `WOWGET_GAME_DIR`) and
+  writes folder targets. Without it `init` writes `path` targets as before,
+  so a new manifest stays readable by older versions. `--portable` is a
+  usage error with `--game-dir` or `--path`, since a later run would not look
+  in that directory. A detected folder that an earlier candidate also has is
+  written as a `path`, so it cannot resolve to the other directory later.
 - A manifest with folder targets is rejected by wowget versions without them
   (as an unknown key); a manifest with only `path` targets is unchanged.
 
@@ -138,7 +139,7 @@ rows in an array.
 - Global repeatable `--target <name>` (also `-t`). Accepted on `add`,
   `remove`, `list`, `outdated`, `update`, `install`. A usage error elsewhere.
 - `target` subcommands: `wowget target list|add|remove`.
-- `init` flags: `--path`, `--flavor`, `--name`, `--game-dir`.
+- `init` flags: `--path`, `--flavor`, `--name`, `--game-dir`, `--portable`.
 - `target add` flags: `--path` or `--folder`, and `--flavor`.
 - `list` output gains a TARGET column. Other tables gain it too.
 - Help text updated.

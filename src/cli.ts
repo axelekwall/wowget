@@ -13,9 +13,11 @@ import { VERSION } from "./version.ts";
 const HELP = `Usage: wowget <command> [options]
 
 Commands:
-  init [--path P --flavor F --name N] [--game-dir D]
+  init [--path P --flavor F --name N] [--game-dir D] [--portable]
                                         create the manifest: one target for the AddOns directory P,
-                                        or one per World of Warcraft version found in the game dir
+                                        or one per World of Warcraft version found in the game dir;
+                                        --portable names version folders instead of paths, so the
+                                        manifest works on other machines
   target list                           show the targets and whether their AddOns directories exist
   target add <name> (--path P | --folder D) --flavor F
                                         add a target: the AddOns directory P, or the version folder D
@@ -73,6 +75,7 @@ Options:
 type Flag =
   | "path"
   | "folder"
+  | "portable"
   | "flavor"
   | "name"
   | "prerelease"
@@ -90,6 +93,7 @@ type Flag =
 const FLAGS: Flag[] = [
   "path",
   "folder",
+  "portable",
   "flavor",
   "name",
   "prerelease",
@@ -107,7 +111,7 @@ const FLAGS: Flag[] = [
 ];
 
 const COMMAND_FLAGS: Record<string, Flag[]> = {
-  init: ["path", "flavor", "name", "game-dir"],
+  init: ["path", "flavor", "name", "game-dir", "portable"],
   "target list": [],
   "target add": ["path", "folder", "flavor"],
   "target remove": [],
@@ -172,6 +176,7 @@ function parse(argv: string[]) {
         target: { type: "string", short: "t", multiple: true },
         "game-dir": { type: "string" },
         folder: { type: "string" },
+        portable: { type: "boolean" },
         adopt: { type: "boolean" },
         clean: { type: "boolean" },
         check: { type: "boolean" },
@@ -592,6 +597,7 @@ async function main(argv: string[]): Promise<number> {
         flavor,
         name: values.name,
         gameDir: values["game-dir"],
+        portable: values.portable,
       });
     } else if (key === "target list") {
       result = await ops.targetList({ manifestPath: manifest });
