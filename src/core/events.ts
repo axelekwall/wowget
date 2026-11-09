@@ -7,6 +7,7 @@ export type ProgressEvent =
   | { type: "swap"; addon: string; folders: string[] }
   | { type: "done"; addon: string; releaseId: string; folders: string[] }
   | { type: "catalog:download"; url: string }
-  | { type: "registry:stale"; message: string };
+  | { type: "registry:stale"; message: string }
+  | { type: "target:absent"; target: string; message: string };
 
 export type OnEvent = (event: ProgressEvent) => void;

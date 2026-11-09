@@ -93,6 +93,18 @@ describe("parseManifest", () => {
     );
   });
 
+  test("a target has either a path or a version folder", () => {
+    expect(parseManifest(`[targets.era]\nfolder = "_classic_era_"\nflavor = "classic"\n`).targets).toEqual([
+      { name: "era", folder: "_classic_era_", flavor: "classic" },
+    ]);
+    const both = errorOf(() => parseManifest(`[targets.era]\npath = "/x"\nfolder = "_classic_era_"\nflavor = "classic"\n`));
+    expect(both.message).toContain("exactly one of path and folder");
+    expect(errorOf(() => parseManifest(`[targets.era]\nflavor = "classic"\n`)).message).toContain("exactly one of path and folder");
+    for (const folder of ["..", "a/b", "a\\\\b", "C:x", ""]) {
+      expect(errorOf(() => parseManifest(`[targets.era]\nfolder = "${folder}"\nflavor = "classic"\n`)).code).toBe("manifest");
+    }
+  });
+
   test("unknown keys are errors naming the key", () => {
     const err = errorOf(() => parseManifest(VALID.replace('pin = "v1.2.3"', 'pinned = "v1.2.3"')));
     expect(err.code).toBe("manifest");
@@ -291,6 +303,13 @@ describe("addTarget", () => {
         '\n\n[targets.retail]\npath = "/wow/_retail_/Interface/AddOns"\nflavor = "mainline"\n\n# Quest helper',
       ),
     );
+  });
+
+  test("writes a folder target", async () => {
+    const path = await manifestFile("");
+    const m = await addTarget(path, "retail", { folder: "_retail_", flavor: "mainline" });
+    expect(m.targets).toEqual([{ name: "retail", folder: "_retail_", flavor: "mainline" }]);
+    expect(await readFile(path, "utf8")).toBe('[targets.retail]\nfolder = "_retail_"\nflavor = "mainline"\n');
   });
 
   test("appends when there are no addons, and refuses duplicate or invalid names", async () => {

@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { addonTocs, folderSupportsFlavor, interfaceMatchesFlavor, parseToc, tocSuffixes, tocSuffixFor, type Flavor } from "./flavor.ts";
 import { addonCacheDir, removeBestEffort } from "./installer.ts";
-import { addonTargets, type Manifest, type NamedTarget } from "./manifest.ts";
+import { addonTargets, type Manifest, type ResolvedTarget } from "./manifest.ts";
 import type { State } from "./state.ts";
 
 export type DoctorIssueKind =
@@ -173,7 +173,7 @@ export async function findStaleCacheDirs(cacheDir: string, state: State): Promis
 }
 
 export async function inspectTarget(
-  target: NamedTarget,
+  target: ResolvedTarget,
   manifest: Manifest,
   state: State,
   clean: boolean,

@@ -71,6 +71,7 @@ wowget init                                   # one target per installed WoW ver
 wowget init --path DIR --flavor classic --name era   # or a single AddOns directory
 wowget target list                            # targets and whether their AddOns directories exist
 wowget target add retail --path DIR --flavor mainline
+wowget target add retail --folder _retail_ --flavor mainline   # the version folder in the game directory
 wowget target remove retail                   # uninstall everything on it and drop it
 wowget search map [--github]                  # search the addon registry and WoWInterface (and GitHub)
 wowget add questie                            # install a registry addon by name
@@ -168,6 +169,32 @@ name = "Questie"
 source = "github:Questie/Questie"
 targets = ["era"]   # optional; absent means every target
 ```
+
+A target can name a version folder instead of a path. Its AddOns directory
+is then found in the game directory of whichever machine runs wowget, so the
+same manifest works on a Mac and a Windows PC:
+
+```toml
+[targets.era]
+folder = "_classic_era_"
+flavor = "classic"
+```
+
+A folder target whose folder is not on this machine is skipped, with a note
+on stderr; naming it with `-t` is an error. An addon added without `-t` stays
+on every target, so `wowget install` on the other machine installs it there.
+`init` writes folder targets when it finds the game in its default location
+or in `WOWGET_GAME_DIR`, and paths with `--game-dir` or `--path`. Older wowget
+versions do not read folder targets.
+
+#### Sharing the manifest between machines
+
+Keep `wowget.toml` with folder targets in a dotfiles repository and link it
+to the manifest location on each machine (wowget writes through the link),
+or point `WOWGET_MANIFEST` at it. The state database and cache stay per
+machine. After pulling a changed manifest, run `wowget install` to install
+the new addons. Removing an addon uninstalls it only on the machine that ran
+`wowget remove`; on the others its folders stay until deleted by hand.
 
 `init` without `--path` scans the game directory for `_forever_`,
 `_classic_era_`, `_classic_` and `_retail_` and adds a target for each one that

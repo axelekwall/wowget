@@ -4,14 +4,30 @@ import { WowgetError } from "./errors.ts";
 import { FLAVORS, isFlavor, type Flavor } from "./flavor.ts";
 import { parseSource } from "./sources/parse.ts";
 
+/** Exactly one of `path` and `folder` is set. */
 export interface Target {
   /** Absolute path of the AddOns directory, kept verbatim. */
-  path: string;
+  path?: string;
+  /**
+   * A version folder in the game directory, such as `_classic_era_`. The AddOns directory is
+   * `<game directory>/<folder>/Interface/AddOns`, found on each machine, so the manifest can be
+   * shared between machines.
+   */
+  folder?: string;
   flavor: Flavor;
 }
 
 export interface NamedTarget extends Target {
   name: string;
+}
+
+/** A target whose AddOns directory was located on this machine. */
+export interface ResolvedTarget {
+  name: string;
+  flavor: Flavor;
+  /** The AddOns directory: `path` as written, or the one found for `folder`. */
+  path: string;
+  folder?: string;
 }
 
 export interface AddonEntry {
@@ -30,12 +46,17 @@ export interface Manifest {
 }
 
 const TOP_KEYS = ["targets", "addon"];
-const TARGET_KEYS = ["path", "flavor"];
+const TARGET_KEYS = ["path", "folder", "flavor"];
 const ADDON_KEYS = ["name", "source", "prerelease", "pin", "targets"];
 const TARGET_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 
 export function isTargetName(name: string): boolean {
   return TARGET_NAME.test(name);
+}
+
+/** A single folder name: no separators, drive letters, "." or "..". */
+export function isVersionFolderName(name: string): boolean {
+  return /^[A-Za-z0-9_.-]+$/.test(name) && name !== "." && name !== "..";
 }
 
 function fail(file: string | undefined, message: string): never {
@@ -68,10 +89,17 @@ function parseTargets(data: Record<string, unknown>, file?: string): NamedTarget
     }
     if (!isTable(value)) fail(file, `${where} must be a table ([${where}])`);
     checkKeys(value, TARGET_KEYS, `[${where}]`, file);
-    const path = requireString(value, "path", where, file);
+    if ((value.path === undefined) === (value.folder === undefined)) {
+      fail(file, `${where} must have exactly one of path and folder`);
+    }
     const flavor = requireString(value, "flavor", where, file);
     if (!isFlavor(flavor)) fail(file, `${where}.flavor "${flavor}" is not one of ${FLAVORS.join(", ")}`);
-    return { name, path, flavor };
+    if (value.path !== undefined) return { name, path: requireString(value, "path", where, file), flavor };
+    const folder = requireString(value, "folder", where, file);
+    if (!isVersionFolderName(folder)) {
+      fail(file, `${where}.folder "${folder}" must be a single folder name in the game directory, such as "_retail_"`);
+    }
+    return { name, folder, flavor };
   });
 }
 
@@ -175,7 +203,9 @@ function tomlString(value: string): string {
 }
 
 function renderTarget(name: string, target: Target): string {
-  return `[targets.${name}]\npath = ${tomlString(target.path)}\nflavor = ${tomlString(target.flavor)}\n`;
+  const location =
+    target.folder !== undefined ? `folder = ${tomlString(target.folder)}` : `path = ${tomlString(target.path ?? "")}`;
+  return `[targets.${name}]\n${location}\nflavor = ${tomlString(target.flavor)}\n`;
 }
 
 export function renderManifest(targets: NamedTarget[]): string {
@@ -398,7 +428,7 @@ async function writeAtomic(path: string, text: string): Promise<void> {
 function sameTargets(a: NamedTarget[], b: NamedTarget[]): boolean {
   const norm = (list: NamedTarget[]) =>
     list
-      .map((t) => JSON.stringify([t.name, t.path, t.flavor]))
+      .map((t) => JSON.stringify([t.name, t.path ?? null, t.folder ?? null, t.flavor]))
       .sort()
       .join("\n");
   return norm(a) === norm(b);

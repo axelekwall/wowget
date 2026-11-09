@@ -600,3 +600,133 @@ describe("targets", () => {
     expect(await readFile(join(addons, "Example", "core.lua"), "utf8")).toBe("pinned");
   });
 });
+
+describe("folder targets", () => {
+  /** Serves `/A.zip` with an addon that installs on Forever and Classic Era. */
+  function serveA() {
+    server = Bun.serve({
+      port: 0,
+      fetch: () => new Response(zipSync({ "A/A_Forever.toc": text(""), "A/A_Vanilla.toc": text("") })),
+    });
+    return `http://localhost:${server.port}/A.zip`;
+  }
+
+  test("init writes version folders, which another machine finds in its own game directory", async () => {
+    const { root, manifestPath, opts } = await setup();
+    const mac = join(root, "mac");
+    await fakeVersionFolder(mac, "_forever_");
+    await fakeVersionFolder(mac, "_classic_era_");
+    await ops.init({ manifestPath, gameDirs: [mac] });
+    expect((await readManifest(manifestPath)).targets).toEqual([
+      { name: "forever", folder: "_forever_", flavor: "forever" },
+      { name: "era", folder: "_classic_era_", flavor: "classic" },
+    ]);
+
+    // The second machine has the game in another directory, and only Forever.
+    const pc = join(root, "pc");
+    await fakeVersionFolder(pc, "_forever_");
+    const events: string[] = [];
+    const onPc = { ...opts, gameDirs: [join(root, "missing"), pc], onEvent: (e: { type: string }) => events.push(e.type) };
+    const pcForever = join(pc, "_forever_", "Interface", "AddOns");
+    await mkdir(pcForever, { recursive: true });
+
+    expect((await ops.targetList(onPc)).targets).toEqual([
+      { name: "forever", folder: "_forever_", flavor: "forever", path: pcForever, exists: true },
+      { name: "era", folder: "_classic_era_", flavor: "classic", path: null, exists: false },
+    ]);
+
+    const added = await ops.add({ ...onPc, source: `url:${serveA()}` });
+    expect(added.addons.map((r) => r.target)).toEqual(["forever"]);
+    // The entry stays on every target, so the first machine installs it on era too.
+    expect(added.targets).toBeUndefined();
+    expect(events).toContain("target:absent");
+    expect(await readdir(pcForever)).toEqual(["A"]);
+    expect((await ops.list(onPc)).addons.map((r) => [r.name, r.target, r.status])).toEqual([["A", "forever", "ok"]]);
+
+    const named = await ops.list({ ...onPc, targets: ["era"] }).catch((e) => e);
+    expect(named.code).toBe("not_found");
+    expect(named.message).toContain("_classic_era_");
+
+    const onMac = { ...opts, state: openState(join(root, "mac-state.db")), gameDirs: [mac] };
+    try {
+      const installed = await ops.install(onMac);
+      expect(installed.addons.map((r) => [r.target, r.status])).toEqual([
+        ["era", "installed"],
+        ["forever", "installed"],
+      ]);
+    } finally {
+      onMac.state.close();
+    }
+
+    const removed = await ops.remove({ ...onPc, name: "A" });
+    expect(removed.addons.map((r) => [r.target, r.wasInstalled])).toEqual([
+      ["era", false],
+      ["forever", true],
+    ]);
+    expect(await readdir(pcForever)).toEqual([]);
+  });
+
+  test("init with --game-dir writes paths, and a missing game directory is an error once nothing is left", async () => {
+    const { root, manifestPath, opts } = await setup();
+    const gameDir = join(root, "wow");
+    await fakeVersionFolder(gameDir, "_forever_");
+    await ops.init({ manifestPath, gameDir });
+    expect((await readManifest(manifestPath)).targets).toEqual([
+      { name: "forever", path: join(gameDir, "_forever_", "Interface", "AddOns"), flavor: "forever" },
+    ]);
+
+    await ops.targetAdd({ manifestPath, name: "retail", folder: "_retail_", flavor: "mainline", gameDirs: [gameDir] });
+    await ops.targetRemove({ ...opts, name: "forever", gameDirs: [gameDir] });
+    const none = await ops.list({ ...opts, gameDirs: [gameDir] }).catch((e) => e);
+    expect(none.code).toBe("not_found");
+    expect(none.message).toContain("_retail_");
+  });
+
+  test("init writes a path when an earlier game directory also has the folder", async () => {
+    const { root, manifestPath } = await setup();
+    const first = join(root, "first");
+    const second = join(root, "second");
+    await mkdir(join(first, "_forever_"), { recursive: true });
+    await fakeVersionFolder(second, "_forever_");
+    await ops.init({ manifestPath, gameDirs: [first, second] });
+    expect((await readManifest(manifestPath)).targets).toEqual([
+      { name: "forever", path: join(second, "_forever_", "Interface", "AddOns"), flavor: "forever" },
+    ]);
+  });
+
+  test("target remove of a target not on this machine forgets its installs without touching files", async () => {
+    const { root, manifestPath, opts } = await setup();
+    const wow = join(root, "wow");
+    await fakeVersionFolder(wow, "_forever_");
+    await fakeVersionFolder(wow, "_classic_era_");
+    await ops.init({ manifestPath, gameDirs: [wow] });
+    await ops.add({ ...opts, gameDirs: [wow], source: `url:${serveA()}` });
+
+    const events: string[] = [];
+    const elsewhere = { ...opts, gameDirs: [join(root, "missing")], onEvent: (e: { type: string }) => events.push(e.type) };
+    const result = await ops.targetRemove({ ...elsewhere, name: "era" });
+    expect(result.addons).toEqual([{ name: "A", target: "era", wasInstalled: true, removedFolders: [] }]);
+    expect(events).toEqual(["target:absent"]);
+    expect(await readdir(join(wow, "_classic_era_", "Interface", "AddOns"))).toEqual(["A"]);
+    expect(opts.state.listActiveInstalls().map((r) => r.target)).toEqual(["forever"]);
+  });
+
+  test("target add --folder refuses a folder another target has and creates the AddOns directory when found", async () => {
+    const { root, manifestPath, opts } = await setup();
+    const gameDir = join(root, "wow");
+    await fakeVersionFolder(gameDir, "_forever_");
+    await ops.init({ manifestPath, path: join(root, "elsewhere") });
+
+    const added = await ops.targetAdd({ ...opts, name: "fv", folder: "_forever_", flavor: "forever", gameDirs: [gameDir] });
+    expect(added).toEqual({
+      target: { name: "fv", folder: "_forever_", flavor: "forever", path: join(gameDir, "_forever_", "Interface", "AddOns") },
+      createdAddonsDir: true,
+    });
+    const clash = await ops.targetAdd({ ...opts, name: "again", folder: "_Forever_", flavor: "forever", gameDirs: [gameDir] }).catch((e) => e);
+    expect(clash.code).toBe("usage");
+    const both = await ops.targetAdd({ ...opts, name: "x", folder: "_x_", path: root, flavor: "forever" }).catch((e) => e);
+    expect(both.code).toBe("usage");
+    const bad = await ops.targetAdd({ ...opts, name: "x", folder: "../x", flavor: "forever" }).catch((e) => e);
+    expect(bad.code).toBe("usage");
+  });
+});

@@ -17,7 +17,9 @@ Commands:
                                         create the manifest: one target for the AddOns directory P,
                                         or one per World of Warcraft version found in the game dir
   target list                           show the targets and whether their AddOns directories exist
-  target add <name> --path P --flavor F add a target
+  target add <name> (--path P | --folder D) --flavor F
+                                        add a target: the AddOns directory P, or the version folder D
+                                        (such as _retail_) in the game directory of each machine
   target remove <name>                  uninstall everything on a target and remove it
   search <query...> [--flavor F | --all-flavors] [--github] [--limit N] [--refresh]
                                         find addons in the registry and on WoWInterface
@@ -42,7 +44,8 @@ Commands:
 
 search, add, remove, list, outdated, update, install, rollback, reconcile and doctor act on every target
 unless filtered with -t/--target, which can be repeated. "add -t" records the targets
-in the manifest; "remove -t" removes the addon from those targets only.
+in the manifest; "remove -t" removes the addon from those targets only. Targets whose version
+folder is not on this machine are skipped.
 
 Sources: github:owner/repo, wowi:<id>, url:https://...
 Flavors: ${FLAVORS.join(", ")}
@@ -69,6 +72,7 @@ Options:
 
 type Flag =
   | "path"
+  | "folder"
   | "flavor"
   | "name"
   | "prerelease"
@@ -85,6 +89,7 @@ type Flag =
   | "print";
 const FLAGS: Flag[] = [
   "path",
+  "folder",
   "flavor",
   "name",
   "prerelease",
@@ -104,7 +109,7 @@ const FLAGS: Flag[] = [
 const COMMAND_FLAGS: Record<string, Flag[]> = {
   init: ["path", "flavor", "name", "game-dir"],
   "target list": [],
-  "target add": ["path", "flavor"],
+  "target add": ["path", "folder", "flavor"],
   "target remove": [],
   search: ["target", "flavor", "all-flavors", "github", "limit", "refresh"],
   add: ["name", "prerelease", "pin", "target"],
@@ -166,6 +171,7 @@ function parse(argv: string[]) {
         pin: { type: "string" },
         target: { type: "string", short: "t", multiple: true },
         "game-dir": { type: "string" },
+        folder: { type: "string" },
         adopt: { type: "boolean" },
         clean: { type: "boolean" },
         check: { type: "boolean" },
@@ -199,6 +205,9 @@ function progressRenderer(verbose: boolean) {
       } else if (event.type === "registry:stale") {
         this.flush();
         write(`wowget: warning: ${event.message}\n`);
+      } else if (event.type === "target:absent") {
+        this.flush();
+        write(`wowget: ${event.message}\n`);
       } else if (event.type === "download:start") {
         this.flush();
         write(`${event.addon}: downloading ${event.filename}`);
@@ -206,7 +215,7 @@ function progressRenderer(verbose: boolean) {
       } else if (event.type === "download:done" && openLine) {
         write(` (${formatBytes(event.bytes)})\n`);
         openLine = false;
-      } else if (verbose && event.type !== "download:progress") {
+      } else if (verbose && "addon" in event && event.type !== "download:progress") {
         this.flush();
         const detail = "folders" in event ? ` ${event.folders.join(", ")}` : "";
         write(`${event.addon}: ${event.type}${detail}\n`);
@@ -263,7 +272,7 @@ function render(command: string, result: unknown): string {
         `Created ${r.manifestPath}`,
         table([
           ["TARGET", "FLAVOR", "PATH"],
-          ...r.targets.map((t) => [t.name, t.flavor, `${t.path}${t.createdAddonsDir ? " (created)" : ""}`]),
+          ...r.targets.map((t) => [t.name, t.flavor, `${t.path}${t.createdAddonsDir ? " (created)" : ""}${t.folder ? ` (folder ${t.folder})` : ""}`]),
         ]),
       ].join("\n");
     }
@@ -272,12 +281,18 @@ function render(command: string, result: unknown): string {
       if (!r.targets.length) return 'No targets in the manifest. Add one with "wowget target add".';
       return table([
         ["TARGET", "FLAVOR", "PATH", "EXISTS"],
-        ...r.targets.map((t) => [t.name, t.flavor, t.path, t.exists ? "yes" : "no"]),
+        ...r.targets.map((t) => [
+          t.name,
+          t.flavor,
+          t.path === null ? `${t.folder} (not on this machine)` : `${t.path}${t.folder ? ` (folder ${t.folder})` : ""}`,
+          t.exists ? "yes" : "no",
+        ]),
       ]);
     }
     case "target add": {
       const r = result as ops.TargetAddResult;
-      const lines = [`Added target ${r.target.name} (${r.target.flavor}) at ${r.target.path}`];
+      const where = r.target.path ?? `${r.target.folder}, which is not on this machine`;
+      const lines = [`Added target ${r.target.name} (${r.target.flavor}) at ${where}`];
       if (r.createdAddonsDir) lines.push(`Created ${r.target.path}`);
       return lines.join("\n");
     }
@@ -533,6 +548,7 @@ async function main(argv: string[]): Promise<number> {
       throw new UsageError(`Wrong number of arguments for "${key}". Run "wowget --help".`);
     }
     if (values.path === "") throw new UsageError("--path must not be empty.");
+    if (values.folder === "") throw new UsageError("--folder must not be empty.");
     if (values["game-dir"] === "") throw new UsageError("--game-dir must not be empty.");
     if (values.flavor !== undefined && !isFlavor(values.flavor)) {
       throw new UsageError(`Unknown flavor "${values.flavor}"; expected one of ${FLAVORS.join(", ")}.`);
@@ -580,8 +596,10 @@ async function main(argv: string[]): Promise<number> {
     } else if (key === "target list") {
       result = await ops.targetList({ manifestPath: manifest });
     } else if (key === "target add") {
-      if (values.path === undefined || flavor === undefined) throw new UsageError('"target add" needs --path and --flavor.');
-      result = await ops.targetAdd({ manifestPath: manifest, name: args[0]!, path: values.path, flavor });
+      if ((values.path === undefined) === (values.folder === undefined) || flavor === undefined) {
+        throw new UsageError('"target add" needs --flavor and either --path or --folder.');
+      }
+      result = await ops.targetAdd({ manifestPath: manifest, name: args[0]!, path: values.path, folder: values.folder, flavor });
     } else if (key === "unpin") {
       result = await ops.unpin({ manifestPath: manifest, name: args[0]! });
     } else {
