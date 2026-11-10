@@ -646,7 +646,8 @@ describe("folder targets", () => {
     expect(named.code).toBe("not_found");
     expect(named.message).toContain("_classic_era_");
 
-    const onMac = { ...opts, fetch: a.fetch, state: openState(join(root, "mac-state.db")), gameDirs: [mac] };
+    // Each machine has its own state and download cache.
+    const onMac = { ...opts, fetch: a.fetch, state: openState(join(root, "mac-state.db")), cacheDir: join(root, "mac-cache"), gameDirs: [mac] };
     try {
       const installed = await ops.install(onMac);
       expect(installed.addons.map((r) => [r.target, r.status])).toEqual([
