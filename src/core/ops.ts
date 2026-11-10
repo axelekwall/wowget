@@ -1,4 +1,4 @@
-import { lstat, mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, realpath, rename, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { detectInstalls, findVersionFolder, type DetectedInstall } from "./detect.ts";
 import {
@@ -142,15 +142,34 @@ function selectTargets(manifest: Manifest, manifestPath: string, filter: string[
 }
 
 /**
+ * `path` resolved with symlinks and junctions followed. A directory that does not exist yet is
+ * taken as its nearest existing ancestor's real path plus the rest.
+ */
+async function realDir(path: string): Promise<string> {
+  const full = resolve(expandHome(path));
+  const rest: string[] = [];
+  for (let dir = full; ; dir = dirname(dir)) {
+    try {
+      return join(await realpath(dir), ...rest);
+    } catch {
+      if (dirname(dir) === dir) return full;
+      rest.unshift(basename(dir));
+    }
+  }
+}
+
+/**
  * Throws when two located targets share an AddOns directory. Each target keeps its own record of
  * the folders it owns, so a shared directory would let one overwrite or delete the other's addons.
  * Folder targets are located on every run, so this can change after the targets were added.
  */
-function checkDistinctDirs(located: (ResolvedTarget | AbsentTarget)[], manifestPath: string): void {
+async function checkDistinctDirs(located: (ResolvedTarget | AbsentTarget)[], manifestPath: string): Promise<void> {
   const present = located.filter((t): t is ResolvedTarget => t.path !== undefined);
+  const real = await Promise.all(present.map((t) => realDir(t.path)));
   for (const [i, a] of present.entries()) {
-    const dir = resolve(expandHome(a.path));
-    const b = present.slice(i + 1).find((t) => samePath(resolve(expandHome(t.path)), dir));
+    const dir = real[i]!;
+    const j = real.findIndex((other, k) => k > i && samePath(other, dir));
+    const b = j >= 0 ? present[j] : undefined;
     if (b) {
       throw new WowgetError(
         "manifest",
@@ -169,7 +188,7 @@ async function load(opts: Pick<OpsOptions, "manifestPath" | "targets" | "env" | 
   const gameDirs = gameDirsFor(opts);
   const selected = new Set(selectTargets(manifest, opts.manifestPath, opts.targets).map((t) => t.name));
   const all = await locateTargets(manifest.targets, gameDirs);
-  checkDistinctDirs(all, opts.manifestPath);
+  await checkDistinctDirs(all, opts.manifestPath);
   const located = all.filter((t) => selected.has(t.name));
   const targets = located.filter((t): t is ResolvedTarget => t.path !== undefined);
   const absent = located.filter((t): t is AbsentTarget => t.path === undefined);
@@ -959,7 +978,7 @@ export async function remove(opts: RemoveOptions): Promise<RemoveResult> {
 
   const addons: RemoveEntry[] = [];
   const all = await locateTargets(manifest.targets, gameDirsFor(opts));
-  checkDistinctDirs(all, opts.manifestPath);
+  await checkDistinctDirs(all, opts.manifestPath);
   // Without a filter every target is checked, so installs left behind by a hand edit go too.
   const targets = all.filter((t) => !filtered || dropped.has(t.name)).sort((a, b) => byName(a.name, b.name));
   try {

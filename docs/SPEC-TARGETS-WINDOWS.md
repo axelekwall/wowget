@@ -83,7 +83,8 @@ flavor = "classic"
 - `add` without `--target` writes no `targets` list, so the addon stays on
   every target, also those not on this machine; `install` there picks it up.
 - Two targets must not use the same AddOns directory (compared
-  case-insensitively on macOS and Windows), since each keeps its own record of
+  case-insensitively on macOS and Windows, and on every run after following
+  symlinks and junctions), since each keeps its own record of
   the folders it owns. `target add` refuses a target that would, including
   where a folder target not on this machine would resolve. A folder target is
   located on every run, so this can still happen later (a version folder is

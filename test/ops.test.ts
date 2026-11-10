@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { zipSync } from "fflate";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { addAddon, readManifest, removeAddon } from "../src/core/manifest.ts";
 import * as ops from "../src/core/ops.ts";
@@ -836,6 +836,18 @@ describe("folder targets", () => {
       join(second, "_forever_", "Interface", "AddOns"),
       join(second, "_forever_", "Interface", "AddOns"),
     ]);
+  });
+
+  test.skipIf(process.platform === "win32")("commands fail when two targets reach one directory through a symlink (symlinks)", async () => {
+    const { root, manifestPath, opts } = await setup();
+    const real = join(root, "real", "AddOns");
+    await mkdir(real, { recursive: true });
+    await symlink(join(root, "real"), join(root, "link"));
+    await ops.init({ manifestPath, path: real });
+    await writeFile(manifestPath, `${await readFile(manifestPath, "utf8")}\n[targets.other]\npath = ${JSON.stringify(join(root, "link", "AddOns"))}\nflavor = "forever"\n`);
+    const err = await ops.list(opts).catch((e) => e);
+    expect(err.code).toBe("manifest");
+    expect(err.message).toContain('Targets "forever" and "other" both use');
   });
 
   test("target add --folder refuses a folder another target has and creates the AddOns directory when found", async () => {
