@@ -209,7 +209,7 @@ folders = ["WIM"]
 name = "Prat"
 aliases = ["prat 3.0"]
 source = "wowi:10783"
-flavors = ["forever", "mainline", "classic", "bcc", "wrath", "mists"]
+flavors = ["forever", "mainline", "classic", "bcc", "wrath", "cata", "mists"]
 folders = ["Prat-3.0"]
 
 [[addon]]
