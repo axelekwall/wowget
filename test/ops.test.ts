@@ -779,6 +779,17 @@ describe("folder targets", () => {
     expect(await readFile(manifestPath, "utf8")).toBe(before);
   });
 
+  test.skipIf(process.platform === "linux")("target add refuses a path that differs from another target's only in case", async () => {
+    const { root, manifestPath, opts } = await setup();
+    const gameDir = join(root, "wow");
+    await fakeVersionFolder(gameDir, "_forever_");
+    await ops.init({ manifestPath, gameDirs: [gameDir], portable: true });
+    const upper = join(gameDir, "_FOREVER_", "Interface", "AddOns");
+    const clash = await ops.targetAdd({ ...opts, name: "fv", path: upper, flavor: "forever", gameDirs: [gameDir] }).catch((e) => e);
+    expect(clash.code).toBe("usage");
+    expect(clash.message).toContain('already the path of target "forever"');
+  });
+
   test("target add --folder refuses a folder another target has and creates the AddOns directory when found", async () => {
     const { root, manifestPath, opts } = await setup();
     const gameDir = join(root, "wow");

@@ -491,6 +491,11 @@ export interface TargetAddResult {
   createdAddonsDir: boolean;
 }
 
+/** Whether two resolved paths name the same directory; macOS and Windows file systems ignore case by default. */
+function samePath(a: string, b: string): boolean {
+  return process.platform === "darwin" || process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
 /** Adds a target. A `folder` target that is not on this machine is added all the same, for the other machines. */
 export async function targetAdd(opts: TargetAddOptions): Promise<TargetAddResult> {
   checkTargetName(opts.name);
@@ -519,7 +524,7 @@ export async function targetAdd(opts: TargetAddOptions): Promise<TargetAddResult
   }
   if (path !== undefined) {
     const located = await locateTargets(manifest.targets, gameDirsFor(opts));
-    const clash = located.find((t) => t.path !== undefined && resolve(expandHome(t.path)) === path);
+    const clash = located.find((t) => t.path !== undefined && samePath(resolve(expandHome(t.path)), path!));
     if (clash) throw new WowgetError("usage", `${path} is already the path of target "${clash.name}".`);
   }
   const createdAddonsDir = path !== undefined && (await ensureDir(path));
