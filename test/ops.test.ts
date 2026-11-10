@@ -787,7 +787,28 @@ describe("folder targets", () => {
     const upper = join(gameDir, "_FOREVER_", "Interface", "AddOns");
     const clash = await ops.targetAdd({ ...opts, name: "fv", path: upper, flavor: "forever", gameDirs: [gameDir] }).catch((e) => e);
     expect(clash.code).toBe("usage");
-    expect(clash.message).toContain('already the path of target "forever"');
+    expect(clash.message).toContain('target "forever"');
+  });
+
+  test("target add refuses a path where a folder target not on this machine would resolve", async () => {
+    const { root, manifestPath, opts } = await setup();
+    const gameDir = join(root, "wow");
+    await ops.init({ manifestPath, path: join(root, "other") });
+    await ops.targetAdd({ manifestPath, name: "retail", folder: "_retail_", flavor: "mainline", gameDirs: [gameDir] });
+    const retailDir = join(gameDir, "_retail_", "Interface", "AddOns");
+    const clash = await ops.targetAdd({ ...opts, name: "r2", path: retailDir, flavor: "mainline", gameDirs: [gameDir] }).catch((e) => e);
+    expect(clash.code).toBe("usage");
+    expect(clash.message).toContain('target "retail"');
+    expect(await readdir(gameDir).catch(() => [])).toEqual([]);
+  });
+
+  test.skipIf(process.platform === "linux")("target portable converts a path whose case differs from the game directory's", async () => {
+    const { root, manifestPath } = await setup();
+    const gameDir = join(root, "wow");
+    await fakeVersionFolder(gameDir, "_forever_");
+    await ops.init({ manifestPath, path: join(root, "WOW", "_forever_", "Interface", "AddOns") });
+    const result = await ops.targetPortable({ manifestPath, gameDirs: [gameDir] });
+    expect(result.converted.map((t) => t.folder)).toEqual(["_forever_"]);
   });
 
   test("target add --folder refuses a folder another target has and creates the AddOns directory when found", async () => {

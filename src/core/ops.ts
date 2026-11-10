@@ -522,10 +522,18 @@ export async function targetAdd(opts: TargetAddOptions): Promise<TargetAddResult
     path = absolutePath(opts.path!, "--path");
     target = { path };
   }
-  if (path !== undefined) {
-    const located = await locateTargets(manifest.targets, gameDirsFor(opts));
-    const clash = located.find((t) => t.path !== undefined && samePath(resolve(expandHome(t.path)), path!));
-    if (clash) throw new WowgetError("usage", `${path} is already the path of target "${clash.name}".`);
+  const gameDirs = gameDirsFor(opts);
+  // A folder target not on this machine would resolve to its folder in any game directory once
+  // that folder exists, which creating the new target's directory could make happen.
+  const possiblePaths = (t: ResolvedTarget | AbsentTarget): string[] =>
+    t.path !== undefined ? [resolve(expandHome(t.path))] : gameDirs.map((g) => join(g, t.folder, "Interface", "AddOns"));
+  const located = await locateTargets(manifest.targets, gameDirs);
+  const mine = path !== undefined ? [path] : possiblePaths({ name: opts.name, flavor: opts.flavor, folder: opts.folder! });
+  for (const t of located) {
+    if (possiblePaths(t).some((p) => mine.some((m) => samePath(p, m)))) {
+      const what = path !== undefined ? path : `the ${opts.folder} folder`;
+      throw new WowgetError("usage", `${what} is already the AddOns directory of target "${t.name}", or would be once it exists.`);
+    }
   }
   const createdAddonsDir = path !== undefined && (await ensureDir(path));
   const updated = await addTarget(opts.manifestPath, opts.name, { ...target, flavor: opts.flavor });
@@ -550,7 +558,7 @@ async function portableCheck(
     return { reason: `${target.path} is not <game dir>/<version folder>/Interface/AddOns` };
   }
   const located = await findVersionFolder(folder, gameDirs);
-  if (located !== addonsDir) {
+  if (located === undefined || !samePath(located, addonsDir)) {
     const where = located ? `would locate ${located} instead` : `would not be found in ${gameDirs.join(", ") || "any game directory"}`;
     return { reason: `a folder target ${folder} ${where}` };
   }
