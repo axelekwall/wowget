@@ -120,8 +120,8 @@ Codex reviews every pull request automatically. The loop for each one:
 5. Handle the Codex review with the `pr-feedback` skill (`.agents/skills/pr-feedback/SKILL.md`):
    wait for it with `bun scripts/pr-reviews.ts wait <pr>`, verify each finding against the code,
    fix the valid ones in this PR, answer the rest with a reason, resolve the threads, then
-   comment `@codex review` to have the fixes reviewed. Repeat until Codex reports nothing
-   unresolved on the head commit. Stop and report after three rounds.
+   comment `@codex review` once to have the fixes reviewed. Handle what that second review
+   finds the same way, then report; never request a third review.
 6. CI is green (`gh pr checks <pr> --watch`).
 7. Report: what changed, the check output, the decisions, and every review finding with how it
    was handled.

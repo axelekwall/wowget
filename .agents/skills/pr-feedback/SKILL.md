@@ -1,6 +1,6 @@
 ---
 name: pr-feedback
-description: Wait for the Codex review on a wowget pull request, verify each finding against the code, fix the valid ones, answer the rest, resolve the threads and request a re-review until nothing is left. Use after opening or updating a pull request, or when asked to "check the review", "handle the Codex comments" or "address the feedback".
+description: Wait for the Codex review on a wowget pull request, verify each finding against the code, fix the valid ones, answer the rest, resolve the threads and request one re-review. Use after opening or updating a pull request, or when asked to "check the review", "handle the Codex comments" or "address the feedback".
 ---
 
 # Handle review feedback on a pull request
@@ -75,20 +75,22 @@ One reply per thread with `reply`, then `resolve` it:
 Replies are public. Write them for a developer who has not seen the code: what happens, why,
 what changed.
 
-## 5. Request a re-review
+## 5. Request one re-review
 
-When this round changed code, push, then comment on the pull request:
+Request a re-review **once per pull request**: after the first review, when that round changed
+code. Push, then comment on the pull request:
 
 ```
 gh pr comment <pr> --body "@codex review"
 ```
 
-Go back to step 1. When a round changed no code, there is nothing new to review.
+Go back to step 1 for that second review and handle its findings the same way, but do not
+request a third. When a round changed no code, there is nothing new to review.
 
-**Stop after three rounds** that each still had findings, or as soon as the same kind of
-problem keeps coming back in a new place. That pattern usually means the design needs a
-different shape, not another patch. Report the findings and the options instead of patching
-again.
+After the second review, report instead of asking again: what it found, what you fixed and
+what is left. When the same kind of problem keeps coming back in a new place, say so; that
+pattern usually means the design needs a different shape, not another patch, so give the
+options instead of patching again.
 
 ## 6. Report
 
