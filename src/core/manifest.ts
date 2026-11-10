@@ -301,9 +301,8 @@ export function spliceAddonText(text: string, name: string): string {
   return [...lines.slice(0, start), ...lines.slice(end)].join("\n");
 }
 
-/** Returns `text` without the `[targets.<name>]` table, located and cut like an addon block. */
-export function spliceTargetText(text: string, name: string): string {
-  const lines = text.split("\n");
+/** Header line index of the `[targets.<name>]` table. */
+function findTargetHeader(lines: string[], name: string): number {
   const header = lines.findIndex((line) => {
     const m = TARGET_HEADER.exec(line);
     return m !== null && (m[1] ?? m[2] ?? m[3]) === name;
@@ -311,7 +310,13 @@ export function spliceTargetText(text: string, name: string): string {
   if (header < 0) {
     throw new WowgetError("manifest", `Could not locate the [targets.${name}] table; edit the manifest by hand.`);
   }
-  const [start, end] = blockRange(lines, header);
+  return header;
+}
+
+/** Returns `text` without the `[targets.<name>]` table, located and cut like an addon block. */
+export function spliceTargetText(text: string, name: string): string {
+  const lines = text.split("\n");
+  const [start, end] = blockRange(lines, findTargetHeader(lines, name));
   return [...lines.slice(0, start), ...lines.slice(end)].join("\n");
 }
 
@@ -377,6 +382,19 @@ export function setAddonTargetsText(text: string, name: string, targets: string[
   const source = findBlockKeyLine(lines, header, end, "source");
   const at = source >= 0 ? valueEnd(lines, source, end) : header + 1;
   return [...lines.slice(0, at), renderTargetsLine(targets), ...lines.slice(at)].join("\n");
+}
+
+/** Returns `text` with the `path =` line of the `[targets.<name>]` table replaced by `folder = <folder>`. */
+export function setTargetFolderText(text: string, name: string, folder: string): string {
+  const lines = text.split("\n");
+  const header = findTargetHeader(lines, name);
+  const end = blockEnd(lines, header);
+  const existing = findBlockKeyLine(lines, header, end, "path");
+  if (existing < 0) {
+    throw new WowgetError("manifest", `Could not locate the path of [targets.${name}]; edit the manifest by hand.`);
+  }
+  const stop = valueEnd(lines, existing, end);
+  return [...lines.slice(0, existing), `folder = ${tomlString(folder)}`, ...lines.slice(stop)].join("\n");
 }
 
 /**
@@ -634,4 +652,25 @@ export function planSetAddonPin(text: string, name: string, pin: string | undefi
 export async function setAddonPin(path: string, name: string, pin: string | undefined): Promise<Manifest> {
   const text = await readText(path);
   return writePlannedText(path, text, planSetAddonPin(text, name, pin, path));
+}
+
+/**
+ * Returns `text` with each named target's `path` replaced by the version folder given for it,
+ * checked to parse back to the expected manifest.
+ */
+export function planTargetFolders(text: string, folders: Map<string, string>, path = "the manifest"): string {
+  const manifest = parseManifest(text, path);
+  let next = text;
+  const targets = manifest.targets.map((t): NamedTarget => {
+    const folder = folders.get(t.name);
+    if (folder === undefined) return t;
+    if (t.path === undefined) throw new WowgetError("usage", `Target "${t.name}" already has a folder.`);
+    next = setTargetFolderText(next, t.name, folder);
+    return { name: t.name, folder, flavor: t.flavor };
+  });
+  for (const name of folders.keys()) {
+    if (!findTarget(manifest, name)) throw new WowgetError("not_found", `No target named "${name}" in the manifest.`);
+  }
+  checkPlanned(path, next, { ...manifest, targets });
+  return next;
 }

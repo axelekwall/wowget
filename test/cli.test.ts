@@ -111,6 +111,28 @@ describe("cli", () => {
     expect((await run(["list", "-t", "retail", manifest], root, env)).code).toBe(1);
   });
 
+  test("doctor hints at target portable without failing, and target portable rewrites the target", async () => {
+    const root = await tempDir();
+    const manifest = `--manifest=${join(root, "wowget.toml")}`;
+    const gameDir = join(root, "wow");
+    await mkdir(join(gameDir, "_forever_"), { recursive: true });
+    await writeFile(join(gameDir, "_forever_", ".flavor.info"), "");
+    const env = { WOWGET_GAME_DIR: gameDir };
+    expect((await run(["init", manifest], root, env)).code).toBe(0);
+
+    const doctor = await run(["doctor", manifest], root, env);
+    expect(doctor.code).toBe(0);
+    expect(doctor.stdout).toContain('Hint [portable_target]: forever: can be written as folder _forever_');
+    expect(doctor.stdout).toContain('run "wowget target portable forever"');
+
+    const portable = await run(["target", "portable", manifest], root, env);
+    expect(portable.code).toBe(0);
+    expect(portable.stdout).toContain("Converted forever to folder _forever_");
+    expect(await Bun.file(join(root, "wowget.toml")).text()).toContain('folder = "_forever_"');
+    const again = await run(["target", "portable", manifest], root, env);
+    expect(again.stdout).toContain("Nothing to convert");
+  });
+
   test("a missing manifest exits 1, with a JSON error under --json", async () => {
     const root = await tempDir();
     const manifest = `--manifest=${join(root, "missing.toml")}`;

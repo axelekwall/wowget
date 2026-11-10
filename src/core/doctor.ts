@@ -22,6 +22,15 @@ export interface DoctorIssue {
   message: string;
 }
 
+/** A suggestion from doctor that is not a problem. */
+export interface DoctorHint {
+  kind: "portable_target";
+  target: string;
+  /** The version folder the target can be written as. */
+  folder: string;
+  message: string;
+}
+
 export interface DoctorTargetReport {
   name: string;
   flavor: Flavor;

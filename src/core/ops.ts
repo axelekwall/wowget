@@ -1,10 +1,11 @@
 import { lstat, mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { detectInstalls, findVersionFolder, type DetectedInstall } from "./detect.ts";
 import {
   findStaleCacheDirs,
   inspectTarget,
   pruneAddonCache,
+  type DoctorHint,
   type DoctorIssue,
   type DoctorTargetReport,
 } from "./doctor.ts";
@@ -34,6 +35,7 @@ import {
   planRemoveTarget,
   planSetAddonPin,
   planSetAddonTargets,
+  planTargetFolders,
   readManifest,
   readManifestText,
   setAddonTargets,
@@ -523,6 +525,84 @@ export async function targetAdd(opts: TargetAddOptions): Promise<TargetAddResult
   const createdAddonsDir = path !== undefined && (await ensureDir(path));
   const updated = await addTarget(opts.manifestPath, opts.name, { ...target, flavor: opts.flavor });
   return { target: targetInfo(findTarget(updated, opts.name)!, path), createdAddonsDir };
+}
+
+/**
+ * Whether the `path` target `target` can become a `folder` target: its path must be
+ * `<game dir>/<folder>/Interface/AddOns` for the game directory a folder target would locate on
+ * this machine, so the conversion changes nothing here. `others` are checked for the same folder.
+ */
+async function portableCheck(
+  target: NamedTarget,
+  others: NamedTarget[],
+  gameDirs: string[],
+): Promise<{ folder: string } | { reason: string }> {
+  if (target.path === undefined) return { reason: `already a folder target (${target.folder})` };
+  const addonsDir = resolve(expandHome(target.path));
+  const interfaceDir = dirname(addonsDir);
+  const folder = basename(dirname(interfaceDir));
+  if (basename(addonsDir) !== "AddOns" || basename(interfaceDir) !== "Interface" || !isVersionFolderName(folder)) {
+    return { reason: `${target.path} is not <game dir>/<version folder>/Interface/AddOns` };
+  }
+  const located = await findVersionFolder(folder, gameDirs);
+  if (located !== addonsDir) {
+    const where = located ? `would locate ${located} instead` : `would not be found in ${gameDirs.join(", ") || "any game directory"}`;
+    return { reason: `a folder target ${folder} ${where}` };
+  }
+  // Game directories are on case-insensitive file systems on macOS and Windows.
+  const clash = others.find((t) => t.name !== target.name && t.folder?.toLowerCase() === folder.toLowerCase());
+  if (clash) return { reason: `${folder} is already the folder of target "${clash.name}"` };
+  return { folder };
+}
+
+export interface TargetPortableOptions extends GameDirOptions {
+  manifestPath: string;
+  /** Targets to convert; empty or absent means every `path` target. */
+  names?: string[];
+}
+
+export interface TargetPortableResult {
+  /** Targets now written as `folder`, with the AddOns directory they locate here (unchanged). */
+  converted: TargetInfo[];
+  /** Targets left as they were, with the reason. */
+  skipped: { name: string; reason: string }[];
+}
+
+/**
+ * Rewrites `path` targets as `folder` targets where that locates the same AddOns directory on this
+ * machine, so the manifest can be shared with machines that have the game somewhere else.
+ */
+export async function targetPortable(opts: TargetPortableOptions): Promise<TargetPortableResult> {
+  const { text, manifest } = await readManifestText(opts.manifestPath);
+  const named = opts.names?.length ? opts.names : undefined;
+  if (named) {
+    const unknown = named.filter((n) => !findTarget(manifest, n));
+    if (unknown.length) {
+      const valid = manifest.targets.map((t) => t.name).join(", ") || "none";
+      throw new WowgetError("usage", `Unknown target ${unknown.map((n) => `"${n}"`).join(", ")}; the manifest has ${valid}.`);
+    }
+  }
+  const gameDirs = gameDirsFor(opts);
+  const selected = manifest.targets.filter((t) => (named ? named.includes(t.name) : t.path !== undefined));
+  // Checked in manifest order against the result so far, so two targets cannot take one folder.
+  let after = manifest.targets;
+  const folders = new Map<string, string>();
+  const converted: TargetInfo[] = [];
+  const skipped: TargetPortableResult["skipped"] = [];
+  for (const t of selected) {
+    const check = await portableCheck(t, after, gameDirs);
+    if ("reason" in check) {
+      skipped.push({ name: t.name, reason: check.reason });
+      continue;
+    }
+    folders.set(t.name, check.folder);
+    after = after.map((a) => (a.name === t.name ? { name: a.name, folder: check.folder, flavor: a.flavor } : a));
+    converted.push({ name: t.name, flavor: t.flavor, folder: check.folder, path: resolve(expandHome(t.path!)) });
+  }
+  if (folders.size) {
+    await writePlanned(opts.manifestPath, text, planTargetFolders(text, folders, opts.manifestPath));
+  }
+  return { converted, skipped };
 }
 
 export interface RemoveEntry {
@@ -1481,6 +1561,8 @@ export interface DoctorOptions extends Pick<OpsOptions, "manifestPath" | "state"
 export interface DoctorResult {
   targets: DoctorTargetReport[];
   issues: DoctorIssue[];
+  /** Suggestions that are not problems; they do not make doctor fail. */
+  hints: DoctorHint[];
   cleaned: string[];
 }
 
@@ -1492,11 +1574,26 @@ export async function doctor(opts: DoctorOptions): Promise<DoctorResult> {
   const issues: DoctorIssue[] = [];
   const cleaned: string[] = [];
 
+  const hints: DoctorHint[] = [];
+  const gameDirs = gameDirsFor(opts);
+
   for (const target of loaded.targets) {
     const res = await inspectTarget(target, loaded.manifest, opts.state, clean);
     targets.push(res.report);
     issues.push(...res.issues);
     cleaned.push(...res.cleaned);
+
+    const named = findTarget(loaded.manifest, target.name)!;
+    if (named.path === undefined) continue;
+    const check = await portableCheck(named, loaded.manifest.targets, gameDirs);
+    if ("folder" in check) {
+      hints.push({
+        kind: "portable_target",
+        target: target.name,
+        folder: check.folder,
+        message: `${target.name}: can be written as folder ${check.folder}, so the manifest also works on machines with the game elsewhere; run "wowget target portable ${target.name}".`,
+      });
+    }
   }
 
   for (const dir of await findStaleCacheDirs(cacheDir, opts.state)) {
@@ -1511,7 +1608,7 @@ export async function doctor(opts: DoctorOptions): Promise<DoctorResult> {
     }
   }
 
-  return { targets, issues, cleaned };
+  return { targets, issues, hints, cleaned };
 }
 
 // search

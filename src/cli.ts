@@ -23,6 +23,8 @@ Commands:
                                         add a target: the AddOns directory P, or the version folder D
                                         (such as _retail_) in the game directory of each machine
   target remove <name>                  uninstall everything on a target and remove it
+  target portable [name...]             rewrite path targets as version folders where that finds
+                                        the same AddOns directory here (all path targets by default)
   search <query...> [--flavor F | --all-flavors] [--github] [--limit N] [--refresh]
                                         find addons in the registry and on WoWInterface
                                         (and GitHub with --github); filters on the targets' flavors
@@ -115,6 +117,7 @@ const COMMAND_FLAGS: Record<string, Flag[]> = {
   "target list": [],
   "target add": ["path", "folder", "flavor"],
   "target remove": [],
+  "target portable": [],
   search: ["target", "flavor", "all-flavors", "github", "limit", "refresh"],
   add: ["name", "prerelease", "pin", "target"],
   remove: ["target"],
@@ -137,6 +140,7 @@ const POSITIONALS: Record<string, [min: number, max: number]> = {
   "target list": [0, 0],
   "target add": [1, 1],
   "target remove": [1, 1],
+  "target portable": [0, Infinity],
   search: [1, Infinity],
   add: [1, 1],
   remove: [1, 1],
@@ -308,6 +312,13 @@ function render(command: string, result: unknown): string {
       for (const name of r.removedAddons) lines.push(`  removed ${name} from the manifest (it had no other target)`);
       return lines.join("\n");
     }
+    case "target portable": {
+      const r = result as ops.TargetPortableResult;
+      const lines = r.converted.map((t) => `Converted ${t.name} to folder ${t.folder} (${t.path})`);
+      for (const t of r.skipped) lines.push(`Skipped ${t.name}: ${t.reason}`);
+      if (!r.converted.length) lines.push("Nothing to convert; the manifest was not changed.");
+      return lines.join("\n");
+    }
     case "search": {
       const r = result as ops.SearchResult;
       if (!r.results.length) {
@@ -435,6 +446,7 @@ function render(command: string, result: unknown): string {
       for (const path of r.cleaned) lines.push(`Cleaned ${path}`);
       if (!r.issues.length) lines.push("No issues found.");
       else for (const issue of r.issues) lines.push(`Issue [${issue.kind}]: ${issue.message}`);
+      for (const hint of r.hints) lines.push(`Hint [${hint.kind}]: ${hint.message}`);
       return lines.join("\n");
     }
     case "suggest": {
@@ -537,7 +549,7 @@ async function main(argv: string[]): Promise<number> {
     let args = rest;
     if (command === "target") {
       const sub = rest[0];
-      if (!sub) throw new UsageError('"target" needs a subcommand: list, add or remove.');
+      if (!sub) throw new UsageError('"target" needs a subcommand: list, add, remove or portable.');
       key = `target ${sub}`;
       args = rest.slice(1);
     }
@@ -606,6 +618,8 @@ async function main(argv: string[]): Promise<number> {
         throw new UsageError('"target add" needs --flavor and either --path or --folder.');
       }
       result = await ops.targetAdd({ manifestPath: manifest, name: args[0]!, path: values.path, folder: values.folder, flavor });
+    } else if (key === "target portable") {
+      result = await ops.targetPortable({ manifestPath: manifest, names: args });
     } else if (key === "unpin") {
       result = await ops.unpin({ manifestPath: manifest, name: args[0]! });
     } else {

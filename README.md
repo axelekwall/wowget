@@ -73,6 +73,7 @@ wowget target list                            # targets and whether their AddOns
 wowget target add retail --path DIR --flavor mainline
 wowget target add retail --folder _retail_ --flavor mainline   # the version folder in the game directory
 wowget target remove retail                   # uninstall everything on it and drop it
+wowget target portable [name...]              # rewrite path targets as version folders
 wowget search map [--github]                  # search the addon registry and WoWInterface (and GitHub)
 wowget add questie                            # install a registry addon by name
 wowget add github:Questie/Questie             # install on every target and add to the manifest
@@ -186,6 +187,13 @@ on every target, so `wowget install` on the other machine installs it there.
 `wowget init --portable` writes folder targets for the installs it finds in
 the default location or in `WOWGET_GAME_DIR`; plain `init` writes paths.
 Older wowget versions do not read folder targets.
+
+To convert an existing manifest, run `wowget target portable`. It rewrites
+each `path` target whose path is `<game dir>/<version folder>/Interface/AddOns`
+as a folder target, where that finds the same AddOns directory on this machine,
+and says why it left any other target as it was. `wowget doctor` lists the
+targets it would convert. Nothing is converted automatically, since a machine
+with an older wowget could no longer read the manifest.
 
 #### Sharing the manifest between machines
 
