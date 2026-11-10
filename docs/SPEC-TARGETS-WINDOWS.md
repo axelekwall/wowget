@@ -33,13 +33,17 @@ targets = ["forever", "era"]   # optional; absent means every target
 - `targets` is a table of named targets. Names: `[a-z0-9][a-z0-9_-]*`, unique,
   case-sensitive, compared as written. At least one target is required for
   every command except `init`, `target add` and `target list`.
-- Each target has `path` (absolute, kept verbatim) and `flavor` (as before).
+- Each target has `flavor` (as before) and exactly one of:
+  - `path`: the AddOns directory, absolute, kept verbatim;
+  - `folder`: a version folder in the game directory, such as `_classic_era_`
+    (see "Folder targets" below). One folder name: letters, digits, `_`, `-`
+    and `.`, not `.` or `..`.
 - `[[addon]]` gains an optional `targets` array of target names. Unknown
   names are a manifest error naming the addon and the target. An empty array
   is an error. `pin` and `prerelease` apply on every target the addon is on.
 - The old single `[install]` table is no longer accepted. The error message
   says the format changed and points at `wowget init`. No migration code.
-- `renderManifest` writes the `[targets.*]` tables. New write helpers:
+- `renderManifest` writes the `[targets.*]` tables, with `path` or `folder`. New write helpers:
   - `addTarget(path, name, target)` appends a `[targets.<name>]` table **before
     the first `[[addon]]` block** (or at the end if none), so targets stay
     together above addons.
@@ -52,6 +56,66 @@ targets = ["forever", "era"]   # optional; absent means every target
     addon block. `undefined` deletes the line (meaning all targets).
   - The re-parse-and-restore check now compares targets, addons and each
     addon's `targets` list.
+
+### Folder targets
+
+A `folder` target keeps machine-specific paths out of the manifest, so one
+manifest can be shared between machines, for example through a dotfiles
+repository, when the game is installed in a different place on each:
+
+```toml
+[targets.era]
+folder = "_classic_era_"
+flavor = "classic"
+```
+
+- Its AddOns directory is `<game dir>/<folder>/Interface/AddOns`, where the
+  game dir is the first of the game directory candidates (see "Game directory
+  detection"; `WOWGET_GAME_DIR` replaces the list) that has a `<folder>`
+  directory. It is located on every run; nothing about it is stored.
+- A folder target whose folder is in none of the candidates is **not on this
+  machine**. Commands that act on every target skip it and emit a
+  `target:absent` event, which the CLI prints to stderr. Naming it with
+  `--target` on a command that works on the target's files (`add`, `list`,
+  `outdated`, `update`, `install`, `rollback`, `reconcile`, `doctor`) is a
+  `not_found` error, as is such a command where no selected target is on this
+  machine.
+- `add` without `--target` writes no `targets` list, so the addon stays on
+  every target, also those not on this machine; `install` there picks it up.
+- Two targets must not use the same AddOns directory (compared
+  case-insensitively on macOS and Windows, and on every run after following
+  symlinks and junctions), since each keeps its own record of
+  the folders it owns. `target add` refuses a target that would, including
+  where a folder target not on this machine would resolve. A folder target is
+  located on every run, so this can still happen later (a version folder is
+  deleted, `WOWGET_GAME_DIR` changes): every command that loads targets, and
+  `remove`, then fails with a `manifest` error naming both targets. `target
+  list`, `target remove` and `target portable` still run, to fix it.
+- `remove` and `target remove` on a target not on this machine deactivate its
+  state rows without touching any files, with a `target:absent` event for
+  each install forgotten. Folder names are compared case-insensitively when
+  `target add` checks for a clash.
+- `init --portable` scans the default candidates (or `WOWGET_GAME_DIR`) and
+  writes folder targets. Without it `init` writes `path` targets as before,
+  so a new manifest stays readable by older versions. `--portable` is a
+  usage error with `--game-dir` or `--path`, since a later run would not look
+  in that directory. A detected folder that an earlier candidate also has is
+  written as a `path`, so it cannot resolve to the other directory later.
+- A manifest with folder targets is rejected by wowget versions without them
+  (as an unknown key); a manifest with only `path` targets is unchanged.
+- `target portable [name...]` converts existing `path` targets (all of them by
+  default). A target is converted only when its path, resolved, is
+  `<game dir>/<folder>/Interface/AddOns` and a folder target `<folder>` would
+  locate that same directory on this machine, with no other target having that
+  folder (compared case-insensitively). The conversion therefore changes no
+  directory here. The `path =` line is replaced by `folder =` in place, through
+  the checked manifest write; everything else in the file stays. Every target
+  left as it was is reported with the reason. A named target that is unknown
+  is a `usage` error.
+- `doctor` reports each target `target portable` would convert as a hint
+  (`hints` in the result, kind `portable_target`). Hints are not issues and do
+  not change the exit code. Nothing converts targets without being asked, so a
+  manifest stays readable by older versions until the user opts in.
 
 ### State
 
@@ -81,8 +145,9 @@ filter, the op runs on every target.
 | Command | Behaviour |
 |---|---|
 | `init [--path P --flavor F --name N] [--game-dir D]` | Without `--path`: scan the game directory and add a target for every version folder found (see detection). Error if none found. With `--path`: add exactly one target named `N` (default: the flavor name). Error if the manifest exists. Creates missing `Interface/AddOns` directories. Reports the targets added. |
-| `target list` | Name, flavor, path, and whether the path exists. |
-| `target add <name> --path P --flavor F` | Appends a target; creates the AddOns dir if missing. |
+| `target list` | Name, flavor, folder, path (null for a folder target not on this machine), and whether the path exists. |
+| `target add <name> (--path P \| --folder D) --flavor F` | Appends a target; creates the AddOns dir if missing. A folder target not on this machine is added all the same. Refuses a path or folder another target already has. |
+| `target portable [name...]` | Rewrites `path` targets as `folder` targets where that locates the same directory here (see "Folder targets"). Reports converted and skipped targets. |
 | `target remove <name>` | Uninstalls every addon on it (deactivating state rows), removes the target, drops the name from addon `targets` lists, removes addons left with no targets. Reports everything removed. |
 | `add <source> [--name N] [--target T]...` | Installs into the chosen targets (default all). Writes `targets` only when a subset. Validation (manifest text round trip) runs first, then resolve+install per target; the first target failure stops the rest, rolls back installs done in this call, and nothing is written. The flavor-not-available error from release.json is a per-target failure like any other. |
 | `remove <name> [--target T]...` | No filter: uninstall on every target, splice the entry. With a filter: uninstall on those targets and remove them from the addon's `targets` (writing the full remaining list, since "absent" means all). If every target is removed, the entry is removed. |
@@ -96,8 +161,9 @@ rows in an array.
 
 - Global repeatable `--target <name>` (also `-t`). Accepted on `add`,
   `remove`, `list`, `outdated`, `update`, `install`. A usage error elsewhere.
-- `target` subcommands: `wowget target list|add|remove`.
-- `init` flags: `--path`, `--flavor`, `--name`, `--game-dir`.
+- `target` subcommands: `wowget target list|add|remove|portable`.
+- `init` flags: `--path`, `--flavor`, `--name`, `--game-dir`, `--portable`.
+- `target add` flags: `--path` or `--folder`, and `--flavor`.
 - `list` output gains a TARGET column. Other tables gain it too.
 - Help text updated.
 

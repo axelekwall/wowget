@@ -54,3 +54,19 @@ export async function detectInstalls(gameDir: string): Promise<DetectedInstall[]
   }
   return found;
 }
+
+/**
+ * The AddOns directory of version folder `folder` in the first of `gameDirs` that has that folder,
+ * or undefined when none does. The AddOns directory itself may not exist yet.
+ */
+export async function findVersionFolder(folder: string, gameDirs: string[]): Promise<string | undefined> {
+  for (const gameDir of gameDirs) {
+    const versionDir = join(gameDir, folder);
+    const isDir = await stat(versionDir).then(
+      (s) => s.isDirectory(),
+      () => false,
+    );
+    if (isDir) return join(versionDir, "Interface", "AddOns");
+  }
+  return undefined;
+}

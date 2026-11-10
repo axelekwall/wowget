@@ -13,12 +13,18 @@ import { VERSION } from "./version.ts";
 const HELP = `Usage: wowget <command> [options]
 
 Commands:
-  init [--path P --flavor F --name N] [--game-dir D]
+  init [--path P --flavor F --name N] [--game-dir D] [--portable]
                                         create the manifest: one target for the AddOns directory P,
-                                        or one per World of Warcraft version found in the game dir
+                                        or one per World of Warcraft version found in the game dir;
+                                        --portable names version folders instead of paths, so the
+                                        manifest works on other machines
   target list                           show the targets and whether their AddOns directories exist
-  target add <name> --path P --flavor F add a target
+  target add <name> (--path P | --folder D) --flavor F
+                                        add a target: the AddOns directory P, or the version folder D
+                                        (such as _retail_) in the game directory of each machine
   target remove <name>                  uninstall everything on a target and remove it
+  target portable [name...]             rewrite path targets as version folders where that finds
+                                        the same AddOns directory here (all path targets by default)
   search <query...> [--flavor F | --all-flavors] [--github] [--limit N] [--refresh]
                                         find addons in the registry and on WoWInterface
                                         (and GitHub with --github); filters on the targets' flavors
@@ -42,7 +48,8 @@ Commands:
 
 search, add, remove, list, outdated, update, install, rollback, reconcile and doctor act on every target
 unless filtered with -t/--target, which can be repeated. "add -t" records the targets
-in the manifest; "remove -t" removes the addon from those targets only.
+in the manifest; "remove -t" removes the addon from those targets only. Targets whose version
+folder is not on this machine are skipped.
 
 Sources: github:owner/repo, wowi:<id>, url:https://...
 Flavors: ${FLAVORS.join(", ")}
@@ -69,6 +76,8 @@ Options:
 
 type Flag =
   | "path"
+  | "folder"
+  | "portable"
   | "flavor"
   | "name"
   | "prerelease"
@@ -85,6 +94,8 @@ type Flag =
   | "print";
 const FLAGS: Flag[] = [
   "path",
+  "folder",
+  "portable",
   "flavor",
   "name",
   "prerelease",
@@ -102,10 +113,11 @@ const FLAGS: Flag[] = [
 ];
 
 const COMMAND_FLAGS: Record<string, Flag[]> = {
-  init: ["path", "flavor", "name", "game-dir"],
+  init: ["path", "flavor", "name", "game-dir", "portable"],
   "target list": [],
-  "target add": ["path", "flavor"],
+  "target add": ["path", "folder", "flavor"],
   "target remove": [],
+  "target portable": [],
   search: ["target", "flavor", "all-flavors", "github", "limit", "refresh"],
   add: ["name", "prerelease", "pin", "target"],
   remove: ["target"],
@@ -128,6 +140,7 @@ const POSITIONALS: Record<string, [min: number, max: number]> = {
   "target list": [0, 0],
   "target add": [1, 1],
   "target remove": [1, 1],
+  "target portable": [0, Infinity],
   search: [1, Infinity],
   add: [1, 1],
   remove: [1, 1],
@@ -166,6 +179,8 @@ function parse(argv: string[]) {
         pin: { type: "string" },
         target: { type: "string", short: "t", multiple: true },
         "game-dir": { type: "string" },
+        folder: { type: "string" },
+        portable: { type: "boolean" },
         adopt: { type: "boolean" },
         clean: { type: "boolean" },
         check: { type: "boolean" },
@@ -199,6 +214,9 @@ function progressRenderer(verbose: boolean) {
       } else if (event.type === "registry:stale") {
         this.flush();
         write(`wowget: warning: ${event.message}\n`);
+      } else if (event.type === "target:absent") {
+        this.flush();
+        write(`wowget: ${event.message}\n`);
       } else if (event.type === "download:start") {
         this.flush();
         write(`${event.addon}: downloading ${event.filename}`);
@@ -206,7 +224,7 @@ function progressRenderer(verbose: boolean) {
       } else if (event.type === "download:done" && openLine) {
         write(` (${formatBytes(event.bytes)})\n`);
         openLine = false;
-      } else if (verbose && event.type !== "download:progress") {
+      } else if (verbose && "addon" in event && event.type !== "download:progress") {
         this.flush();
         const detail = "folders" in event ? ` ${event.folders.join(", ")}` : "";
         write(`${event.addon}: ${event.type}${detail}\n`);
@@ -263,7 +281,7 @@ function render(command: string, result: unknown): string {
         `Created ${r.manifestPath}`,
         table([
           ["TARGET", "FLAVOR", "PATH"],
-          ...r.targets.map((t) => [t.name, t.flavor, `${t.path}${t.createdAddonsDir ? " (created)" : ""}`]),
+          ...r.targets.map((t) => [t.name, t.flavor, `${t.path}${t.createdAddonsDir ? " (created)" : ""}${t.folder ? ` (folder ${t.folder})` : ""}`]),
         ]),
       ].join("\n");
     }
@@ -272,12 +290,18 @@ function render(command: string, result: unknown): string {
       if (!r.targets.length) return 'No targets in the manifest. Add one with "wowget target add".';
       return table([
         ["TARGET", "FLAVOR", "PATH", "EXISTS"],
-        ...r.targets.map((t) => [t.name, t.flavor, t.path, t.exists ? "yes" : "no"]),
+        ...r.targets.map((t) => [
+          t.name,
+          t.flavor,
+          t.path === null ? `${t.folder} (not on this machine)` : `${t.path}${t.folder ? ` (folder ${t.folder})` : ""}`,
+          t.exists ? "yes" : "no",
+        ]),
       ]);
     }
     case "target add": {
       const r = result as ops.TargetAddResult;
-      const lines = [`Added target ${r.target.name} (${r.target.flavor}) at ${r.target.path}`];
+      const where = r.target.path ?? `${r.target.folder}, which is not on this machine`;
+      const lines = [`Added target ${r.target.name} (${r.target.flavor}) at ${where}`];
       if (r.createdAddonsDir) lines.push(`Created ${r.target.path}`);
       return lines.join("\n");
     }
@@ -286,6 +310,13 @@ function render(command: string, result: unknown): string {
       const lines = [`Removed target ${r.name}`];
       for (const a of r.addons) lines.push(`  uninstalled ${a.name}${a.removedFolders.length ? ` (${a.removedFolders.join(", ")})` : ""}`);
       for (const name of r.removedAddons) lines.push(`  removed ${name} from the manifest (it had no other target)`);
+      return lines.join("\n");
+    }
+    case "target portable": {
+      const r = result as ops.TargetPortableResult;
+      const lines = r.converted.map((t) => `Converted ${t.name} to folder ${t.folder} (${t.path})`);
+      for (const t of r.skipped) lines.push(`Skipped ${t.name}: ${t.reason}`);
+      if (!r.converted.length) lines.push("Nothing to convert; the manifest was not changed.");
       return lines.join("\n");
     }
     case "search": {
@@ -415,6 +446,7 @@ function render(command: string, result: unknown): string {
       for (const path of r.cleaned) lines.push(`Cleaned ${path}`);
       if (!r.issues.length) lines.push("No issues found.");
       else for (const issue of r.issues) lines.push(`Issue [${issue.kind}]: ${issue.message}`);
+      for (const hint of r.hints) lines.push(`Hint [${hint.kind}]: ${hint.message}`);
       return lines.join("\n");
     }
     case "suggest": {
@@ -517,7 +549,7 @@ async function main(argv: string[]): Promise<number> {
     let args = rest;
     if (command === "target") {
       const sub = rest[0];
-      if (!sub) throw new UsageError('"target" needs a subcommand: list, add or remove.');
+      if (!sub) throw new UsageError('"target" needs a subcommand: list, add, remove or portable.');
       key = `target ${sub}`;
       args = rest.slice(1);
     }
@@ -533,6 +565,7 @@ async function main(argv: string[]): Promise<number> {
       throw new UsageError(`Wrong number of arguments for "${key}". Run "wowget --help".`);
     }
     if (values.path === "") throw new UsageError("--path must not be empty.");
+    if (values.folder === "") throw new UsageError("--folder must not be empty.");
     if (values["game-dir"] === "") throw new UsageError("--game-dir must not be empty.");
     if (values.flavor !== undefined && !isFlavor(values.flavor)) {
       throw new UsageError(`Unknown flavor "${values.flavor}"; expected one of ${FLAVORS.join(", ")}.`);
@@ -576,12 +609,17 @@ async function main(argv: string[]): Promise<number> {
         flavor,
         name: values.name,
         gameDir: values["game-dir"],
+        portable: values.portable,
       });
     } else if (key === "target list") {
       result = await ops.targetList({ manifestPath: manifest });
     } else if (key === "target add") {
-      if (values.path === undefined || flavor === undefined) throw new UsageError('"target add" needs --path and --flavor.');
-      result = await ops.targetAdd({ manifestPath: manifest, name: args[0]!, path: values.path, flavor });
+      if ((values.path === undefined) === (values.folder === undefined) || flavor === undefined) {
+        throw new UsageError('"target add" needs --flavor and either --path or --folder.');
+      }
+      result = await ops.targetAdd({ manifestPath: manifest, name: args[0]!, path: values.path, folder: values.folder, flavor });
+    } else if (key === "target portable") {
+      result = await ops.targetPortable({ manifestPath: manifest, names: args });
     } else if (key === "unpin") {
       result = await ops.unpin({ manifestPath: manifest, name: args[0]! });
     } else {

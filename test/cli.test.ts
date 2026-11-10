@@ -6,9 +6,11 @@ import { useTempDirs } from "./helpers/tmp.ts";
 const tempDir = useTempDirs();
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 
-async function run(args: string[], root: string) {
+async function run(args: string[], root: string, extraEnv: Record<string, string> = {}) {
   const env: Record<string, string | undefined> = {
     ...process.env,
+    WOWGET_GAME_DIR: join(root, "no-game-dir"),
+    ...extraEnv,
     WOWGET_STATE_DIR: join(root, "state"),
     WOWGET_CACHE_DIR: join(root, "cache"),
     WOWGET_MANIFEST: undefined,
@@ -83,6 +85,52 @@ describe("cli", () => {
     expect((await run(["list", "-t", "retail", manifest], root)).code).toBe(2);
     expect((await run(["target", "list", "-t", "era", manifest], root)).code).toBe(2);
     expect((await run(["target", "frob", manifest], root)).code).toBe(2);
+  });
+
+  test("folder targets: target add --folder, and targets not on this machine are listed and skipped", async () => {
+    const root = await tempDir();
+    const manifest = `--manifest=${join(root, "wowget.toml")}`;
+    const gameDir = join(root, "wow");
+    await mkdir(join(gameDir, "_forever_"), { recursive: true });
+    const env = { WOWGET_GAME_DIR: gameDir };
+    expect((await run(["init", "--path", join(root, "other"), manifest], root, env)).code).toBe(0);
+    const needsOne = await run(["target", "add", "fv", "--flavor", "forever", manifest], root, env);
+    expect(needsOne.code).toBe(2);
+    expect((await run(["target", "add", "fv", "--folder", "_forever_", "--flavor", "forever", manifest], root, env)).code).toBe(0);
+    const retail = await run(["target", "add", "retail", "--folder", "_retail_", "--flavor", "mainline", manifest], root, env);
+    expect(retail.code).toBe(0);
+    expect(retail.stdout).toContain("_retail_, which is not on this machine");
+
+    const targets = await run(["target", "list", manifest], root, env);
+    expect(targets.stdout).toMatch(/fv\s+forever\s+\S+_forever_\S+ \(folder _forever_\)\s+yes/);
+    expect(targets.stdout).toMatch(/retail\s+mainline\s+_retail_ \(not on this machine\)\s+no/);
+
+    const listed = await run(["list", manifest], root, env);
+    expect(listed.code).toBe(0);
+    expect(listed.stderr).toContain(`wowget: skipping target "retail": no _retail_ folder in ${gameDir}`);
+    expect((await run(["list", "-t", "retail", manifest], root, env)).code).toBe(1);
+  });
+
+  test("doctor hints at target portable without failing, and target portable rewrites the target", async () => {
+    const root = await tempDir();
+    const manifest = `--manifest=${join(root, "wowget.toml")}`;
+    const gameDir = join(root, "wow");
+    await mkdir(join(gameDir, "_forever_"), { recursive: true });
+    await writeFile(join(gameDir, "_forever_", ".flavor.info"), "");
+    const env = { WOWGET_GAME_DIR: gameDir };
+    expect((await run(["init", manifest], root, env)).code).toBe(0);
+
+    const doctor = await run(["doctor", manifest], root, env);
+    expect(doctor.code).toBe(0);
+    expect(doctor.stdout).toContain('Hint [portable_target]: forever: can be written as folder _forever_');
+    expect(doctor.stdout).toContain('run "wowget target portable forever"');
+
+    const portable = await run(["target", "portable", manifest], root, env);
+    expect(portable.code).toBe(0);
+    expect(portable.stdout).toContain("Converted forever to folder _forever_");
+    expect(await Bun.file(join(root, "wowget.toml")).text()).toContain('folder = "_forever_"');
+    const again = await run(["target", "portable", manifest], root, env);
+    expect(again.stdout).toContain("Nothing to convert");
   });
 
   test("a missing manifest exits 1, with a JSON error under --json", async () => {

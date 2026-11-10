@@ -1,10 +1,11 @@
-import { lstat, mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import { detectInstalls, type DetectedInstall } from "./detect.ts";
+import { lstat, mkdir, readdir, readFile, realpath, rename, stat } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
+import { detectInstalls, findVersionFolder, type DetectedInstall } from "./detect.ts";
 import {
   findStaleCacheDirs,
   inspectTarget,
   pruneAddonCache,
+  type DoctorHint,
   type DoctorIssue,
   type DoctorTargetReport,
 } from "./doctor.ts";
@@ -28,11 +29,13 @@ import {
   findAddon,
   findTarget,
   isTargetName,
+  isVersionFolderName,
   parseManifest,
   planRemoveAddon,
   planRemoveTarget,
   planSetAddonPin,
   planSetAddonTargets,
+  planTargetFolders,
   readManifest,
   readManifestText,
   setAddonTargets,
@@ -40,6 +43,7 @@ import {
   type AddonEntry,
   type Manifest,
   type NamedTarget,
+  type ResolvedTarget,
 } from "./manifest.ts";
 import { cacheDir as defaultCacheDir, expandHome, gameDirCandidates } from "./paths.ts";
 import { scanUnmanaged, type UnmanagedAddon } from "./reconcile.ts";
@@ -63,15 +67,50 @@ export interface OpsOptions {
   cacheDir?: string;
   force?: boolean;
   fetch?: FetchFn;
-  /** Read for GITHUB_TOKEN; defaults to process.env. */
+  /** Read for GITHUB_TOKEN and WOWGET_GAME_DIR; defaults to process.env. */
   env?: Record<string, string | undefined>;
+  /** Searched in order for the version folder of `folder` targets. Defaults to paths.gameDirCandidates(). */
+  gameDirs?: string[];
   onEvent?: OnEvent;
 }
 
 interface Loaded {
   manifest: Manifest;
   /** The targets the command acts on, in manifest order. */
-  targets: NamedTarget[];
+  targets: ResolvedTarget[];
+}
+
+/** A `folder` target whose version folder is in none of the game directories. */
+interface AbsentTarget {
+  name: string;
+  flavor: Flavor;
+  folder: string;
+  path?: undefined;
+}
+
+type GameDirOptions = Pick<OpsOptions, "env" | "gameDirs">;
+
+function gameDirsFor(opts: GameDirOptions): string[] {
+  return (opts.gameDirs ?? gameDirCandidates(process.platform, opts.env ?? process.env)).map((d) => resolve(expandHome(d)));
+}
+
+/** Locates each target's AddOns directory on this machine, in the order given. */
+async function locateTargets(targets: NamedTarget[], gameDirs: string[]): Promise<(ResolvedTarget | AbsentTarget)[]> {
+  const located: (ResolvedTarget | AbsentTarget)[] = [];
+  for (const t of targets) {
+    if (t.folder === undefined) {
+      located.push({ name: t.name, flavor: t.flavor, path: t.path! });
+      continue;
+    }
+    const path = await findVersionFolder(t.folder, gameDirs);
+    located.push(path ? { name: t.name, flavor: t.flavor, path, folder: t.folder } : { name: t.name, flavor: t.flavor, folder: t.folder });
+  }
+  return located;
+}
+
+function absentReason(target: AbsentTarget, gameDirs: string[]): string {
+  if (!gameDirs.length) return `no game directory to look for ${target.folder} in; set WOWGET_GAME_DIR`;
+  return `no ${target.folder} folder in ${gameDirs.join(", ")}`;
 }
 
 interface Context extends Loaded {
@@ -85,7 +124,7 @@ interface Context extends Loaded {
 /** One (addon, target) pair a command acts on. */
 interface Row {
   entry: AddonEntry;
-  target: NamedTarget;
+  target: ResolvedTarget;
 }
 
 function selectTargets(manifest: Manifest, manifestPath: string, filter: string[] | undefined): NamedTarget[] {
@@ -102,9 +141,88 @@ function selectTargets(manifest: Manifest, manifestPath: string, filter: string[
   return manifest.targets.filter((t) => filter.includes(t.name));
 }
 
-async function load(opts: Pick<OpsOptions, "manifestPath" | "targets">): Promise<Loaded> {
+/**
+ * `path` resolved with symlinks and junctions followed. A directory that does not exist yet is
+ * taken as its nearest existing ancestor's real path plus the rest.
+ */
+async function realDir(path: string): Promise<string> {
+  const full = resolve(expandHome(path));
+  const rest: string[] = [];
+  for (let dir = full; ; dir = dirname(dir)) {
+    try {
+      return join(await realpath(dir), ...rest);
+    } catch {
+      if (dirname(dir) === dir) return full;
+      rest.unshift(basename(dir));
+    }
+  }
+}
+
+/**
+ * Throws when two located targets share an AddOns directory. Each target keeps its own record of
+ * the folders it owns, so a shared directory would let one overwrite or delete the other's addons.
+ * Folder targets are located on every run, so this can change after the targets were added.
+ */
+async function checkDistinctDirs(located: (ResolvedTarget | AbsentTarget)[], manifestPath: string): Promise<void> {
+  const present = located.filter((t): t is ResolvedTarget => t.path !== undefined);
+  const real = await Promise.all(present.map((t) => realDir(t.path)));
+  for (const [i, a] of present.entries()) {
+    const dir = real[i]!;
+    const j = real.findIndex((other, k) => k > i && samePath(other, dir));
+    const b = j >= 0 ? present[j] : undefined;
+    if (b) {
+      throw new WowgetError(
+        "manifest",
+        `Targets "${a.name}" and "${b.name}" both use ${dir}; edit ${manifestPath} so each target has its own AddOns directory.`,
+      );
+    }
+  }
+}
+
+/**
+ * Reads the manifest and locates the selected targets. Without a filter, targets that are not on
+ * this machine are skipped with an event; a filter naming one is an error.
+ */
+async function load(opts: Pick<OpsOptions, "manifestPath" | "targets" | "env" | "gameDirs" | "onEvent">): Promise<Loaded> {
   const manifest = await readManifest(opts.manifestPath);
-  return { manifest, targets: selectTargets(manifest, opts.manifestPath, opts.targets) };
+  const gameDirs = gameDirsFor(opts);
+  const selected = new Set(selectTargets(manifest, opts.manifestPath, opts.targets).map((t) => t.name));
+  const all = await locateTargets(manifest.targets, gameDirs);
+  await checkDistinctDirs(all, opts.manifestPath);
+  const located = all.filter((t) => selected.has(t.name));
+  const targets = located.filter((t): t is ResolvedTarget => t.path !== undefined);
+  const absent = located.filter((t): t is AbsentTarget => t.path === undefined);
+  if (absent.length && (opts.targets?.length || !targets.length)) {
+    const first = absent[0]!;
+    throw new WowgetError("not_found", `Target "${first.name}" is not on this machine: ${absentReason(first, gameDirs)}.`);
+  }
+  for (const t of absent) {
+    opts.onEvent?.({ type: "target:absent", target: t.name, message: `skipping target "${t.name}": ${absentReason(t, gameDirs)}` });
+  }
+  return { manifest, targets };
+}
+
+/**
+ * Uninstalls from a target. For a target not on this machine it only forgets the install, with an
+ * event, since its folders cannot be reached.
+ */
+async function uninstallFrom(
+  target: ResolvedTarget | AbsentTarget,
+  addon: string,
+  state: State,
+  onEvent: OnEvent | undefined,
+): Promise<UninstallResult> {
+  if (target.path !== undefined) return uninstall({ target: target.name, addon, targetDir: target.path, state });
+  const wasInstalled = state.getActiveInstall(target.name, addon) !== undefined;
+  if (wasInstalled) {
+    state.deactivateInstall(target.name, addon);
+    onEvent?.({
+      type: "target:absent",
+      target: target.name,
+      message: `target "${target.name}" is not on this machine; forgot ${addon} there without deleting its folders`,
+    });
+  }
+  return { addon, removedFolders: [], wasInstalled };
 }
 
 async function context(opts: OpsOptions): Promise<Context> {
@@ -274,7 +392,7 @@ function absolutePath(path: string, flag: string): string {
 
 // init
 
-export interface InitOptions {
+export interface InitOptions extends GameDirOptions {
   manifestPath: string;
   /** AddOns directory of the single target to add; created if missing. Without it the game directory is scanned. */
   path?: string;
@@ -284,11 +402,22 @@ export interface InitOptions {
   name?: string;
   /** Scanned for version folders when `path` is absent, instead of `gameDirs`. */
   gameDir?: string;
-  /** Tried in order when neither `path` nor `gameDir` is given; the first with an install is used. Defaults to paths.gameDirCandidates(). */
-  gameDirs?: string[];
+  /** Write `folder` targets, which every machine locates in its own game directory. */
+  portable?: boolean;
 }
 
-export interface InitTarget extends NamedTarget {
+/** A manifest target and where its AddOns directory is on this machine. */
+export interface TargetInfo {
+  name: string;
+  flavor: Flavor;
+  /** Set for `folder` targets. */
+  folder?: string;
+  /** The AddOns directory; null for a `folder` target that is not on this machine. */
+  path: string | null;
+}
+
+export interface InitTarget extends TargetInfo {
+  path: string;
   /** True when the AddOns directory did not exist and was created. */
   createdAddonsDir: boolean;
 }
@@ -298,12 +427,21 @@ export interface InitResult {
   targets: InitTarget[];
 }
 
+/**
+ * Creates the manifest. With `portable`, installs found in the default game directories (or
+ * WOWGET_GAME_DIR) become `folder` targets, which every machine locates for itself; it does not
+ * combine with `path` or `gameDir`, since later runs would not look in that directory.
+ */
 export async function init(opts: InitOptions): Promise<InitResult> {
   if (await Bun.file(opts.manifestPath).exists()) {
     throw new WowgetError("manifest_exists", `A manifest already exists at ${opts.manifestPath}.`);
   }
 
+  if (opts.portable && (opts.path !== undefined || opts.gameDir !== undefined)) {
+    throw new WowgetError("usage", "--portable does not apply together with --path or --game-dir; set WOWGET_GAME_DIR instead.");
+  }
   let targets: NamedTarget[];
+  let paths: string[];
   if (opts.path !== undefined) {
     if (opts.gameDir !== undefined) throw new WowgetError("usage", "--game-dir does not apply together with --path.");
     const path = absolutePath(opts.path, "--path");
@@ -311,14 +449,12 @@ export async function init(opts: InitOptions): Promise<InitResult> {
     const name = opts.name ?? flavor;
     checkTargetName(name);
     targets = [{ name, path, flavor }];
+    paths = [path];
   } else {
     if (opts.name !== undefined || opts.flavor !== undefined) {
       throw new WowgetError("usage", "--name and --flavor only apply together with --path.");
     }
-    const candidates =
-      opts.gameDir !== undefined
-        ? [absolutePath(opts.gameDir, "--game-dir")]
-        : (opts.gameDirs ?? gameDirCandidates()).map((d) => resolve(expandHome(d)));
+    const candidates = opts.gameDir !== undefined ? [absolutePath(opts.gameDir, "--game-dir")] : gameDirsFor(opts);
     let found: DetectedInstall[] = [];
     for (const gameDir of candidates) {
       found = await detectInstalls(gameDir);
@@ -330,21 +466,33 @@ export async function init(opts: InitOptions): Promise<InitResult> {
         : "No default game directory on this platform";
       throw new WowgetError("not_found", `${tried}; pass --game-dir, or --path to an AddOns directory.`);
     }
-    targets = found.map((d) => ({ name: d.name, path: d.addonsDir, flavor: d.flavor }));
+    // A folder target resolves to the first game directory holding that folder, which may not be
+    // the one scanned here; the path is written instead so it cannot point elsewhere later.
+    const located = await Promise.all(found.map((d) => findVersionFolder(basename(d.versionDir), candidates)));
+    targets = found.map((d, i) =>
+      opts.portable && located[i] === d.addonsDir
+        ? { name: d.name, folder: basename(d.versionDir), flavor: d.flavor }
+        : { name: d.name, path: d.addonsDir, flavor: d.flavor },
+    );
+    paths = found.map((d) => d.addonsDir);
   }
 
   const created: boolean[] = [];
-  for (const target of targets) created.push(await ensureDir(target.path));
+  for (const path of paths) created.push(await ensureDir(path));
   const manifest = await createManifest(opts.manifestPath, targets);
   return {
     manifestPath: opts.manifestPath,
-    targets: manifest.targets.map((t, i) => ({ ...t, createdAddonsDir: created[i]! })),
+    targets: manifest.targets.map((t, i) => ({ ...targetInfo(t, paths[i]!), path: paths[i]!, createdAddonsDir: created[i]! })),
   };
+}
+
+function targetInfo(t: NamedTarget, path: string | undefined): TargetInfo {
+  return { name: t.name, flavor: t.flavor, ...(t.folder !== undefined ? { folder: t.folder } : {}), path: path ?? null };
 }
 
 // target list, add, remove
 
-export interface TargetListEntry extends NamedTarget {
+export interface TargetListEntry extends TargetInfo {
   /** Whether the AddOns directory exists. */
   exists: boolean;
 }
@@ -353,43 +501,162 @@ export interface TargetListResult {
   targets: TargetListEntry[];
 }
 
-export async function targetList(opts: Pick<OpsOptions, "manifestPath">): Promise<TargetListResult> {
+export async function targetList(opts: Pick<OpsOptions, "manifestPath" | "env" | "gameDirs">): Promise<TargetListResult> {
   const manifest = await readManifest(opts.manifestPath);
+  const located = await locateTargets(manifest.targets, gameDirsFor(opts));
   const targets: TargetListEntry[] = [];
-  for (const t of manifest.targets) {
-    const exists = await stat(t.path).then(
-      (s) => s.isDirectory(),
-      () => false,
-    );
-    targets.push({ ...t, exists });
+  for (const [i, t] of manifest.targets.entries()) {
+    const path = located[i]!.path;
+    const exists =
+      path !== undefined &&
+      (await stat(path).then(
+        (s) => s.isDirectory(),
+        () => false,
+      ));
+    targets.push({ ...targetInfo(t, path), exists });
   }
   return { targets };
 }
 
-export interface TargetAddOptions {
+export interface TargetAddOptions extends GameDirOptions {
   manifestPath: string;
   name: string;
-  path: string;
+  /** Exactly one of `path` and `folder`. */
+  path?: string;
+  folder?: string;
   flavor: Flavor;
 }
 
 export interface TargetAddResult {
-  target: NamedTarget;
+  target: TargetInfo;
   createdAddonsDir: boolean;
 }
 
+/** Whether two resolved paths name the same directory; macOS and Windows file systems ignore case by default. */
+function samePath(a: string, b: string): boolean {
+  return process.platform === "darwin" || process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+/** Adds a target. A `folder` target that is not on this machine is added all the same, for the other machines. */
 export async function targetAdd(opts: TargetAddOptions): Promise<TargetAddResult> {
   checkTargetName(opts.name);
-  const path = absolutePath(opts.path, "--path");
+  if ((opts.path === undefined) === (opts.folder === undefined)) {
+    throw new WowgetError("usage", '"target add" needs either --path or --folder.');
+  }
   const manifest = await readManifest(opts.manifestPath);
   if (findTarget(manifest, opts.name)) {
     throw new WowgetError("duplicate", `A target named "${opts.name}" is already in the manifest.`);
   }
-  const clash = manifest.targets.find((t) => resolve(expandHome(t.path)) === path);
-  if (clash) throw new WowgetError("usage", `${path} is already the path of target "${clash.name}".`);
-  const createdAddonsDir = await ensureDir(path);
-  const updated = await addTarget(opts.manifestPath, opts.name, { path, flavor: opts.flavor });
-  return { target: findTarget(updated, opts.name)!, createdAddonsDir };
+  let target: { path: string } | { folder: string };
+  let path: string | undefined;
+  if (opts.folder !== undefined) {
+    if (!isVersionFolderName(opts.folder)) {
+      throw new WowgetError("usage", `--folder "${opts.folder}" must be a single folder name in the game directory, such as "_retail_".`);
+    }
+    const folder = opts.folder;
+    // Game directories are on case-insensitive file systems on macOS and Windows.
+    const clash = manifest.targets.find((t) => t.folder?.toLowerCase() === folder.toLowerCase());
+    if (clash) throw new WowgetError("usage", `${folder} is already the folder of target "${clash.name}".`);
+    target = { folder };
+    path = await findVersionFolder(folder, gameDirsFor(opts));
+  } else {
+    path = absolutePath(opts.path!, "--path");
+    target = { path };
+  }
+  const gameDirs = gameDirsFor(opts);
+  // A folder target not on this machine would resolve to its folder in any game directory once
+  // that folder exists, which creating the new target's directory could make happen.
+  const possiblePaths = (t: ResolvedTarget | AbsentTarget): Promise<string[]> =>
+    Promise.all(t.path !== undefined ? [realDir(t.path)] : gameDirs.map((g) => realDir(join(g, t.folder, "Interface", "AddOns"))));
+  const located = await locateTargets(manifest.targets, gameDirs);
+  const mine = path !== undefined ? [await realDir(path)] : await possiblePaths({ name: opts.name, flavor: opts.flavor, folder: opts.folder! });
+  for (const t of located) {
+    if ((await possiblePaths(t)).some((p) => mine.some((m) => samePath(p, m)))) {
+      const what = path !== undefined ? path : `the ${opts.folder} folder`;
+      throw new WowgetError("usage", `${what} is already the AddOns directory of target "${t.name}", or would be once it exists.`);
+    }
+  }
+  const createdAddonsDir = path !== undefined && (await ensureDir(path));
+  const updated = await addTarget(opts.manifestPath, opts.name, { ...target, flavor: opts.flavor });
+  return { target: targetInfo(findTarget(updated, opts.name)!, path), createdAddonsDir };
+}
+
+/**
+ * Whether the `path` target `target` can become a `folder` target: its path must be
+ * `<game dir>/<folder>/Interface/AddOns` for the game directory a folder target would locate on
+ * this machine, so the conversion changes nothing here. `others` are checked for the same folder.
+ */
+async function portableCheck(
+  target: NamedTarget,
+  others: NamedTarget[],
+  gameDirs: string[],
+): Promise<{ folder: string } | { reason: string }> {
+  if (target.path === undefined) return { reason: `already a folder target (${target.folder})` };
+  const addonsDir = resolve(expandHome(target.path));
+  const interfaceDir = dirname(addonsDir);
+  const folder = basename(dirname(interfaceDir));
+  if (!samePath(basename(addonsDir), "AddOns") || !samePath(basename(interfaceDir), "Interface") || !isVersionFolderName(folder)) {
+    return { reason: `${target.path} is not <game dir>/<version folder>/Interface/AddOns` };
+  }
+  const located = await findVersionFolder(folder, gameDirs);
+  if (located === undefined || !samePath(located, addonsDir)) {
+    const where = located ? `would locate ${located} instead` : `would not be found in ${gameDirs.join(", ") || "any game directory"}`;
+    return { reason: `a folder target ${folder} ${where}` };
+  }
+  // Game directories are on case-insensitive file systems on macOS and Windows.
+  const clash = others.find((t) => t.name !== target.name && t.folder?.toLowerCase() === folder.toLowerCase());
+  if (clash) return { reason: `${folder} is already the folder of target "${clash.name}"` };
+  return { folder };
+}
+
+export interface TargetPortableOptions extends GameDirOptions {
+  manifestPath: string;
+  /** Targets to convert; empty or absent means every `path` target. */
+  names?: string[];
+}
+
+export interface TargetPortableResult {
+  /** Targets now written as `folder`, with the AddOns directory they locate here (unchanged). */
+  converted: TargetInfo[];
+  /** Targets left as they were, with the reason. */
+  skipped: { name: string; reason: string }[];
+}
+
+/**
+ * Rewrites `path` targets as `folder` targets where that locates the same AddOns directory on this
+ * machine, so the manifest can be shared with machines that have the game somewhere else.
+ */
+export async function targetPortable(opts: TargetPortableOptions): Promise<TargetPortableResult> {
+  const { text, manifest } = await readManifestText(opts.manifestPath);
+  const named = opts.names?.length ? opts.names : undefined;
+  if (named) {
+    const unknown = named.filter((n) => !findTarget(manifest, n));
+    if (unknown.length) {
+      const valid = manifest.targets.map((t) => t.name).join(", ") || "none";
+      throw new WowgetError("usage", `Unknown target ${unknown.map((n) => `"${n}"`).join(", ")}; the manifest has ${valid}.`);
+    }
+  }
+  const gameDirs = gameDirsFor(opts);
+  const selected = manifest.targets.filter((t) => (named ? named.includes(t.name) : t.path !== undefined));
+  // Checked in manifest order against the result so far, so two targets cannot take one folder.
+  let after = manifest.targets;
+  const folders = new Map<string, string>();
+  const converted: TargetInfo[] = [];
+  const skipped: TargetPortableResult["skipped"] = [];
+  for (const t of selected) {
+    const check = await portableCheck(t, after, gameDirs);
+    if ("reason" in check) {
+      skipped.push({ name: t.name, reason: check.reason });
+      continue;
+    }
+    folders.set(t.name, check.folder);
+    after = after.map((a) => (a.name === t.name ? { name: a.name, folder: check.folder, flavor: a.flavor } : a));
+    converted.push({ name: t.name, flavor: t.flavor, folder: check.folder, path: resolve(expandHome(t.path!)) });
+  }
+  if (folders.size) {
+    await writePlanned(opts.manifestPath, text, planTargetFolders(text, folders, opts.manifestPath));
+  }
+  return { converted, skipped };
 }
 
 export interface RemoveEntry {
@@ -417,7 +684,7 @@ function stoppedAfter(err: unknown, done: RemoveEntry[]): unknown {
   );
 }
 
-export interface TargetRemoveOptions extends Pick<OpsOptions, "manifestPath" | "state"> {
+export interface TargetRemoveOptions extends Pick<OpsOptions, "manifestPath" | "state" | "env" | "gameDirs" | "onEvent"> {
   name: string;
 }
 
@@ -438,11 +705,12 @@ export async function targetRemove(opts: TargetRemoveOptions): Promise<TargetRem
   const target = findTarget(manifest, opts.name);
   if (!target) throw new WowgetError("not_found", `No target named "${opts.name}" in the manifest.`);
   const plan = planRemoveTarget(text, target.name, opts.manifestPath);
+  const [located] = await locateTargets([target], gameDirsFor(opts));
   const addons: RemoveEntry[] = [];
   try {
     for (const active of opts.state.listActiveInstalls(target.name)) {
       const name = findAddon(manifest, active.addon)?.name ?? active.addon;
-      const result = await uninstall({ target: target.name, addon: name, targetDir: target.path, state: opts.state });
+      const result = await uninstallFrom(located!, name, opts.state, opts.onEvent);
       addons.push(removeEntry(name, target.name, result));
     }
     await writePlanned(opts.manifestPath, text, plan.text);
@@ -491,7 +759,7 @@ function onTarget(target: string, err: unknown): unknown {
 
 /** A target `add` installed on, with what is needed to undo it. */
 interface AddDone {
-  target: NamedTarget;
+  target: ResolvedTarget;
   entry: AddEntry;
   /** The addon's active install on the target before this one, if any. */
   previous?: InstallRecord;
@@ -561,7 +829,7 @@ export async function add(opts: AddOptions): Promise<AddResult> {
   const name = existing?.name ?? inferredName ?? defaultAddonName(spec);
 
   let entry: AddonEntry;
-  let installTargets: NamedTarget[];
+  let installTargets: ResolvedTarget[];
   let commitManifest: () => Promise<unknown>;
 
   if (existing) {
@@ -595,7 +863,8 @@ export async function add(opts: AddOptions): Promise<AddResult> {
   } else {
     entry = { name, source: opts.source, prerelease: opts.prerelease ?? false };
     if (opts.pin !== undefined) entry.pin = opts.pin;
-    if (ctx.targets.length < ctx.manifest.targets.length) entry.targets = ctx.targets.map((t) => t.name);
+    // Without a filter the addon is on every target, also those skipped because they are not on this machine.
+    if (opts.targets?.length && ctx.targets.length < ctx.manifest.targets.length) entry.targets = ctx.targets.map((t) => t.name);
     // Catch an entry the manifest would reject before downloading anything.
     try {
       parseManifest(appendAddonText(await readFile(opts.manifestPath, "utf8"), entry));
@@ -670,7 +939,7 @@ export async function add(opts: AddOptions): Promise<AddResult> {
 
 // remove
 
-export interface RemoveOptions extends Pick<OpsOptions, "manifestPath" | "state" | "targets"> {
+export interface RemoveOptions extends Pick<OpsOptions, "manifestPath" | "state" | "targets" | "env" | "gameDirs" | "onEvent"> {
   name: string;
 }
 
@@ -708,11 +977,13 @@ export async function remove(opts: RemoveOptions): Promise<RemoveResult> {
     : planRemoveAddon(text, entry.name, opts.manifestPath);
 
   const addons: RemoveEntry[] = [];
+  const all = await locateTargets(manifest.targets, gameDirsFor(opts));
+  await checkDistinctDirs(all, opts.manifestPath);
   // Without a filter every target is checked, so installs left behind by a hand edit go too.
-  const targets = [...(filtered ? selected : manifest.targets)].sort((a, b) => byName(a.name, b.name));
+  const targets = all.filter((t) => !filtered || dropped.has(t.name)).sort((a, b) => byName(a.name, b.name));
   try {
     for (const target of targets) {
-      const result = await uninstall({ target: target.name, addon: entry.name, targetDir: target.path, state: opts.state });
+      const result = await uninstallFrom(target, entry.name, opts.state, opts.onEvent);
       if (filtered || on.includes(target.name) || result.wasInstalled) addons.push(removeEntry(entry.name, target.name, result));
     }
     await writePlanned(opts.manifestPath, text, next);
@@ -740,11 +1011,11 @@ export interface ListEntry {
 
 export interface ListResult {
   /** The targets listed. */
-  targets: NamedTarget[];
+  targets: ResolvedTarget[];
   addons: ListEntry[];
 }
 
-export async function list(opts: Pick<OpsOptions, "manifestPath" | "state" | "targets">): Promise<ListResult> {
+export async function list(opts: Pick<OpsOptions, "manifestPath" | "state" | "targets" | "env" | "gameDirs" | "onEvent">): Promise<ListResult> {
   const loaded = await load(opts);
   const addons: ListEntry[] = [];
   for (const { entry, target } of rowsFor(loaded, loaded.manifest.addons)) {
@@ -1254,7 +1525,7 @@ export async function reconcile(opts: ReconcileOptions): Promise<ReconcileResult
   if (registry.stale) opts.onEvent?.({ type: "registry:stale", message: registry.stale });
   // The cached catalogue only: reconcile does not download it.
   const hints = { registry: enabledEntries(registry.entries), catalog: await readCachedCatalog(ctx.cacheDir) };
-  const discovered: { target: NamedTarget; group: UnmanagedAddon }[] = [];
+  const discovered: { target: ResolvedTarget; group: UnmanagedAddon }[] = [];
   for (const target of targets) {
     for (const group of await scanUnmanaged(target.path, target.name, opts.state, hints)) {
       discovered.push({ target, group });
@@ -1336,13 +1607,15 @@ export async function reconcile(opts: ReconcileOptions): Promise<ReconcileResult
 
 // doctor
 
-export interface DoctorOptions extends Pick<OpsOptions, "manifestPath" | "state" | "targets" | "cacheDir"> {
+export interface DoctorOptions extends Pick<OpsOptions, "manifestPath" | "state" | "targets" | "cacheDir" | "env" | "gameDirs" | "onEvent"> {
   clean?: boolean;
 }
 
 export interface DoctorResult {
   targets: DoctorTargetReport[];
   issues: DoctorIssue[];
+  /** Suggestions that are not problems; they do not make doctor fail. */
+  hints: DoctorHint[];
   cleaned: string[];
 }
 
@@ -1354,11 +1627,26 @@ export async function doctor(opts: DoctorOptions): Promise<DoctorResult> {
   const issues: DoctorIssue[] = [];
   const cleaned: string[] = [];
 
+  const hints: DoctorHint[] = [];
+  const gameDirs = gameDirsFor(opts);
+
   for (const target of loaded.targets) {
     const res = await inspectTarget(target, loaded.manifest, opts.state, clean);
     targets.push(res.report);
     issues.push(...res.issues);
     cleaned.push(...res.cleaned);
+
+    const named = findTarget(loaded.manifest, target.name)!;
+    if (named.path === undefined) continue;
+    const check = await portableCheck(named, loaded.manifest.targets, gameDirs);
+    if ("folder" in check) {
+      hints.push({
+        kind: "portable_target",
+        target: target.name,
+        folder: check.folder,
+        message: `${target.name}: can be written as folder ${check.folder}, so the manifest also works on machines with the game elsewhere; run "wowget target portable ${target.name}".`,
+      });
+    }
   }
 
   for (const dir of await findStaleCacheDirs(cacheDir, opts.state)) {
@@ -1373,7 +1661,7 @@ export async function doctor(opts: DoctorOptions): Promise<DoctorResult> {
     }
   }
 
-  return { targets, issues, cleaned };
+  return { targets, issues, hints, cleaned };
 }
 
 // search
