@@ -91,7 +91,8 @@ gh pr comment <pr> --body "@codex review"
 ```
 
 Go back to step 1 for that second review. When it prints more than 0, the review you just
-handled was the second one; go to step 6. When a round changed no code, there is nothing new to
+handled was the second one: push any fixes you made for it, without commenting, and go to
+step 6. When a round changed no code, there is nothing new to
 review.
 
 Handle the second review's findings as in steps 2 to 4, with one exception: a finding that is
