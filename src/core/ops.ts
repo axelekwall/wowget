@@ -566,12 +566,12 @@ export async function targetAdd(opts: TargetAddOptions): Promise<TargetAddResult
   const gameDirs = gameDirsFor(opts);
   // A folder target not on this machine would resolve to its folder in any game directory once
   // that folder exists, which creating the new target's directory could make happen.
-  const possiblePaths = (t: ResolvedTarget | AbsentTarget): string[] =>
-    t.path !== undefined ? [resolve(expandHome(t.path))] : gameDirs.map((g) => join(g, t.folder, "Interface", "AddOns"));
+  const possiblePaths = (t: ResolvedTarget | AbsentTarget): Promise<string[]> =>
+    Promise.all(t.path !== undefined ? [realDir(t.path)] : gameDirs.map((g) => realDir(join(g, t.folder, "Interface", "AddOns"))));
   const located = await locateTargets(manifest.targets, gameDirs);
-  const mine = path !== undefined ? [path] : possiblePaths({ name: opts.name, flavor: opts.flavor, folder: opts.folder! });
+  const mine = path !== undefined ? [await realDir(path)] : await possiblePaths({ name: opts.name, flavor: opts.flavor, folder: opts.folder! });
   for (const t of located) {
-    if (possiblePaths(t).some((p) => mine.some((m) => samePath(p, m)))) {
+    if ((await possiblePaths(t)).some((p) => mine.some((m) => samePath(p, m)))) {
       const what = path !== undefined ? path : `the ${opts.folder} folder`;
       throw new WowgetError("usage", `${what} is already the AddOns directory of target "${t.name}", or would be once it exists.`);
     }
@@ -595,7 +595,7 @@ async function portableCheck(
   const addonsDir = resolve(expandHome(target.path));
   const interfaceDir = dirname(addonsDir);
   const folder = basename(dirname(interfaceDir));
-  if (basename(addonsDir) !== "AddOns" || basename(interfaceDir) !== "Interface" || !isVersionFolderName(folder)) {
+  if (!samePath(basename(addonsDir), "AddOns") || !samePath(basename(interfaceDir), "Interface") || !isVersionFolderName(folder)) {
     return { reason: `${target.path} is not <game dir>/<version folder>/Interface/AddOns` };
   }
   const located = await findVersionFolder(folder, gameDirs);

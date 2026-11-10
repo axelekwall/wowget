@@ -806,7 +806,7 @@ describe("folder targets", () => {
     const { root, manifestPath } = await setup();
     const gameDir = join(root, "wow");
     await fakeVersionFolder(gameDir, "_forever_");
-    await ops.init({ manifestPath, path: join(root, "WOW", "_forever_", "Interface", "AddOns") });
+    await ops.init({ manifestPath, path: join(root, "WOW", "_forever_", "interface", "addons") });
     const result = await ops.targetPortable({ manifestPath, gameDirs: [gameDir] });
     expect(result.converted.map((t) => t.folder)).toEqual(["_forever_"]);
   });
@@ -848,6 +848,17 @@ describe("folder targets", () => {
     const err = await ops.list(opts).catch((e) => e);
     expect(err.code).toBe("manifest");
     expect(err.message).toContain('Targets "forever" and "other" both use');
+  });
+
+  test.skipIf(process.platform === "win32")("target add refuses a path that reaches another target's directory through a symlink (symlinks)", async () => {
+    const { root, manifestPath, opts } = await setup();
+    const real = join(root, "real", "AddOns");
+    await mkdir(real, { recursive: true });
+    await symlink(join(root, "real"), join(root, "link"));
+    await ops.init({ manifestPath, path: real });
+    const refused = await ops.targetAdd({ ...opts, name: "other", path: join(root, "link", "AddOns"), flavor: "forever" }).catch((e) => e);
+    expect(refused.code).toBe("usage");
+    expect(refused.message).toContain('target "forever"');
   });
 
   test("target add --folder refuses a folder another target has and creates the AddOns directory when found", async () => {
