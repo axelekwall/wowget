@@ -78,19 +78,26 @@ what changed.
 ## 5. Request one re-review
 
 Request a re-review **once per pull request**: after the first review, when that round changed
-code. Push, then comment on the pull request:
+code. A request made earlier, possibly by another session, counts, so check first:
+
+```
+gh pr view <pr> --json comments -q '[.comments[] | select(.body | test("^\\s*@codex review"))] | length'
+```
+
+When that prints 0, push, then comment on the pull request:
 
 ```
 gh pr comment <pr> --body "@codex review"
 ```
 
-Go back to step 1 for that second review and handle its findings the same way, but do not
-request a third. When a round changed no code, there is nothing new to review.
+Go back to step 1 for that second review. When it prints more than 0, the review you just
+handled was the second one; go to step 6. When a round changed no code, there is nothing new to
+review.
 
-After the second review, report instead of asking again: what it found, what you fixed and
-what is left. When the same kind of problem keeps coming back in a new place, say so; that
-pattern usually means the design needs a different shape, not another patch, so give the
-options instead of patching again.
+Handle the second review's findings as in steps 2 to 4, with one exception: a finding that is
+another instance of a kind of problem already fixed in this pull request is not patched. That
+pattern usually means the design needs a different shape, so answer its thread with what you
+found and list it in your report with the options. Never request a third review.
 
 ## 6. Report
 
