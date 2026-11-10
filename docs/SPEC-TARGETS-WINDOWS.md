@@ -82,6 +82,14 @@ flavor = "classic"
   machine.
 - `add` without `--target` writes no `targets` list, so the addon stays on
   every target, also those not on this machine; `install` there picks it up.
+- Two targets must not use the same AddOns directory (compared
+  case-insensitively on macOS and Windows), since each keeps its own record of
+  the folders it owns. `target add` refuses a target that would, including
+  where a folder target not on this machine would resolve. A folder target is
+  located on every run, so this can still happen later (a version folder is
+  deleted, `WOWGET_GAME_DIR` changes): every command that loads targets, and
+  `remove`, then fails with a `manifest` error naming both targets. `target
+  list`, `target remove` and `target portable` still run, to fix it.
 - `remove` and `target remove` on a target not on this machine deactivate its
   state rows without touching any files, with a `target:absent` event for
   each install forgotten. Folder names are compared case-insensitively when

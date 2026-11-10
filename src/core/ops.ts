@@ -142,13 +142,35 @@ function selectTargets(manifest: Manifest, manifestPath: string, filter: string[
 }
 
 /**
+ * Throws when two located targets share an AddOns directory. Each target keeps its own record of
+ * the folders it owns, so a shared directory would let one overwrite or delete the other's addons.
+ * Folder targets are located on every run, so this can change after the targets were added.
+ */
+function checkDistinctDirs(located: (ResolvedTarget | AbsentTarget)[], manifestPath: string): void {
+  const present = located.filter((t): t is ResolvedTarget => t.path !== undefined);
+  for (const [i, a] of present.entries()) {
+    const dir = resolve(expandHome(a.path));
+    const b = present.slice(i + 1).find((t) => samePath(resolve(expandHome(t.path)), dir));
+    if (b) {
+      throw new WowgetError(
+        "manifest",
+        `Targets "${a.name}" and "${b.name}" both use ${dir}; edit ${manifestPath} so each target has its own AddOns directory.`,
+      );
+    }
+  }
+}
+
+/**
  * Reads the manifest and locates the selected targets. Without a filter, targets that are not on
  * this machine are skipped with an event; a filter naming one is an error.
  */
 async function load(opts: Pick<OpsOptions, "manifestPath" | "targets" | "env" | "gameDirs" | "onEvent">): Promise<Loaded> {
   const manifest = await readManifest(opts.manifestPath);
   const gameDirs = gameDirsFor(opts);
-  const located = await locateTargets(selectTargets(manifest, opts.manifestPath, opts.targets), gameDirs);
+  const selected = new Set(selectTargets(manifest, opts.manifestPath, opts.targets).map((t) => t.name));
+  const all = await locateTargets(manifest.targets, gameDirs);
+  checkDistinctDirs(all, opts.manifestPath);
+  const located = all.filter((t) => selected.has(t.name));
   const targets = located.filter((t): t is ResolvedTarget => t.path !== undefined);
   const absent = located.filter((t): t is AbsentTarget => t.path === undefined);
   if (absent.length && (opts.targets?.length || !targets.length)) {
@@ -936,11 +958,10 @@ export async function remove(opts: RemoveOptions): Promise<RemoveResult> {
     : planRemoveAddon(text, entry.name, opts.manifestPath);
 
   const addons: RemoveEntry[] = [];
+  const all = await locateTargets(manifest.targets, gameDirsFor(opts));
+  checkDistinctDirs(all, opts.manifestPath);
   // Without a filter every target is checked, so installs left behind by a hand edit go too.
-  const targets = await locateTargets(
-    [...(filtered ? selected : manifest.targets)].sort((a, b) => byName(a.name, b.name)),
-    gameDirsFor(opts),
-  );
+  const targets = all.filter((t) => !filtered || dropped.has(t.name)).sort((a, b) => byName(a.name, b.name));
   try {
     for (const target of targets) {
       const result = await uninstallFrom(target, entry.name, opts.state, opts.onEvent);

@@ -811,6 +811,33 @@ describe("folder targets", () => {
     expect(result.converted.map((t) => t.folder)).toEqual(["_forever_"]);
   });
 
+  test("commands fail when a folder target comes to resolve to another target's directory", async () => {
+    const { root, manifestPath, opts } = await setup();
+    const first = join(root, "first");
+    const second = join(root, "second");
+    await fakeVersionFolder(first, "_forever_");
+    await fakeVersionFolder(second, "_forever_");
+    const gameDirs = [first, second];
+    await ops.init({ manifestPath, gameDirs, portable: true });
+    await ops.targetAdd({ manifestPath, name: "other", path: join(second, "_forever_", "Interface", "AddOns"), flavor: "forever", gameDirs });
+    const a = addonA();
+    await ops.add({ ...opts, fetch: a.fetch, gameDirs, source: a.source, targets: ["forever"] });
+    expect((await ops.list({ ...opts, gameDirs })).addons.map((r) => r.target)).toEqual(["forever"]);
+
+    // The first install goes away, so the folder target now resolves in the second game directory.
+    await rm(join(first, "_forever_"), { recursive: true });
+    for (const run of [() => ops.list({ ...opts, gameDirs, targets: ["other"] }), () => ops.remove({ ...opts, gameDirs, name: "A" })]) {
+      const err = await run().catch((e) => e);
+      expect(err.code).toBe("manifest");
+      expect(err.message).toContain('Targets "forever" and "other" both use');
+    }
+    // target list still works, to see and fix the problem.
+    expect((await ops.targetList({ manifestPath, gameDirs })).targets.map((t) => t.path)).toEqual([
+      join(second, "_forever_", "Interface", "AddOns"),
+      join(second, "_forever_", "Interface", "AddOns"),
+    ]);
+  });
+
   test("target add --folder refuses a folder another target has and creates the AddOns directory when found", async () => {
     const { root, manifestPath, opts } = await setup();
     const gameDir = join(root, "wow");
