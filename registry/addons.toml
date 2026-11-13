@@ -708,3 +708,9 @@ name = "YUI-Dialogue"
 source = "github:Peterodox/YUI-Dialogue"
 flavors = ["forever", "mainline", "classic", "bcc", "mists"]
 folders = ["DialogueUI"]
+
+[[addon]]
+name = "social_diary"
+source = "github:social-diary/social_diary"
+flavors = ["forever"]
+folders = ["social_diary"]
