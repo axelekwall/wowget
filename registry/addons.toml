@@ -354,7 +354,7 @@ folders = ["ls_UI", "ls_UI_Options"]
 [[addon]]
 name = "ls_Toasts"
 source = "github:ls-/ls_Toasts"
-flavors = ["mainline"]
+flavors = ["forever", "mainline"]
 folders = ["ls_Toasts"]
 
 [[addon]]
@@ -575,7 +575,7 @@ folders = ["GSE", "GSE_Actionbar", "GSE_GUI", "GSE_LDB", "GSE_Options", "GSE_Uti
 name = "Enhance QoL"
 source = "wowi:26888"
 flavors = ["mainline"]
-folders = ["EnhanceQoL", "EnhanceQoLBags", "EnhanceQoLChatSocial", "EnhanceQoLClassBuffReminder", "EnhanceQoLCooldownPanels", "EnhanceQoLCooldownPulse", "EnhanceQoLDamageMeter", "EnhanceQoLDungeonRaid", "EnhanceQoLMover", "EnhanceQoLQuickActions", "EnhanceQoLResourceBars", "EnhanceQoLSharedMedia", "EnhanceQoLSkinner", "EnhanceQoLSound", "EnhanceQoLTeleportCompendium", "EnhanceQoLTooltip", "EnhanceQoLUnitFrames", "EnhanceQoLVendor"]
+folders = ["EnhanceQoL", "EnhanceQoLBags", "EnhanceQoLChatSocial", "EnhanceQoLClassBuffReminder", "EnhanceQoLCooldownPanels", "EnhanceQoLCooldownPulse", "EnhanceQoLDamageMeter", "EnhanceQoLDungeonRaid", "EnhanceQoLItems", "EnhanceQoLMover", "EnhanceQoLQuickActions", "EnhanceQoLResourceBars", "EnhanceQoLSharedMedia", "EnhanceQoLSkinner", "EnhanceQoLSound", "EnhanceQoLTeleportCompendium", "EnhanceQoLTooltip", "EnhanceQoLUnitFrames", "EnhanceQoLVendor"]
 
 [[addon]]
 name = "What's Training"
@@ -646,7 +646,7 @@ folders = ["Skillet"]
 [[addon]]
 name = "Deathlog"
 source = "wowi:27170"
-flavors = ["classic", "bcc"]
+flavors = ["forever", "classic", "bcc"]
 folders = ["Deathlog", "DeathlogData", "DeathNotificationLib", "DeathNotificationLibData", "ProfanityLib", "ProfanityLibData"]
 
 [[addon]]
