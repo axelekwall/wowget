@@ -8,7 +8,7 @@
 name = "Questie"
 source = "github:Questie/Questie"
 flavors = ["forever", "classic", "bcc", "wrath", "mists"]
-folders = ["Questie", "QuestieDB"]
+folders = ["Questie", "QuestieDB", "QuestieTrace"]
 
 [[addon]]
 name = "WeakAuras"
@@ -99,7 +99,7 @@ folders = ["SilverDragon", "SilverDragon_History", "SilverDragon_Overlay", "Silv
 [[addon]]
 name = "Titan Panel"
 source = "wowi:8092"
-flavors = ["classic"]
+flavors = ["classic", "bcc"]
 folders = ["Titan", "TitanAlts", "TitanAmmo", "TitanBag", "TitanClassic", "TitanClock", "TitanGold", "TitanLocation", "TitanLootType", "TitanPerformance", "TitanPost", "TitanRegen", "TitanRepair", "TitanUI", "TitanVolume", "TitanXP"]
 
 [[addon]]
@@ -233,7 +233,7 @@ folders = ["Mapster"]
 [[addon]]
 name = "Quartz"
 source = "github:Nevcairiel/Quartz"
-flavors = ["mainline", "classic", "bcc", "cata", "mists"]
+flavors = ["forever", "mainline", "classic", "bcc", "cata", "mists"]
 folders = ["Quartz"]
 
 [[addon]]
@@ -505,7 +505,7 @@ folders = ["Hekili"]
 [[addon]]
 name = "MaxDps"
 source = "wowi:24637"
-flavors = ["mainline"]
+flavors = ["mists"]
 folders = ["MaxDps"]
 
 [[addon]]
