@@ -606,8 +606,27 @@ describe("folder targets", () => {
   function addonA() {
     const url = "https://example.com/A.zip";
     const zip = zipSync({ "A/A_Forever.toc": text(""), "A/A_Vanilla.toc": text("") });
-    return { source: `url:${url}`, fetch: fakeFetch({ [url]: () => new Response(zip) }).fetch };
+    const fake = fakeFetch({ [url]: () => new Response(zip) });
+    return { source: `url:${url}`, fetch: fake.fetch, requests: fake.requests };
   }
+
+  test("a url addon on targets of two flavors is downloaded once", async () => {
+    const { root, manifestPath, opts } = await setup();
+    const game = join(root, "wow");
+    await fakeVersionFolder(game, "_forever_");
+    await fakeVersionFolder(game, "_classic_era_");
+    await ops.init({ manifestPath, gameDirs: [game], portable: true });
+    const a = addonA();
+    await addAddon(manifestPath, { name: "A", source: a.source, prerelease: false });
+
+    const installed = await ops.install({ ...opts, fetch: a.fetch, gameDirs: [game] });
+    expect(installed.addons.map((r) => [r.target, r.status])).toEqual([
+      ["era", "installed"],
+      ["forever", "installed"],
+    ]);
+    // Two downloads would race to rename onto the same cache file, which fails on Windows.
+    expect(a.requests).toHaveLength(1);
+  });
 
   test("init writes version folders, which another machine finds in its own game directory", async () => {
     const { root, manifestPath, opts } = await setup();

@@ -256,7 +256,10 @@ function resolveRow(ctx: Context, { entry, target }: Row): Promise<Resolved> {
   const spec = parseSource(entry.source);
   // The URL source keeps its cache record per addon, so addons sharing a URL each resolve.
   const addon = spec.kind === "url" ? entry.name.toLowerCase() : null;
-  const key = JSON.stringify([entry.source, target.flavor, entry.prerelease, entry.pin ?? null, addon]);
+  // It serves one file whatever the flavor, so targets of different flavors share one resolution
+  // instead of downloading in parallel and racing to rename onto the same cache file.
+  const flavor = spec.kind === "url" ? null : target.flavor;
+  const key = JSON.stringify([entry.source, flavor, entry.prerelease, entry.pin ?? null, addon]);
   let pending = ctx.resolutions.get(key);
   if (!pending) {
     pending = sourceFor(spec).resolve({
