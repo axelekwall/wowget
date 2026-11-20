@@ -237,7 +237,13 @@ Rules carried over from the Bun client:
 - No `Add-Type` with C# source: it compiles an unsigned DLL at run time, which
   Smart App Control may block. Use cmdlets and existing .NET types only.
 - File writes use .NET (`[IO.File]::WriteAllText` with UTF-8 without BOM) and
-  are atomic: write `<path>.tmp`, then `[IO.File]::Move(tmp, path, $true)`.
+  are atomic. A path that is a symlink (a manifest kept in a dotfiles
+  repository) is written through, as the Bun client does: resolve the final
+  target first (`[IO.FileInfo]::new(path).ResolveLinkTarget($true)`), write
+  `<target>.tmp` next to the target, then `[IO.File]::Move(tmp, target,
+  $true)`. The symlink itself is never replaced. On macOS and Linux the
+  target's file mode is copied to the new file (`[IO.File]::GetUnixFileMode`
+  and `SetUnixFileMode`).
 
 ## Locations
 
@@ -302,20 +308,41 @@ There is no database. `state.db` from the Bun client is not read.
 
 ### TOML import
 
-When the manifest path does not exist and `wowget.toml` exists in the same
-directory (or `WOWGET_MANIFEST` names a `.toml` file), the first command
-converts it:
+The first command converts a TOML manifest when either:
 
-- A reader for the subset wowget writes: `[targets.<name>]` tables with
-  string values, `[[addon]]` arrays of tables with string, boolean and
-  string-array values, `#` comments, basic strings with the escapes TOML
-  defines. Anything else is a `manifest` error that names the line and asks
-  the user to convert by hand.
-- Writes `wowget.json` next to it and leaves the TOML file untouched. Prints
-  that comments were dropped and that the old file can be deleted.
-- `WOWGET_MANIFEST` pointing at a `.toml` file: the converted file is written
-  with a `.json` extension next to it and the command tells the user to point
-  the variable at it.
+- the manifest path, from `--manifest`, `WOWGET_MANIFEST` or the default,
+  ends in `.toml`; or
+- the default path (`wowget.json`) does not exist and `wowget.toml` exists in
+  the same directory.
+
+The reader accepts every TOML 1.0 document `Bun.TOML.parse` accepts that holds
+the manifest's value types, since users may have edited the file by hand:
+
+- basic and literal strings, single-line and multi-line, with every escape TOML
+  defines;
+- integers, floats and booleans (read, then rejected by validation where the
+  manifest wants a string, as today);
+- arrays over several lines with trailing commas, inline tables, dotted and
+  quoted keys, standard tables and arrays of tables, comments.
+
+Dates and times are a `manifest` error naming the line, since no manifest key
+takes one. The reader is a separate file (`TomlImport.ps1`) used only here,
+tested against every TOML file in the repository's test fixtures and against
+the TOML test suite's valid cases for the types above.
+
+Conversion:
+
+- Resolves symlinks first and writes `wowget.json` next to the resolved TOML
+  file, so a manifest kept in a dotfiles repository is converted inside that
+  repository. The TOML file is left untouched.
+- When the TOML path was a symlink, also creates a `wowget.json` symlink next
+  to that link, pointing at the new file, on macOS and Linux. On Windows,
+  where creating a symlink needs Developer Mode or administrator rights, it
+  prints the path to point `WOWGET_MANIFEST` at instead.
+- When `--manifest` or `WOWGET_MANIFEST` named the `.toml` file, the command
+  runs on the converted manifest and tells the user to point the flag or
+  variable at the `.json` file from now on.
+- Prints that comments were dropped and that the old file can be deleted.
 
 ### Markers (`.wowget.json`)
 
