@@ -582,10 +582,14 @@ Use ASCII markers and optional PowerShell terminal color for interactive
 output. Redirected output and `NO_COLOR` use plain text. `--json` emits
 the same outcomes as data without formatting. Keep the summary in normal
 terminal scrollback with no full-screen or interactive UI and no new
-rendering dependency. [Terminal.Gui.Cli](https://github.com/tui-cs/cli)
-provides a CLI host for Terminal.Gui apps. If a richer formatter is needed
-later, evaluate a standalone option such as [Spectre.Console](https://github.com/spectreconsole/spectre.console)
-against the Windows distribution constraints.
+rendering dependency.
+
+[tui-cs/clet](https://github.com/tui-cs/clet) provides interactive terminal
+prompts and includes a non-interactive Markdown renderer (`clet md --cat`).
+That renderer is an option for richer summaries if needed later. Revisit
+packaging before adopting it: the upstream README currently describes its
+direct-download Windows binaries as unsigned, and wowget's normal install
+must work without an extra prerequisite.
 
 ### Data sent by sync
 
