@@ -300,6 +300,11 @@ flow of SPEC-SEARCH.md and SPEC-REGISTRY-SUGGEST.md. Details in
   sync by default and show how to opt out. Validate candidates and publish
   verified public metadata in batches, without linking it to contributors.
   Deliberate `wowget suggest` submissions remain available without accounts.
+- **Service operations on Cloudflare.** Cron Triggers and D1 run catalogue
+  imports, registry and suggestion verification, and housekeeping. GitHub
+  Actions handles development, deployment and releases. Benchmark the
+  full catalogue and representative ZIP work in phase 0. Use Workers
+  Paid if the full jobs cannot run reliably within Free limits.
 - **Release order.** Ship the account-free CLI with public search and
   resolution before the dashboard and device sync.
 - **Signed releases.** The project signs each release zip with its own ECDSA
