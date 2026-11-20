@@ -200,7 +200,8 @@ client/
   Wowget/
     Wowget.psd1, Wowget.psm1     module manifest and loader
     Paths.ps1                    locations, env overrides, game directory candidates
-    Manifest.ps1                 read, validate, write wowget.json; TOML import
+    Manifest.ps1                 read, validate, write wowget.json
+    TomlImport.ps1               one-time TOML manifest conversion
     Markers.ps1                  read and write .wowget.json markers
     Api.ps1                      wowget service client (resolve, registry, search, version, suggestions)
     Http.ps1                     one Invoke-WowgetHttp function; the only network call site
