@@ -231,8 +231,20 @@ reports the outcome.
 
 ### Accounts and device approval
 
-- Use [WebAuthn](https://www.w3.org/TR/webauthn-3/) discoverable passkeys
-  with user verification and an established server library. Choose a stable
+- Use Better Auth in the Worker with its built-in D1 support for dashboard
+  sessions, the Passkey plugin for browser registration and sign-in,
+  and the Device Authorization plugin for CLI approval. Prototype the
+  combination on the deployed Worker before building the dashboard.
+  Verify passkey-first signup with no email or phone collection,
+  first-session creation, and independent device revocation. Check
+  whether the account schema requires an email field. If it prevents
+  the intended signup flow, evaluate SimpleWebAuthn for verification
+  with wowget-managed sessions and device approval.
+  [Better Auth on D1](https://better-auth.com/blog/1-5),
+  [Passkey plugin](https://better-auth.com/docs/plugins/passkey),
+  [Device Authorization plugin](https://better-auth.com/docs/plugins/device-authorization),
+  and [SimpleWebAuthn](https://simplewebauthn.dev/docs/packages/server).
+- Use discoverable WebAuthn passkeys with user verification. Choose a stable
   relying-party domain before enrollment. Validate origin, RP ID and a
   short-lived, single-use challenge. Assign a random internal account ID
   and allow an optional display name. Signup requires no username,
@@ -249,6 +261,9 @@ reports the outcome.
   once for an opaque credential bound to the enrolled device. Store the
   credential verifier rather than the raw token on the service. The
   credential can use only that device's sync endpoints and revoke itself.
+  Enforce the device scope in wowget's API. Test that it cannot read or
+  modify another device or act as a dashboard session. The PowerShell
+  client only makes HTTP requests and opens the browser for approval.
 - Allow additional passkeys and issue a high-entropy, single-use recovery
   code for offline storage. Store only its hash. Successful recovery
   enrolls a replacement passkey and lets the user revoke existing devices
@@ -418,7 +433,8 @@ CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- versi
    imports and verification on Cloudflare and retire the legacy registry
    and suggestion workflows at the switch. The account-free CLI can ship
    at this point.
-3. Add passkey accounts, device approval, and the dashboard and sync for
+3. Prototype Better Auth signup, sessions and device approval on
+   Workers with D1. Then add the optional dashboard and sync for
    independent devices. Add discovery with a separate opt-out and batch
    publication. Test credentials and recovery, device isolation, stale
    reports and operation replay, and verify that account-free use never
