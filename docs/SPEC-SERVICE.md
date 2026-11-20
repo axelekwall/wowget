@@ -43,16 +43,23 @@ manages the registry and suggestion queue. The reasons are in PLAN.md,
     sync is bounded per device as well as per IP.
 
 - **Cloudflare Access** in front of `/admin/*`.
-- **Cron triggers** for small periodic work. Heavy work (downloading and
-  inspecting zips, parsing the 6 MB WoWInterface catalogue) runs in GitHub
-  Actions and pushes its results to the service through the admin API,
-  because the free plan limits CPU time per request.
+- **Cron Triggers and D1** schedule and track ongoing service work. Cron
+  queues catalogue imports, registry and suggestion checks, and bounded
+  housekeeping. Keep job status, attempts and retry times in D1. Scheduled
+  runs and the admin Recheck action use the same job handlers. Workers
+  claim and retry work in bounded batches. Add Cloudflare Queues or
+  Workflows if the job runner needs their delivery or retry features.
 
-Free-plan limits to confirm in phase 0 and record here: CPU time per request
-(believed 10 ms), subrequests per request (believed 50), D1 reads and writes
-per day (believed 5 million and 100,000),
-and FTS5 in D1 (believed supported). Measure the cold-cache request
-budget before fixing the resolve batch size.
+Start on Workers Free. Cloudflare documents 10 ms of active CPU per HTTP or
+cron invocation on Free, excluding I/O waits. Phase 0 benchmarks a full
+WoWInterface catalogue import and representative ZIP checks, including
+larger releases, as well as cold resolve batches. Confirm D1 quotas, FTS5
+and upstream request budgets. If full imports and checks do not fit Free
+with headroom, use Workers Paid (currently USD $5/month before usage
+overages). Consider Cloudflare Containers only if the existing Bun checker
+is more practical to run there. Host ongoing jobs on Cloudflare in either
+case. [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
+and [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/).
 
 ## API
 
@@ -310,32 +317,23 @@ CREATE TABLE suggestions (
 CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- version, updated_at
 ```
 
-- **Checks** (`flavors`, `folders`, `disabled`) need the zips, so they run in
-  GitHub Actions with the existing check logic: a daily scheduled workflow
-  reads `/v1/registry` and the queued suggestions, checks them, and posts
-  results to `POST /admin/api/checks`. The workflow authenticates with a
-  Cloudflare Access service token (GitHub secret). The admin interface can
-  start the workflow for one entry through `workflow_dispatch`.
-- **WoWInterface catalogue**: the same daily workflow downloads it, projects
-  the fields SPEC-SEARCH.md lists, and compares it with the previous day's
-  projection (kept as a workflow artifact). It posts only added, changed and
-  removed entries to `POST /admin/api/catalog` in chunks, all tagged with one
-  import id. The chunks go into staging tables (`catalog_staging` for added
-  and changed rows, `catalog_removed` for removed ids), never into the live
-  `catalog` table. Then it calls `POST /admin/api/catalog/commit` with that
-  id, which applies the staged rows to `catalog` in one D1 `batch()`:
-  `INSERT OR REPLACE … SELECT` from `catalog_staging`, `DELETE` of the
-  removed ids, and `DELETE` of that import's staging rows. A batch runs as one
-  transaction, so searches see the whole day's change or none of it, and the
-  unchanged rows stay where they are. D1 has no transaction across requests,
-  which is why the chunks are staged first. An import that is never committed
-  leaves only staging rows, which the next import deletes. The first import,
-  with no previous projection, stages every row the same way. Sending only the
-  difference keeps the daily D1 writes, FTS index updates included, to the
-  entries that changed.
+- **Checks** (`flavors`, `folders`, `disabled`): cron schedules stale entries
+  and queued suggestions, and the admin can enqueue a single recheck. Resolve
+  upstream metadata first. Reuse verification for unchanged releases and
+  inspect changed ZIPs in bounded jobs. Share inspection results across
+  flavors when they use the same archive. A transient upstream or compute
+  failure leaves the last verified registry entry in place and retries the
+  job. New candidates wait for verification.
+- **WoWInterface catalogue**: a scheduled Worker downloads and projects the
+  catalogue fields listed in SPEC-SEARCH.md. Compare against the live D1
+  catalogue and stage only changed rows and removed IDs. Apply the staged
+  changes in one D1 transaction after the entire import succeeds. Unchanged
+  entries remain in place. Failed or incomplete imports leave the last good
+  catalogue available. Track in-progress imports in D1 and clean up
+  abandoned staging data.
 - Accepting a suggestion copies its checked `flavors` and `folders` into a new
   registry entry at the bottom of the ranking and bumps the registry version.
-  Accepting an unchecked suggestion is not possible.
+  Only checked suggestions can be accepted.
 
 ## Admin interface
 
@@ -343,7 +341,7 @@ CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- versi
   client-side framework, so it needs no build step and no new front-end
   dependency.
 - Behind Cloudflare Access (an application on `/admin/*`, login with the
-  maintainer's email one-time code or GitHub). The Worker also verifies the
+  maintainer's email one-time code). The Worker also verifies the
   `Cf-Access-Jwt-Assertion` header against the Access team's keys, so a
   misconfigured route does not open the admin area.
 - Pages:
@@ -356,10 +354,11 @@ CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- versi
     request and rate-limit counters for the last 7 days. Show aggregate
     operational counters only.
 - Every change writes an audit row: time, actor, action, entry. The actor is
-  the Access user's email, or the service token's client id and name for the
-  GitHub Actions workflows.
-- `/admin/api/*` takes JSON for the GitHub Actions workflow and the release
-  workflow (`/admin/api/version`).
+  the Access user's email, the Cloudflare job identity for scheduled work,
+  or the release service token's client ID for version publication.
+- `/admin/api/version` accepts release metadata from the publication
+  workflow. Scheduled jobs use Cloudflare bindings and record their
+  results directly in D1.
 
 ## Repository and deployment
 
@@ -372,15 +371,18 @@ CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- versi
   stay as AGENTS.md describes; a service-only change uses `feat(service)` or
   `fix(service)` and does not cut a client release (the release workflow
   checks the paths).
+- GitHub Actions handles CI, deployment, and release publication.
+  Catalogue ingestion, registry and suggestion checks, retries, and
+  housekeeping run on Cloudflare after deployment. GitHub and WoWInterface
+  remain upstream addon sources.
 - Secrets live in Cloudflare and GitHub only. Setting them up is the
   maintainer's job; the repository holds none.
 
   | Secret | Where | Used for |
   |---|---|---|
   | GitHub token, read-only public access | Worker | `/v1/resolve`, GitHub search |
-  | GitHub fine-grained token, `actions: write` on this repository only | Worker | starting the check workflow from the admin interface |
   | IP-hash salt | Worker | rate-limit keys |
-  | Access service token (client id and secret) | GitHub Actions | the check, catalogue and release workflows calling `/admin/api/*` |
+  | Access service token (client id and secret) | GitHub Actions | release publication calling `/admin/api/version` |
   | Cloudflare API token, Workers and D1 edit | GitHub Actions | deploying the service |
   | Release signing key (ECDSA P-256 private key) | GitHub Actions, release job only | signing release zips |
 - Keeping the service code public adds no attack surface: the public client
@@ -407,13 +409,15 @@ CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- versi
 0. Confirm the platform limits. Deploy a skeleton with `/v1/version` and
    GitHub `/v1/resolve` behind `WOWGET_API_URL`, and measure CPU and upstream
    requests on cold batches, including older flavor-compatible builds
-   and pinned releases.
+   and pinned releases. Benchmark the full catalogue import and ZIP checks
+   on Cloudflare before choosing the production plan.
 1. Ship public resolution, the registry import and endpoint, version
    metadata and the release cache.
 2. Add public search, the web catalogue, catalogue imports, manual
-   suggestions and the private registry admin interface. Switch the
-   existing registry and suggestion workflows over. The account-free CLI
-   can ship at this point.
+   suggestions and the private registry admin interface. Run scheduled
+   imports and verification on Cloudflare and retire the legacy registry
+   and suggestion workflows at the switch. The account-free CLI can ship
+   at this point.
 3. Add passkey accounts, device approval, and the dashboard and sync for
    independent devices. Add discovery with a separate opt-out and batch
    publication. Test credentials and recovery, device isolation, stale
