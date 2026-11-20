@@ -1,44 +1,47 @@
 # wowget service
 
 The server side of the PowerShell client ([SPEC-POWERSHELL.md](SPEC-POWERSHELL.md)).
-It resolves releases, searches, serves the registry, takes registry
-suggestions, stores shared manifests and has a private admin interface. It
-replaces the registry file in the repository and the GitHub issue flow of
-SPEC-REGISTRY-SUGGEST.md. The reasons are in PLAN.md, "Decisions
-(2026-11-20)".
+Public endpoints resolve releases, search, serve the registry and accept addon
+suggestions. The public web catalogue uses the same search. An optional
+signed-in dashboard shows the last reported inventory for each device and
+queues changes for its next explicit sync. A separate private admin interface
+manages the registry and suggestion queue. The reasons are in PLAN.md,
+"Decisions (2026-11-20)".
 
 ## Goals
 
-1. The client asks one service for everything that needs the internet except
-   downloads, so it stays small and makes one request per command.
-2. No accounts for users. No personal data stored.
-3. Shared manifests are end-to-end encrypted: the service cannot read or
-   change them.
-4. One maintainer runs it on Cloudflare's free tier, with an admin interface
-   for the registry and the suggestion queue.
+1. Public web search and the normal CLI workflow work without an account.
+   Search and resolution receive only their request inputs. The public API
+   does not build a per-user inventory from those requests.
+2. The optional dashboard uses passkey accounts without email or phone
+   collection. Only enrolled devices upload the limited data needed for
+   dashboard and sync.
+3. Automatic public addon discovery defaults on for enrolled devices,
+   with a separate opt-out disclosed during installation and enrollment.
+   Public catalogue entries show verified public addon metadata.
+4. One maintainer runs the service on Cloudflare, starting on the free
+   tier. Confirm the relevant quotas during the prototypes.
 5. Anyone can run their own copy from this repository (`WOWGET_API_URL`).
 
 ## Platform
 
 - Cloudflare Workers, TypeScript, in `service/` in this repository, deployed
   with Wrangler.
-- **D1** (SQLite) for the registry, suggestions, search index, release cache
-  and an index of links (id, size, created, last write, last read day), which
-  the idle-link cron and the admin counters need because Durable Objects
-  cannot be listed.
-- **Durable Objects** with SQLite storage, one per shared link, for atomic
-  compare-and-swap.
-- **Rate limits** in three places, by window length:
+- **D1** (SQLite) for the registry, suggestions, search index and release
+  cache. The optional dashboard also uses D1 for accounts, credentials,
+  devices, last reports and pending operations. Publish and acknowledge
+  changes with conditional writes and transactions.
+- **Rate limits**:
   - **Short windows** (bursts per IP hash): the Workers Rate Limiting
-    binding. It only supports 10- and 60-second periods and counts per
-    Cloudflare location, so these limits are approximate. That is enough to
-    stop a client loop or a script. Counting costs no storage writes.
-  - **Per link** (reads and writes per hour): counters kept in the link's own
-    Durable Object, which sees every request for that link.
-  - **Per day** (link creations and suggestions per IP hash): a D1 table
-    `daily_counts (ip_hash, day, kind, count)`. Only those two rare endpoints
-    write it, so the writes stay small, and rows older than two days are
-    deleted by the daily cron.
+    binding. It supports 10- and 60-second periods and counts per
+    Cloudflare location, so these limits are approximate.
+  - **Per day** (suggestions and discovery submissions per IP hash): a D1
+    table `daily_counts (ip_hash, day, kind, count)`. The daily cron deletes
+    rows older than two days.
+  - Device authorization, passkey challenges and recovery have separate
+    request limits and short-lived challenges where applicable. Authenticated
+    sync is bounded per device as well as per IP.
+
 - **Cloudflare Access** in front of `/admin/*`.
 - **Cron triggers** for small periodic work. Heavy work (downloading and
   inspecting zips, parsing the 6 MB WoWInterface catalogue) runs in GitHub
@@ -47,10 +50,9 @@ SPEC-REGISTRY-SUGGEST.md. The reasons are in PLAN.md, "Decisions
 
 Free-plan limits to confirm in phase 0 and record here: CPU time per request
 (believed 10 ms), subrequests per request (believed 50), D1 reads and writes
-per day (believed 5 million and 100,000), Durable Object requests per day,
-and FTS5 in D1 (believed supported). The API is shaped so that every client
-request needs at most one D1 query per item and stays under the subrequest
-limit even with a cold cache (see `/v1/resolve`).
+per day (believed 5 million and 100,000),
+and FTS5 in D1 (believed supported). Measure the cold-cache request
+budget before fixing the resolve batch size.
 
 ## API
 
@@ -60,9 +62,12 @@ UTF-8), and send `Cache-Control` where noted. Errors are
 status. Codes: `bad_request`, `not_found`, `conflict`, `too_large`,
 `rate_limited` (with `Retry-After`), `upstream` (a source failed), `internal`.
 
-Every request from the client carries `User-Agent: wowget/<version>
-(<os>-<arch>)`. The service logs no IP addresses or user agents; rate limits
-use a salted hash of the IP that rotates daily.
+Every CLI request carries `User-Agent: wowget/<version> (<os>-<arch>)`.
+Application logs omit raw IPs, user agents, cookies, credentials and
+request bodies. Rate limits use a salted hash of the IP that rotates
+daily. Check platform logging settings before launch and document retention
+for any infrastructure logs. Public CLI requests carry no account or
+device identifier.
 
 ### `GET /v1/version`
 
@@ -107,8 +112,10 @@ and the admin page only.
 
 ### `POST /v1/resolve`
 
-Request, at most 20 items (fixed in phase 0 so that a batch with a cold cache,
-up to two upstream requests per item, stays within the subrequest limit):
+Request, with a provisional cap of 20 items. Set the cap in phase 0 from
+cold-cache measurements. The current resolver can page through releases
+and fetch multiple candidate metadata files for a flavor. Budget for that
+behavior and older pins before promising a batch size:
 
 ```json
 { "items": [
@@ -144,23 +151,9 @@ Response, one result per item in order:
 - GitHub requests use the service's token (a Worker secret), 5,000 requests
   an hour instead of 60.
 - An upstream failure is an `upstream` error for that item only.
-- Rate limit (binding): 20 requests per IP hash per 60 seconds. Counting
-  requests rather than items keeps a large manifest (50 addons on 3 flavors is
-  150 items, or 8 requests after the client removes duplicates) well inside
-  it, and leaves room for several machines behind one address.
-
-### `POST /v1/identify`
-
-For `reconcile`: which sources may own unmanaged folders.
-
-```json
-{ "folders": ["Bagnon", "Bagnon_Config"], "flavor": "classic" }
-```
-
-Response: `{ "matches": [ { "folders": ["Bagnon", "Bagnon_Config"], "candidates": [ { "source": "wowi:…", "name": "…", "origin": "registry" | "wowi" } ] } ] }`,
-from the registry's `folders` and the WoWInterface catalogue's `UIDir`, as
-`catalogSuggestions` matches today. At most 200 folders per request. Rate
-limit (binding): 5 requests per IP hash per 60 seconds.
+- Rate limit (binding): 20 requests per IP hash per 60 seconds provisionally. Check it against
+  the final batch size and a large manifest on several machines behind one
+  address.
 
 ### `GET /v1/search?q=<text>&flavors=<f,f>&github=<0|1>&limit=<n>`
 
@@ -176,8 +169,8 @@ limit (binding): 5 requests per IP hash per 60 seconds.
   available, otherwise a normalised-name column and `LIKE`).
 - `github=1` adds GitHub topic search through the service token, cached for
   an hour per query.
-- The client marks rows that are already in its manifest; the service never
-  sees the manifest.
+- The client marks rows that are already in its manifest; public search never receives
+  the manifest.
 - `limit` defaults to 20, at most 50. Rate limit (binding): 30 searches per
   IP hash per 60 seconds.
 
@@ -197,80 +190,103 @@ Response `202 { "accepted": [ { "source", "status": "queued" | "listed" | "dupli
 - Rate limit (D1 daily counter): 3 requests per IP hash per day, plus 1 per
   60 seconds through the binding.
 
-### Links (shared manifests)
+### `POST /v1/discovery`
 
-#### Tokens and keys
+An account-free intake for automatic catalogue contributions. The CLI calls
+it only after an enrolled device's explicit sync, when its separate
+contribution setting is enabled. The payload contains only canonical public `github:owner/repo`
+and `wowi:id` identifiers. Reject direct URLs, private or inaccessible
+sources, and extra fields such as versions, targets, device IDs, account IDs
+or timestamps. Requests carry no account credential. Apply burst and daily
+limits to bounded batches. Public search and resolution do not feed discovery.
 
-- `secret`: 32 random bytes from the client.
-- `HKDF-SHA256(ikm = secret, salt = "", info = …, length = 32)` derives:
-  - `linkId` with info `wowget link id v1`, sent as base64url without padding;
-  - `encKey` with info `wowget link enc v1`, for AES-256-GCM, never sent;
-  - `writeKey` with info `wowget link write v1`, sent on writes.
-- Write token: `wg1-rw-` + base32 (RFC 4648, no padding, lower case) of
-  `secret`.
-- Read-only token: `wg1-ro-` + base32 of `linkId bytes || encKey`. It cannot
-  produce `writeKey`.
-- The service stores `SHA-256(writeKey)` and compares in constant time.
+Deduplicate by canonical source against the registry and the pending queue.
+Store the unique candidate without a contributor association or a per-install
+event. Reuse the registry verification workflow. Batch publication of clean,
+verified candidates to reduce the chance that publication timing reveals
+someone's activity. Queue ambiguous results for review. Public search
+shows only the addon's public metadata and verified flavor support, without
+contributor identities, install counts or discovery-activity labels.
+`wowget suggest` remains available for deliberate contributions without an
+account and continues to use the existing suggestion queue.
 
-#### Envelope
+## Public web catalogue and optional dashboard
 
-The stored blob is
+Render a lightweight public browse and search page using the same ranking,
+flavor filters and registry as `/v1/search`. An account is needed only for
+the device dashboard. The dashboard shows one device and target at a time,
+its last report time, desired membership, reported installed versions, and
+queued changes and results. Users can queue add, remove and update operations,
+cancel work that has not started, and revoke or remove a device. The UI
+shows when a change is pending, applied, conflicted or failed. A queued
+change never changes the displayed installed version until the device
+reports the outcome.
 
-```json
-{ "v": 1, "nonce": "<base64url 12 bytes>", "ct": "<base64url ciphertext and 16-byte tag>" }
-```
+### Accounts and device approval
 
-- The plaintext is `{ "v": 1, "seq": <remote version>, "manifest": { … } }`
-  as UTF-8 JSON.
-- AES-256-GCM with `encKey`, a random 12-byte nonce per write, a 16-byte tag.
-- The associated data is the `linkId` string (base64url, as sent in URLs) as
-  ASCII bytes, so a blob cannot be moved to another link.
-- HKDF uses a zero-length salt.
-- `seq` inside the ciphertext must equal the version the service returns with
-  the blob. A writer sets `seq` to the version it sends in `If-Match` plus
-  one (`1` on create). A reader refuses a blob whose `seq` differs from the
-  returned version or is lower than the last version it saw, which catches a
-  service that serves an older blob.
-- `test-vectors/links.json` holds secrets, derived ids and keys, a fixed nonce,
-  plaintext and ciphertext, so the client and service tests agree byte for
-  byte.
+- Use [WebAuthn](https://www.w3.org/TR/webauthn-3/) discoverable passkeys
+  with user verification and an established server library. Choose a stable
+  relying-party domain before enrollment. Validate origin, RP ID and a
+  short-lived, single-use challenge. Assign a random internal account ID
+  and allow an optional display name. Signup requires no username,
+  password, email address or phone number.
+- Browser sessions use secure, HttpOnly session cookies, expiry and
+  server-side revocation. Protect state-changing browser requests against
+  CSRF, scope each read and write to the signed-in account, and verify the
+  passkey again for sensitive account changes.
+- Use the [OAuth Device Authorization Grant](https://www.rfc-editor.org/rfc/rfc8628)
+  for `wowget login`. The CLI receives a short user code and a separate
+  high-entropy device code. After passkey sign-in the user matches the
+  code, reviews the requested device label and explicitly approves it.
+  Expire and rate-limit codes and polling. Redeem a successful approval
+  once for an opaque credential bound to the enrolled device. Store the
+  credential verifier rather than the raw token on the service. The
+  credential can use only that device's sync endpoints and revoke itself.
+- Allow additional passkeys and issue a high-entropy, single-use recovery
+  code for offline storage. Store only its hash. Successful recovery
+  enrolls a replacement passkey and lets the user revoke existing devices
+  and credentials. Without a passkey or recovery code the hosted account
+  is unrecoverable. The local CLI and its data remain usable.
 
-#### Endpoints
+### Device sync
 
-| Request | Rule | Response |
-|---|---|---|
-| `PUT /v1/links/:id` with `{ writeKeyHash, blob }` and `If-None-Match: *` | creates | `201`, `ETag: "1"`; `409` if it exists |
-| `GET /v1/links/:id` | | `200 { version, blob, updatedAt }`, `ETag: "<version>"`; `404` |
-| `PUT /v1/links/:id` with `{ blob }`, `X-Wowget-Write-Key`, `If-Match: "<version>"` | write key must match; the version must equal the stored one | `200 { version }` with the new `ETag`; `412` with the current version on a mismatch; `403` on a wrong key; `404` |
-| `DELETE /v1/links/:id` with `X-Wowget-Write-Key` | | `204`; `403`; `404` |
+Keep separate records for the device's last reported desired membership
+and installed versions, and a queue of versioned intents for that device.
+The dashboard overlays pending adds and removes on the last reported
+desired list. An update leaves membership as it was and asks the client
+to run its normal update for that addon. Devices and targets are individually
+addressable. A shared cross-device profile is outside the first version.
 
-- `If-Match` and `ETag` carry the version as a quoted string, as HTTP
-  requires: `"7"`.
-- Blob at most 64 KB as sent. Larger is `413 too_large`. The client keeps the
-  plaintext manifest under 40 KB, which leaves room for JSON and base64url.
-- One Durable Object per `linkId` serialises writes, so compare-and-swap is
-  atomic.
-- The D1 link index is written on create, on every write, on delete, and on a
-  read only when the stored read day is not today, so reads cost at most one D1
-  write per link per day.
-- A link without reads or writes for 12 months is deleted by a daily cron that
-  reads the D1 index.
-- Rate limits:
-  - link creations: 10 per IP hash per day (D1 daily counter);
-  - per link: 600 reads and 120 writes per hour (counters in the link's
-    Durable Object);
-  - link requests of any kind: 30 per IP hash per 60 seconds (binding), so
-    one token holder cannot use up a link's hourly limits for the others
-    quickly.
-
-#### Security properties
-
-The service cannot read or forge manifests, and cannot move a blob between
-links. A guessed link id gives nothing without `encKey`. A read-only token
-cannot write. What it does not protect: a leaked write token gives full
-access until `link rotate`; the service can delete or withhold a blob; the
-`seq` check catches a replayed older blob only after the client has seen a
-newer one; anything that can read the user's files can read `link.json`.
+- Fetch pending operations and submit a report and acknowledgements
+  through authenticated device endpoints. Use an atomic claim so a
+  cancellation applies only before execution starts. An interrupted client
+  can resume its claimed operations. Include stable operation IDs and
+  target and addon preconditions from the report on which the web edit
+  was based. Use conditional report revisions so a stale retry cannot
+  replace a newer report.
+- When a device is behind, display its last report time and leave web
+  changes pending. Accept acknowledgements idempotently, keep retryable
+  failures visible, and mark stale edits as conflicts. The service never
+  sends scripts, arbitrary download URLs or filesystem paths to execute.
+  The client validates every operation and applies it only during an
+  explicit `wowget sync`.
+- Store only the device label, opaque target IDs, target names and flavors,
+  public addon identifiers, desired membership, installed versions, opaque
+  state revisions for preconditions, and bounded result codes. Keep raw logs, absolute paths, private URL sources,
+  and complete manifests out of reports. The service can read the synced
+  fields. Explain this before enrollment. These accounts are pseudonymous.
+- Discovery contributions default on for enrolled devices only. Explain
+  the setting during installation and show it during browser approval.
+  Honor the preference saved at installation and let users opt out before
+  approval or later from the dashboard. An enrolled device submits
+  identifiers in a separate public request only after explicit sync and
+  when the current setting allows it. The service does not join discovery
+  candidates to account or device records. Turning contributions off
+  stops future submissions.
+- Allow users to revoke device credentials, remove a device and its
+  hosted reports and operations, or delete the account and its associated
+  device data and sessions. Set retention for authorization challenges,
+  reports, completed operations and service logs before release.
 
 ## Registry and suggestions
 
@@ -337,8 +353,8 @@ CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- versi
   - **Registry**: list, search, edit name, aliases, description, rank;
     disable and enable; delete; re-check.
   - **Service**: registry version, last check and catalogue import times,
-    link count and total size, request and rate-limit counters for the last
-    7 days. No per-link or per-user detail.
+    request and rate-limit counters for the last 7 days. Show aggregate
+    operational counters only.
 - Every change writes an audit row: time, actor, action, entry. The actor is
   the Access user's email, or the service token's client id and name for the
   GitHub Actions workflows.
@@ -348,7 +364,8 @@ CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- versi
 ## Repository and deployment
 
 - One repository. `client/` for the PowerShell client, `service/` for the
-  Worker, shared test vectors for the link crypto in `test-vectors/`.
+  Worker and its server-rendered public catalogue, account dashboard and
+  admin pages.
 - Path filters: the client release workflow runs on changes under `client/`;
   a `service-deploy.yml` workflow deploys `service/` on pushes to `main` that
   change it, with a Cloudflare API token from a GitHub secret. Commit types
@@ -375,32 +392,37 @@ CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- versi
 
 | Risk | Mitigation |
 |---|---|
-| Anonymous blob storage used as free storage | 64 KB cap, 10 creations per IP hash a day, deletion after 12 months idle |
-| Rate limits evaded across Cloudflare locations | The short-window binding counts per location, so a client spread over locations gets more. The per-link and per-day limits are global (Durable Object and D1); Cloudflare's WAF rate-limiting rules can be added if that is not enough |
-| `/v1/resolve` used as a GitHub proxy | Only `github:`/`wowi:` sources, 20 items a request, rate limits, cached results |
-| Suggestion spam | 3 requests per IP hash a day, de-duplication by source, nothing published without the admin |
-| A compromised service sends a malicious addon download | Client host allowlist on every redirect hop and hash check. The service chooses the URL and hash, so the worst case is a malicious addon: Lua inside WoW's sandbox, with access to the game account's UI and saved variables, not to the system |
-| A compromised service pushes a client update | Not possible without the release signing key: clients take only a version number from the service and verify the signed zip from GitHub (SPEC-POWERSHELL.md, "Release signature") |
-| Service down | `list`, `remove`, `doctor`, `url:` sources and the registry snapshot keep working; resolution and search fail with a `network` error |
-| Free-plan limits reached | Cloudflare returns errors for the rest of the day; the admin page shows the counters; the paid plan is the maintainer's decision |
+| Rate limits evaded across Cloudflare locations | Short-window binding limits are approximate and per location. Use D1 counters for daily caps and add WAF limits if needed. |
+| `/v1/resolve` used as a GitHub proxy | Limit supported sources, bound each batch and retain caching and rate limits. |
+| Suggestion or discovery spam | Bound requests, deduplicate sources, verify candidates, and review ambiguous submissions before publishing. |
+| Someone approves the wrong device | Display and match the short code, require explicit WebAuthn-authenticated approval, expire codes and allow device revocation. |
+| A stale or retried operation changes the wrong local state | Bind operations to a device and target, include preconditions and stable IDs, and enforce local ownership and replay handling. |
+| A compromised service sends a malicious addon download | Client host allowlist on each redirect hop and hash verification. The service still chooses the URL and expected hash, so addon provenance remains a trust boundary. |
+| A compromised service pushes a client update | Clients use the advertised version only, fetch from the project's GitHub releases, and verify the project signature. |
+| Service down | Local inspection and removal, direct URL sources, and the registry snapshot keep working. Public resolution, search and dashboard sync report a network failure. |
+| Free-plan limits reached | Measure load and expose aggregate counters. The maintainer decides whether to change limits or move plans. |
 
 ## Phases
 
-0. Confirm the platform limits above. Deploy a skeleton with `/v1/version`
-   and `/v1/resolve` for `github:` behind `WOWGET_API_URL`, and measure CPU
-   time per resolve item.
-1. `/v1/resolve` (GitHub and WoWInterface), `/v1/registry`, `/v1/version`,
-   the registry import from `registry/addons.toml`, the release cache.
-   Needed by client phase 1.
-2. Search with the catalogue import workflow; suggestions; the admin
-   interface with Access.
-3. Links. Needed by client phase 4.
-4. Switch: the registry workflows and `registry/addons.toml` removed, the
-   suggestion issue form and workflow removed.
+0. Confirm the platform limits. Deploy a skeleton with `/v1/version` and
+   GitHub `/v1/resolve` behind `WOWGET_API_URL`, and measure CPU and upstream
+   requests on cold batches, including older flavor-compatible builds
+   and pinned releases.
+1. Ship public resolution, the registry import and endpoint, version
+   metadata and the release cache.
+2. Add public search, the web catalogue, catalogue imports, manual
+   suggestions and the private registry admin interface. Switch the
+   existing registry and suggestion workflows over. The account-free CLI
+   can ship at this point.
+3. Add passkey accounts, device approval, and the dashboard and sync for
+   independent devices. Add discovery with a separate opt-out and batch
+   publication. Test credentials and recovery, device isolation, stale
+   reports and operation replay, and verify that account-free use never
+   contributes automatically and that an opted-out device stays opted out.
 
 ## Not in scope
 
-- User accounts, sign-in for users, or anything stored per user.
-- Hosting or mirroring addon zips.
-- CurseForge.
-- Push notifications or background sync.
+- Email or phone collection.
+- Shared-manifest links or end-to-end encrypted manifest storage.
+- Hosting or mirroring addon zips, or CurseForge.
+- Background sync, push notifications, or unattended action execution.
