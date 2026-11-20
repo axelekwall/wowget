@@ -247,3 +247,50 @@ zips; sources tested against recorded responses.
   interface for users who do not want the commands; see
   [SPEC-TUI.md](SPEC-TUI.md). It stays a layer over the same core and
   manifest, so it is not the GUI/store in the risk table.
+
+## Decisions (2026-11-20)
+
+These replace the **Stack**, **State** and manifest-writing decisions of
+2026-11-01, the OpenTUI choice of 2026-11-02, and the registry file and issue
+flow of SPEC-SEARCH.md and SPEC-REGISTRY-SUGGEST.md. Details in
+[SPEC-POWERSHELL.md](SPEC-POWERSHELL.md) and [SPEC-SERVICE.md](SPEC-SERVICE.md).
+
+- **Why the stack changes.** Windows 11 Smart App Control blocked
+  `wowget self-update` on a machine in enforcement mode: the compiled Bun
+  binary is a new unsigned file on every release, and Smart App Control only
+  runs executables that are signed or known to Microsoft's reputation service.
+  Paying for code signing is ruled out. Running the project's code as scripts
+  on a runtime its vendor signs passed the same check (Bun's signed `bun.exe`
+  with a bundled `.js`, zero Code Integrity events, 2026-11-20). Phase 0 of
+  SPEC-POWERSHELL.md repeats the test with the pinned PowerShell.
+- **Runtime: PowerShell 7 LTS, shipped privately on every platform.** Chosen
+  over Node, Python, Java and Bun because Windows is the main platform,
+  PowerShell is Microsoft's own, every binary in its Windows package is signed
+  by Microsoft, and Terminal.Gui comes signed by Microsoft through
+  ConsoleGuiTools. Users install nothing first. The costs: about 110 MB
+  first download on Windows, slower start-up, and a language that suits a
+  codebase of this size less well than TypeScript. Windows PowerShell 5.1 was
+  considered and dropped: no Terminal.Gui, and two language versions to test.
+- **TUI: Terminal.Gui 1.16** instead of OpenTUI.
+- **Formats: JSON for the manifest, marker files for state.** `wowget.json`
+  replaces `wowget.toml`; comments in the manifest are no longer possible. A
+  `.wowget.json` marker in every installed addon folder replaces `state.db`,
+  so the manifest, the markers and a rebuildable cache are the whole local
+  state. The TOML manifest is converted once; `state.db` is not migrated
+  (rollback history is lost).
+- **A wowget service.** Release resolution, search, the registry and
+  registry suggestions move to a Cloudflare Worker in this repository. The
+  client depends on it for resolution and search, with no fallback that talks
+  to GitHub or WoWInterface directly; `url:` sources stay in the client. The
+  registry moves from `registry/addons.toml` to the service database, managed
+  through a private admin interface behind Cloudflare Access. Suggestions go
+  to a queue there instead of GitHub issues.
+- **Sharing without accounts.** `wowget link` syncs the manifest between
+  machines through the service, end-to-end encrypted with a key that only the
+  token carries. Dotfiles keep working through `WOWGET_MANIFEST`.
+- **Signed releases.** The project signs each release zip with its own ECDSA
+  key, and clients verify it before updating. This is not Authenticode and
+  does not involve Windows; it stops the service, or a tampered download, from
+  pushing code to clients.
+- **One public repository** for client and service. The service's defences do
+  not depend on its code being private; secrets live in Cloudflare and GitHub.
