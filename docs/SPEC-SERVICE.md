@@ -28,8 +28,17 @@ SPEC-REGISTRY-SUGGEST.md. The reasons are in PLAN.md, "Decisions
   cannot be listed.
 - **Durable Objects** with SQLite storage, one per shared link, for atomic
   compare-and-swap.
-- **Workers Rate Limiting binding** for every rate limit, so counting
-  requests costs no D1 writes.
+- **Rate limits** in three places, by window length:
+  - **Short windows** (bursts per IP hash): the Workers Rate Limiting
+    binding. It only supports 10- and 60-second periods and counts per
+    Cloudflare location, so these limits are approximate. That is enough to
+    stop a client loop or a script. Counting costs no storage writes.
+  - **Per link** (reads and writes per hour): counters kept in the link's own
+    Durable Object, which sees every request for that link.
+  - **Per day** (link creations and suggestions per IP hash): a D1 table
+    `daily_counts (ip_hash, day, kind, count)`. Only those two rare endpoints
+    write it, so the writes stay small, and rows older than two days are
+    deleted by the daily cron.
 - **Cloudflare Access** in front of `/admin/*`.
 - **Cron triggers** for small periodic work. Heavy work (downloading and
   inspecting zips, parsing the 6 MB WoWInterface catalogue) runs in GitHub
@@ -135,10 +144,10 @@ Response, one result per item in order:
 - GitHub requests use the service's token (a Worker secret), 5,000 requests
   an hour instead of 60.
 - An upstream failure is an `upstream` error for that item only.
-- Rate limit: 30 requests per IP hash per 10 minutes. Counting requests rather
-  than items keeps a large manifest (50 addons on 3 flavors is 150 items, or 8
-  requests after the client removes duplicates) well inside it, and leaves
-  room for several machines behind one address.
+- Rate limit (binding): 20 requests per IP hash per 60 seconds. Counting
+  requests rather than items keeps a large manifest (50 addons on 3 flavors is
+  150 items, or 8 requests after the client removes duplicates) well inside
+  it, and leaves room for several machines behind one address.
 
 ### `POST /v1/identify`
 
@@ -150,8 +159,8 @@ For `reconcile`: which sources may own unmanaged folders.
 
 Response: `{ "matches": [ { "folders": ["Bagnon", "Bagnon_Config"], "candidates": [ { "source": "wowi:…", "name": "…", "origin": "registry" | "wowi" } ] } ] }`,
 from the registry's `folders` and the WoWInterface catalogue's `UIDir`, as
-`catalogSuggestions` matches today. At most 200 folders per request; 10
-requests per IP hash per 10 minutes.
+`catalogSuggestions` matches today. At most 200 folders per request. Rate
+limit (binding): 5 requests per IP hash per 60 seconds.
 
 ### `GET /v1/search?q=<text>&flavors=<f,f>&github=<0|1>&limit=<n>`
 
@@ -169,8 +178,8 @@ requests per IP hash per 10 minutes.
   an hour per query.
 - The client marks rows that are already in its manifest; the service never
   sees the manifest.
-- `limit` defaults to 20, at most 50. Rate limit: 30 searches per IP hash per
-  minute.
+- `limit` defaults to 20, at most 50. Rate limit (binding): 30 searches per
+  IP hash per 60 seconds.
 
 ### `POST /v1/suggestions`
 
@@ -185,7 +194,8 @@ Response `202 { "accepted": [ { "source", "status": "queued" | "listed" | "dupli
   queue entry's count goes up instead of adding a row.
 - New items are resolved once for each flavor in the background and stored
   with the result, so the admin sees whether it installs.
-- Rate limit: 3 requests per IP hash per day.
+- Rate limit (D1 daily counter): 3 requests per IP hash per day, plus 1 per
+  60 seconds through the binding.
 
 ### Links (shared manifests)
 
@@ -245,9 +255,13 @@ The stored blob is
   write per link per day.
 - A link without reads or writes for 12 months is deleted by a daily cron that
   reads the D1 index.
-- Rate limits: 10 link creations per IP hash per day; per link, 600 reads and
-  120 writes per hour, and per IP hash 120 link requests per 10 minutes, so
-  one token holder cannot use up a link's limits for the others quickly.
+- Rate limits:
+  - link creations: 10 per IP hash per day (D1 daily counter);
+  - per link: 600 reads and 120 writes per hour (counters in the link's
+    Durable Object);
+  - link requests of any kind: 30 per IP hash per 60 seconds (binding), so
+    one token holder cannot use up a link's hourly limits for the others
+    quickly.
 
 #### Security properties
 
@@ -290,11 +304,19 @@ CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- versi
   the fields SPEC-SEARCH.md lists, and compares it with the previous day's
   projection (kept as a workflow artifact). It posts only added, changed and
   removed entries to `POST /admin/api/catalog` in chunks, all tagged with one
-  import id, then calls `POST /admin/api/catalog/commit` with that id. D1 has
-  no transaction across requests, so rows carry the import id and searches read
-  the id named in `registry_meta`; the commit switches it in one statement and
-  deletes the replaced rows. Sending only the difference keeps the daily D1
-  writes, FTS index updates included, to the entries that changed.
+  import id. The chunks go into staging tables (`catalog_staging` for added
+  and changed rows, `catalog_removed` for removed ids), never into the live
+  `catalog` table. Then it calls `POST /admin/api/catalog/commit` with that
+  id, which applies the staged rows to `catalog` in one D1 `batch()`:
+  `INSERT OR REPLACE … SELECT` from `catalog_staging`, `DELETE` of the
+  removed ids, and `DELETE` of that import's staging rows. A batch runs as one
+  transaction, so searches see the whole day's change or none of it, and the
+  unchanged rows stay where they are. D1 has no transaction across requests,
+  which is why the chunks are staged first. An import that is never committed
+  leaves only staging rows, which the next import deletes. The first import,
+  with no previous projection, stages every row the same way. Sending only the
+  difference keeps the daily D1 writes, FTS index updates included, to the
+  entries that changed.
 - Accepting a suggestion copies its checked `flavors` and `folders` into a new
   registry entry at the bottom of the ranking and bumps the registry version.
   Accepting an unchecked suggestion is not possible.
@@ -354,6 +376,7 @@ CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- versi
 | Risk | Mitigation |
 |---|---|
 | Anonymous blob storage used as free storage | 64 KB cap, 10 creations per IP hash a day, deletion after 12 months idle |
+| Rate limits evaded across Cloudflare locations | The short-window binding counts per location, so a client spread over locations gets more. The per-link and per-day limits are global (Durable Object and D1); Cloudflare's WAF rate-limiting rules can be added if that is not enough |
 | `/v1/resolve` used as a GitHub proxy | Only `github:`/`wowi:` sources, 20 items a request, rate limits, cached results |
 | Suggestion spam | 3 requests per IP hash a day, de-duplication by source, nothing published without the admin |
 | A compromised service sends a malicious addon download | Client host allowlist on every redirect hop and hash check. The service chooses the URL and hash, so the worst case is a malicious addon: Lua inside WoW's sandbox, with access to the game account's UI and saved variables, not to the system |

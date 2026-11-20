@@ -448,14 +448,34 @@ not on this machine; exit codes 0, 1 and 2.
 ### First start after the Bun client
 
 1. TOML import (above).
-2. Adoption: for every manifest addon on every target on this machine, the
-   folders that a registry entry, or a resolve of the addon's source, names
-   and that exist without a marker get a marker with `releaseId: "unknown"`.
-   `outdated` reports such addons as `outdated`, and the next `update`
-   reinstalls them and writes a real marker. Pins are kept, since they live in
-   the manifest.
-3. Rollback history is lost, because it lived in `state.db`.
-4. The result lists what was converted and adopted. `migrate --json` prints it.
+2. Adoption, for every manifest addon on every target on this machine. The
+   new client cannot read `state.db`, which recorded the exact folders, so it
+   uses the download cache instead. The Bun client keeps the zips of every
+   target's active and previous install there, in the layout the new client
+   keeps (`<cache>/<addon, lower-case>/<release id>/<zip>`, same cache
+   directory on each platform).
+   1. For each cached release of the addon, list the addon folders its zip
+      produces, with the installer's normalisation.
+   2. Take the cached release whose folders all exist on the target without a
+      marker. With several, take the one with the most folders, then the
+      newest zip. Write markers with that release id (the cache directory's
+      name), the zip's SHA-256 and its folder list, so the install is exact
+      and needs no reinstall. Set `previous` to the next newest other cached
+      release, so `rollback` keeps working.
+   3. With no matching cached release (the cache was cleaned, or the folders
+      differ), fall back to the folders a registry entry or a resolve of the
+      source names, and write markers with `releaseId: "unknown"`. `outdated`
+      reports such addons as `outdated`, and the next `update` reinstalls them
+      and writes a real marker. Folders an older release used and the current
+      one does not are not found this way; step 4 shows them.
+   4. A folder two addons would claim is left without a marker and reported.
+   Pins are kept, since they live in the manifest.
+3. Rollback history beyond the cached `previous` zip is lost, because it lived
+   in `state.db`.
+4. The result lists what was converted and adopted, and how (cache or
+   fallback), and then, per target, every folder still without a marker, so
+   leftovers of older releases are visible and `reconcile` can handle them.
+   `migrate --json` prints it.
 
 ## Terminal UI
 
