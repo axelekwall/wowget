@@ -2,8 +2,8 @@
 
 Replaces the Bun and TypeScript client. Where this file disagrees with
 SPEC-MVP.md, SPEC-TARGETS-WINDOWS.md, SPEC-SEARCH.md, SPEC-REGISTRY-SUGGEST.md
-or SPEC-TUI.md, this file wins. The server side is in
-[SPEC-SERVICE.md](SPEC-SERVICE.md). The reasons are in PLAN.md, "Decisions
+or SPEC-TUI.md, this file wins. The rewrite retires the terminal UI.
+The server side is in [SPEC-SERVICE.md](SPEC-SERVICE.md). The reasons are in PLAN.md, "Decisions
 (2026-11-20)".
 
 ## Why
@@ -22,21 +22,24 @@ running a bundled `.js` (no Code Integrity events). Every executable and DLL
 in PowerShell 7's Windows package is signed by Microsoft (546 of 546 in 7.7.0,
 checked 2026-11-20; phase 0 repeats the check and the Smart App Control test
 for the pinned 7.6 package), and PowerShell runs on macOS and Linux from a
-relocatable tarball. The terminal UI library Terminal.Gui 1.16.0 ships signed
-by Microsoft inside `Microsoft.PowerShell.ConsoleGuiTools` 0.7.7.
+relocatable tarball.
 
 ## Goals
 
 1. wowget installs and runs on Windows 11 with Smart App Control on, with
    nothing for the user to install first and no binary the project builds.
 2. The same scripts run on Windows and macOS, and on Linux as a side effect.
-3. Every command the Bun client has keeps working, with the same names and
-   flags.
+3. Keep the existing non-TUI commands, with the same names and flags except
+   where noted below. The local client is command-only.
 4. The client is small: release resolution, search, the registry and
    suggestions move to the wowget service. Local state is the manifest and
    marker files in the addon folders.
 5. Formats are ones PowerShell reads natively: JSON instead of TOML, files
    instead of SQLite.
+6. The default workflow needs no account and uploads no inventory or install
+   state. Public search and resolution receive the inputs needed for each
+   request. The optional web dashboard manages an enrolled device on its next
+   explicit `wowget sync`.
 
 ## Runtime and distribution
 
@@ -51,8 +54,8 @@ by Microsoft inside `Microsoft.PowerShell.ConsoleGuiTools` 0.7.7.
 - The runtime is private to wowget. Nothing uses or changes a PowerShell the
   user installed, Homebrew, winget or the system PATH beyond wowget's own
   launcher.
-- Windows PowerShell 5.1 is not supported. Terminal.Gui needs PowerShell 7.2
-  or newer, and one language version on every platform keeps one test matrix.
+- Windows PowerShell 5.1 is not supported. One language version across
+  platforms keeps one test matrix.
 
 ### Release artifact
 
@@ -60,9 +63,6 @@ One platform-neutral zip per release, `wowget-<version>.zip`:
 
 ```
 Wowget/               the PowerShell module (see "Code layout")
-lib/                  Terminal.Gui.dll, NStack.dll and the ConsoleGuiTools
-                      DLLs, vendored from the module's PowerShell Gallery
-                      package, all signed by Microsoft
 registry.json         snapshot of the service registry, the offline fallback
 runtime.json          pinned runtime version, URLs and SHA-256 per platform
 wowget.ps1            entry point
@@ -128,16 +128,13 @@ way and `exec`s the runtime.
   command makes cmd ask "Terminate batch job (Y/N)?", and cmd's own parsing
   of the arguments applies (`^`, and `%` in unquoted arguments). Quoting
   `url:` sources avoids the second. If phase 0 finds the prompt unacceptable,
-  the alternatives are a `.lnk` shortcut that starts `pwsh.exe` directly for
-  the TUI, and documenting Ctrl+C. A launcher executable is not one, since it
-  would be an unsigned binary again.
+  document it or revisit the launcher in phase 0 within the signed-runtime
+  requirement.
 - `-ExecutionPolicy Bypass` because the Windows default policy blocks
   unsigned `.ps1` files. It applies to this process only.
 - The launcher does not change the working directory. The module finds its
   own files from `$PSScriptRoot`, and user paths are resolved against the
   directory the command was started in, as today.
-- A double-click on `wowget.cmd` opens the TUI, as the TUI spec required of
-  `wowget.exe`. A Start menu shortcut is not in scope.
 
 ### Installers
 
@@ -159,6 +156,11 @@ way and `exec`s the runtime.
 6. Remove files left by the Bun client: `bin\wowget.exe`, `bin\wowget.exe.old`,
    `bin\.wowget.exe.new-*` on Windows, and `~/.local/bin/wowget` when it is a
    Mach-O or ELF binary on macOS and Linux.
+7. Explain that installation and normal use need no account or inventory
+   upload. Explain that if the user later enrolls a device, explicit sync
+   contributes public addon IDs to the catalogue by default. Show how to
+   opt out during install or later. The installer accepts
+   `WOWGET_CATALOGUE_CONTRIBUTIONS=off` to save an opt-out before enrollment.
 
 ### Self-update
 
@@ -211,10 +213,10 @@ client/
     Installer.ps1                download cache, stage, swap, rollback, uninstall
     Ops.ps1                      one function per command, returns objects
     Reconcile.ps1, Doctor.ps1    as today, over markers
-    Sync.ps1                     sharing: tokens, crypto, merge
+    Sync.ps1                     explicit device sync and operation receipts
+    DeviceAuth.ps1               browser approval and local device credential
     SelfUpdate.ps1
     Cli.ps1                      argument parsing, formatting, --json, exit codes
-    Tui.ps1                      Terminal.Gui screens
   wowget.ps1                     entry point: imports the module, calls Cli
   tests/                         Pester 5 tests, mirroring the module
   install.ps1, install.sh
@@ -222,7 +224,7 @@ client/
 
 Rules carried over from the Bun client:
 
-- Nothing outside `Cli.ps1` and `Tui.ps1` writes to the host. Ops return
+- Nothing outside `Cli.ps1` writes to the host. Ops return
   `[pscustomobject]` results and take an optional `-OnEvent` script block for
   progress events.
 - Errors are `WowgetError` exceptions (a class in the module) with a `Code`
@@ -251,7 +253,7 @@ Rules carried over from the Bun client:
 | Thing | Windows | macOS | Linux | Override |
 |---|---|---|---|---|
 | Manifest | `%APPDATA%\wowget\wowget.json` | `~/.config/wowget/wowget.json` | `$XDG_CONFIG_HOME/wowget/wowget.json` | `--manifest`, `WOWGET_MANIFEST` |
-| Machine state (`link.json`, `sync-base.json`, lock file) | `%LOCALAPPDATA%\wowget\state\` | `~/Library/Application Support/wowget/` | `$XDG_STATE_HOME/wowget/` | `WOWGET_STATE_DIR` |
+| Machine state (device sync metadata, operation receipts, lock file) | `%LOCALAPPDATA%\wowget\state\` | `~/Library/Application Support/wowget/` | `$XDG_STATE_HOME/wowget/` | `WOWGET_STATE_DIR` |
 | Cache | `%LOCALAPPDATA%\wowget\cache\` | `~/Library/Caches/wowget/` | `$XDG_CACHE_HOME/wowget/` | `WOWGET_CACHE_DIR` |
 | Game directory | as SPEC-TARGETS-WINDOWS.md | | | `WOWGET_GAME_DIR`, `--game-dir` |
 | Service | `https://api.wowget.dev` (placeholder until the domain is chosen) | | | `WOWGET_API_URL` |
@@ -265,11 +267,13 @@ resolution and search with a `network` error, which tests use.
 
 The complete local state of a machine:
 
-1. **The manifest**: what should be installed where. Shared between machines.
+1. **The manifest**: what should be installed on this machine. Dotfiles and
+   portable targets still work independently of hosted sync.
 2. **Marker files** in the installed addon folders: what is installed.
 3. **The cache**: downloaded zips, kept for `rollback`, and `url:` source
    validators. Rebuildable.
-4. **`link.json` and `sync-base.json`**, only when sharing is set up.
+4. **Device credential and sync metadata**, only when device sync is enabled.
+   Credentials stay outside the manifest and dotfiles.
 
 There is no database. `state.db` from the Bun client is not read.
 
@@ -304,9 +308,6 @@ There is no database. `state.db` from the Bun client is not read.
   line endings, a final newline. After writing, the file is read back and must
   equal what was meant; otherwise the previous file is restored and the write
   fails, as today.
-- The manifest is small (well under 64 KB), which the sharing service relies
-  on.
-
 ### TOML import
 
 The first command converts a TOML manifest when either:
@@ -383,7 +384,7 @@ wowget writes one marker into every addon folder it installs:
 - A marker that does not parse counts as no marker, and `doctor` reports it.
 - A marker naming an addon that the manifest does not have on that target is
   **orphaned**: the addon was removed while that target was not on this
-  machine, or on another machine of a shared manifest. `doctor` reports it as
+  machine, or through an externally edited manifest. `doctor` reports it as
   an issue (`orphan_marker`), naming the folders. `remove <name> -t <target>`
   also accepts such a name and deletes its folders. Nothing deletes them
   without being asked.
@@ -446,7 +447,8 @@ the zips named by current markers and their `previous` entries.
 
 ## Commands
 
-Names, flags, outputs and exit codes stay as the Bun client's, except:
+For the non-TUI commands, names, flags, outputs and exit codes stay as the Bun
+client's, except:
 
 | Command | Change |
 |---|---|
@@ -457,14 +459,16 @@ Names, flags, outputs and exit codes stay as the Bun client's, except:
 | `pin`, `unpin`, `rollback` | Pins in the manifest as today; rollback reinstalls `previous` from the cache. `pin <name>` without a release on an install whose marker says `releaseId: "unknown"` is a `usage` error asking for a release or an `update` first. |
 | `search` | `GET /v1/search`. `--github` stays. `--refresh` is accepted and ignored with a note, since the catalogue lives on the service. |
 | `suggest [name...]` | Sends the manifest addons the registry lacks to `POST /v1/suggestions` and prints the result. No browser, no GitHub account. `--print` lists what would be sent and sends nothing. |
-| `reconcile [--adopt]` | Unmanaged folders (no marker) are grouped and matched as today: registry `folders`, then TOC IDs (`X-GitHub`, `X-GitHub-Repo`, `X-Repository`, `X-Website`, `X-WoWI-ID`, and the `X-Curse-*` fields that only mark an addon as CurseForge). The WoWInterface catalogue match moves to `POST /v1/identify` on the service; offline, reconcile uses the registry snapshot and TOC IDs only and says so. `--adopt` writes markers. |
+| `reconcile [--adopt]` | Unmanaged folders (no marker) are grouped and matched as today: registry `folders`, then TOC IDs (`X-GitHub`, `X-GitHub-Repo`, `X-Repository`, `X-Website`, `X-WoWI-ID`, and the `X-Curse-*` fields that only mark an addon as CurseForge). Matching runs on the device using the registry snapshot and local TOC IDs. Unmanaged folder names stay local, so the old WoWInterface catalogue-based guess is dropped. `--adopt` writes markers. |
 | `doctor [--clean]` | Adds marker checks: unparseable markers, an install whose folders disagree, orphaned markers. Keeps the `portable_target` hints. `--clean` prunes the cache. |
 | `self-update [--check] [--force]` | See "Self-update". |
-| `link …` | New, see "Sharing". |
+| `login` | Approve this device in the browser and enable optional sync. |
+| `sync` | Fetch and apply queued changes for this device and report results. |
+| `logout` | Revoke this device credential and clear local sync state. |
 | `migrate` | New. Runs the TOML import and the marker adoption below on request. Also runs by itself on first start. |
-| `tui` | Terminal.Gui, see below. |
 
-`--json` keeps the result shapes. Fields that came from state rows come from
+
+Running `wowget` without arguments prints command help. `--json` keeps the result shapes. Fields that came from state rows come from
 markers now; `installedAt` keeps its meaning.
 
 Kept unchanged, though not repeated above: global `--manifest`, `--json`,
@@ -505,183 +509,151 @@ not on this machine; exit codes 0, 1 and 2.
    leftovers of older releases are visible and `reconcile` can handle them.
    `migrate --json` prints it.
 
-## Terminal UI
+## Optional device sync
 
-- Terminal.Gui 1.16 from the vendored ConsoleGuiTools DLLs, loaded with
-  `Add-Type -Path` on those signed files (loading, not compiling).
-- Screens and behaviour as SPEC-TUI.md: first run, target tabs (`TabView`),
-  the addon table (`TableView`, multi-select, mouse), action keys in a
-  `StatusBar`, add through search, confirmations, progress, the error of the
-  row under the cursor.
-- Add, remove, pin, unpin and rollback, which SPEC-TUI.md planned as its next
-  phase, come with the port, since Terminal.Gui has dialogs and text fields.
-- Threading: Terminal.Gui runs its main loop on the PowerShell thread. Network
-  work (`outdated`, `update`, search) runs in a separate runspace started with
-  `[runspacefactory]::CreateRunspace()` and the module imported, and posts
-  results back with `[Terminal.Gui.Application]::MainLoop.Invoke(...)`. A
-  script block must never run on a thread without a runspace; event handlers
-  stay on the main loop. Phase 0 proves this pattern.
-- One operation at a time, as SPEC-TUI.md.
-- `wowget tui --check` loads Terminal.Gui, prints `ok <os>-<arch>` and exits 0.
-- Running `wowget` without a command in an interactive terminal opens the TUI,
-  as today.
+The normal CLI workflow uses the manifest, markers and public API. Account
+credentials are used only for the authenticated device endpoints. Public
+resolution gets source, flavor and the requested channel or pin. Public search
+gets its query and filters. Normal commands never enroll a device, publish an
+inventory or sync implicitly.
 
-## Sharing
+- `wowget login` explains what sync sends, then starts the browser approval
+  flow. The CLI prints the verification address and short confirmation code
+  so the user can also open the page manually. The browser shows the code
+  and the chosen device label before approval. Enrollment stores a revocable,
+  device-scoped credential without uploading the inventory. The first
+  explicit sync sends the initial report.
+- `wowget sync` fetches pending operations for the enrolled device, takes the
+  existing write lock while inspecting and changing local state, and applies
+  operations through the same command logic as a local add, remove or
+  update. It reports each result and the latest eligible inventory. A
+  failed sync leaves normal local commands available.
+- `wowget logout` revokes the credential and clears local enrollment state.
+  If the service is unreachable, local logout still works and tells the user
+  how to revoke the device in the dashboard. The local manifest, cache and
+  installed addons remain usable. Removing a device in the dashboard also
+  removes its hosted inventory and pending operations.
 
-Commands over the link protocol in SPEC-SERVICE.md, "Links".
+### Applying web changes
 
-| Command | Behaviour |
-|---|---|
-| `link create` | Fails if a link exists. Uploads the manifest and prints the write token and the read-only token. Writes `link.json` and `sync-base.json`. Warns about `path` targets (see below) and suggests `target portable`. |
-| `link join <token>` | Downloads the shared manifest. With no local manifest, writes it. With one, shows the difference and asks to replace or merge (`--replace`, `--merge` for scripts). Writes `link.json` and `sync-base.json`. |
-| `link sync` | Pulls, merges and, on a read-write link, pushes. The other commands do the same implicitly (below). |
-| `link status` | The link id (not the secret), read-only or read-write, the remote version, the time of the last pull and push, and local changes not yet pushed. |
-| `link leave` | Deletes `link.json` and `sync-base.json`. The remote copy stays for the other machines. |
-| `link rotate` | Read-write links only. Creates a new link with the current manifest, deletes the old one, prints the new tokens. Every other machine must join again. |
+The local manifest is the authority for what this machine should install.
+The service keeps the last report and versioned intents for specific targets
+and addons. An add or remove is an edit to the desired list. An update is a
+one-time operation with the same flavor and pin behavior as local
+`wowget update`. Only public GitHub and WoWInterface sources are eligible.
 
-### When sync runs
+Each operation has a stable ID and the relevant target and addon
+preconditions from the last report. The CLI compares those against the
+current manifest and markers before acting. A queued update for an addon
+removed locally is skipped as a conflict. A changed source, pin or target
+that affects an operation also produces a conflict. An unrelated local
+change does not block the operation. An already satisfied add or remove
+returns a successful no-op after checking for conflicts. File ownership
+checks still apply, and sync never forces a takeover.
 
-- `add`, `remove`, `target add`, `target remove`, `target portable`, `pin`,
-  `unpin`, `outdated`, `update`, `install` and `tui` sync first when the last
-  pull is more than 5 minutes old. They already use the network. `list`,
-  `doctor`, `reconcile` and `search` never sync, so `list` stays offline.
-- Commands that change the manifest sync again after the change, so the
-  change is pushed.
-- Sync takes the write lock, since it may write the manifest.
-- A sync that cannot reach the service warns once and the command goes on with
-  the local manifest. Unpushed changes are pushed by the next sync.
+Store an operation record locally before applying it, and record the
+outcome before acknowledging it to the service. After interruption, inspect
+the manifest and markers against the recorded operation and intended result,
+acknowledge work already completed, and retry only what can be applied safely.
+An ambiguous outcome is reported for the user to resolve locally. A locked
+folder is a retryable failure. Report stable result codes and affected
+public addon IDs, rather than raw error output that can contain local paths.
 
-### Sync on a read-write link
+### Local sync summary
 
-1. `GET` the link. Decrypt, and check that `seq` equals the returned version
-   and is not lower than `remoteVersion` in `link.json`; otherwise stop with a
-   `conflict` error that says the service returned an older copy.
-2. Three-way merge of base (`sync-base.json`), local (the manifest file, which
-   includes hand edits) and remote.
-3. Write the merged manifest locally if it differs from local.
-4. If the merged manifest differs from remote, `PUT` it with `If-Match` on the
-   remote version and `seq` = remote version + 1. On `412`, start again from
-   step 1, at most twice, then fail with a `conflict` error.
-5. Write `sync-base.json` (the merged manifest) and update `link.json`.
+Every `wowget sync` ends with a compact summary grouped by target. Show
+the action and outcome on each line and old and new versions when known.
+Include pending or retryable failures and conflicts, and say when there
+are no changes. Local diagnostics can use the same messages as normal
+commands. Only bounded result codes go to the service.
 
-### Sync on a read-only link
+```text
+Classic Era
+  + Questie       installed 11.4.2
+  ~ TomTom        3.8.2 -> 3.8.3
+  - Bagnon        removed
+  ! Details       update skipped (changed locally)
+  ! WeakAuras     update pending (game has files locked)
 
-The remote copy replaces the local manifest; there is no merge. Commands that
-change the manifest (`add`, `remove`, `target *`, `pin`, `unpin`) are a
-`usage` error that names the link as read-only and points at `link leave`.
-`update` and `install` work, since they do not change the manifest.
-
-### Merge rules
-
-- Addons are matched by name (case-insensitive), targets by name. An entry is
-  compared as a whole: name, source, `targets`, `pin`, `prerelease` for an
-  addon; `path` or `folder`, and `flavor` for a target.
-- Changed on one side only: take that side. Changed the same way on both: take
-  it once. Added on one side: add it. Removed on one side and unchanged on the
-  other: remove it.
-- Changed differently on both sides, or removed on one side and changed on the
-  other: a conflict. The CLI asks which side to keep. With `--json` or without
-  a terminal the command fails with a `conflict` error listing them, and
-  nothing is written.
-- Order: remote's order, then addons and targets added locally in their local
-  order.
-- The merged manifest must validate (for example, no addon may name a removed
-  target) before it is written or pushed; otherwise it is a `conflict` error.
-
-### Targets on linked machines
-
-A shared manifest is meant to hold `folder` targets. A `path` target from
-another machine usually names a directory that does not exist here, so on a
-linked machine a `path` target whose directory does not exist counts as not on
-this machine, with the same `target:absent` behaviour as a folder target.
-Unlinked machines keep today's rule.
-
-### Gone links
-
-A `404` from the service means the link was rotated on another machine or
-deleted after 12 months without use. The command warns once, `link status`
-shows the link as gone, and nothing more is synced until `link join` with a new
-token or `link leave`.
-
-### Files and limits
-
-`link.json`:
-
-```json
-{ "version": 1, "token": "wg1-rw-…", "linkId": "…", "remoteVersion": 7, "pulledAt": "…", "pushedAt": "…" }
+1 added, 1 updated, 1 removed, 1 conflict, 1 pending
 ```
 
-- Written with permissions for the current user only (`chmod 600` on macOS
-  and Linux; an ACL with only the current user on Windows). It never goes into
-  the manifest, which may live in a public dotfiles repository.
-- The manifest JSON may be at most 40 KB to be shared, so the encrypted and
-  base64url-encoded envelope stays under the service's 64 KB limit. A larger
-  manifest is a `usage` error on push.
-- The crypto uses `System.Security.Cryptography.HKDF`, `AesGcm` (constructed
-  with a 16-byte tag size) and `RandomNumberGenerator` from .NET, which
-  PowerShell 7.6 runs on. Phase 0 checks `AesGcm.IsSupported` on macOS. The
-  shared test vectors in `test-vectors/` fix every byte (see SPEC-SERVICE.md).
+Use ASCII markers and optional PowerShell terminal color for interactive
+output. Redirected output and `NO_COLOR` use plain text. `--json` emits
+the same outcomes as data without formatting. Keep the summary in normal
+terminal scrollback with no full-screen or interactive UI and no new
+rendering dependency. [Terminal.Gui.Cli](https://github.com/tui-cs/cli)
+provides a CLI host for Terminal.Gui apps. If a richer formatter is needed
+later, evaluate a standalone option such as [Spectre.Console](https://github.com/spectreconsole/spectre.console)
+against the Windows distribution constraints.
+
+### Data sent by sync
+
+Send a user-chosen device label, target names and flavors, public addon
+identifiers, desired membership, installed versions, opaque state revisions
+for sync preconditions, and sync result codes.
+Use opaque device-local target IDs so a queued operation refers to a
+specific target even when display names change. Keep absolute paths, raw
+logs, manifests, credentials and all direct URL sources local. The service
+can read the synced fields and the dashboard labels them with the device's
+last report time.
+
+Catalogue contribution is a separate per-device setting. Its default
+for enrolled devices is on. During browser approval, show the setting
+before the user approves the device and respect any earlier installer
+opt-out. The dashboard can change the setting at any time. A device
+submits public addon IDs only after an explicit sync and only when the
+current setting allows it. Use a separate public request without a sync
+credential or device fields. If the setting cannot be read, skip the
+contribution. Changing it never affects the ability to sync.
+`wowget suggest` remains an explicit account-free alternative.
+
+Store device credentials outside the manifest with OS credential storage
+where available, or a current-user-only file (Unix mode 0600, current-user
+ACL on Windows). Keep tokens out of URLs, logs, and command output.
 
 ## Tests and CI
 
-- Pester 5 and PSScriptAnalyzer, installed in CI only; they are not shipped.
-- CI runs the tests on `ubuntu-latest`, `windows-latest` and `macos-latest`,
-  each with the pinned PowerShell from `runtime.json`, not the runner's.
-- Test rules carry over: `TestDrive:` or temp directories passed explicitly,
-  never the real manifest, cache or AddOns folders; the fake
-  `Invoke-WowgetHttp` instead of the network; live tests only with
-  `WOWGET_LIVE_TESTS=1`.
-- A smoke job on `windows-latest` runs the release zip through `install.ps1`
-  into a temp root and runs `wowget --version` and `wowget tui --check`.
-- The sharing crypto has fixed test vectors shared with the service tests, so
-  both sides agree byte for byte.
+- Pester 5 and PSScriptAnalyzer, installed in CI only.
+- CI runs tests on Linux, Windows and macOS with the pinned PowerShell from
+  `runtime.json`. Tests use explicit temp directories and a fake HTTP
+  layer. Live tests require `WOWGET_LIVE_TESTS=1`.
+- Installer smoke checks run the real launchers in temp roots and verify
+  `wowget --version` and help output.
+- Sync tests cover local edits since the last report, retries after an
+  interrupted acknowledgement, device revocation, partial failure,
+  redaction of private fields, contribution opt-out at install and enrollment,
+  normal CLI use without credentials, and sync summary output in interactive,
+  redirected and JSON modes.
 
 ## Phases
 
-0. **Prototype**, before any port. On a Windows 11 machine with Smart App
-   Control on, and on macOS:
-   - the pinned 7.6 runtime from Microsoft's archive, with every binary's
-     signature checked;
-   - started through the real `wowget.cmd` and `sh` launchers, with Ctrl+C and
-     quoted and unquoted `url:` arguments tried;
-   - a module made of dot-sourced `.ps1` files;
-   - a zip download following redirects through the host allowlist, extraction,
-     markers and a JSON manifest;
-   - Terminal.Gui loaded with `Add-Type -Path` and a table filled from a
-     background runspace;
-   - an `AesGcm` and `HKDF` round trip against the test vectors, and an
-     `ECDsa` signature check.
-
-   Check the Code Integrity log on Windows. Measure start-up time. Exit: no
-   Smart App Control event, the TUI threading works, the numbers recorded
-   here.
-1. **Core and CLI** with `url:` sources and the service's `/v1/resolve`,
-   `/v1/registry` and `/v1/version`: every command except `search`,
-   `suggest`, `link` and `tui`. TOML import and adoption.
-2. **Search and suggestions** against the service.
-3. **TUI.**
-4. **Sharing.**
-5. **Switch**: release as `1.0.0` (`feat!`), installers replaced, the Bun
-   client and its build removed from the repository, README and AGENTS.md
-   rewritten.
+0. **Prototype**, before any port. On Windows 11 with Smart App Control
+   enabled and on macOS, check the pinned runtime and its signatures, the
+   real launchers (including startup time, Ctrl+C and URL argument
+   quoting), dot-sourced modules, signed release verification, archive
+   download and extraction, markers and JSON manifest handling. Check Code
+   Integrity events on Windows and record the results.
+1. **Core CLI** with `url:` sources, service resolution, the registry and
+   version metadata. Include TOML import and marker adoption.
+2. **Account-free release** with search, manual suggestions, new signed
+   packages and installers. Replace the Bun client at the switch and
+   update README and AGENTS.md. This release can ship before device sync.
+3. **Optional device sync** with `login`, `sync`, `logout`, dashboard
+   integration, and catalogue contributions with a separate opt-out.
 
 ## Not in scope
 
-- A graphical UI outside the terminal.
+- A terminal UI or desktop GUI.
 - Windows PowerShell 5.1.
-- Signing the scripts. Smart App Control does not restrict an unsigned local
-  `.ps1` (it ran in FullLanguage mode in the 2026-11-20 test), and the
-  launcher passes `-ExecutionPolicy Bypass`.
-- Keeping the Bun client working beside the PowerShell client after the
-  switch.
+- Signing the scripts. Validate launch behavior under Smart App Control in
+  phase 0.
+- Keeping the Bun client beside the PowerShell client after the switch.
+- Background sync, shared manifest tokens, or remote execution outside a
+  user's explicit `wowget sync`.
 
 ## Open questions
 
-- Terminal.Gui 1.16 is the maintenance line. Moving to v2 needs either a new
-  ConsoleGuiTools release or a signed Terminal.Gui v2 DLL from NuGet. Check
-  the v2 package's signature before phase 3.
-- Smart App Control evaluation of `Add-Type -Path` on the vendored DLLs: they
-  are signed, but the prototype must show no event.
-- Whether the old Bun binaries should get a last release that tells users to
-  reinstall with the new installer. They cannot update themselves on machines
-  where Smart App Control blocks them anyway.
+- Whether to ship a final Bun release that directs users to the new
+  installer. On affected Windows machines, Smart App Control may block a
+  Bun self-update before it can show that message.
