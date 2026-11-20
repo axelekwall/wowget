@@ -295,6 +295,12 @@ flow of SPEC-SEARCH.md and SPEC-REGISTRY-SUGGEST.md. Details in
   and lets users queue add, remove and update operations. The local CLI
   applies them only during an explicit `wowget sync` and reports the outcome.
   The service can read the limited fields synced for this feature.
+- **Dashboard authentication.** Use Better Auth on Cloudflare Workers with
+  its D1 adapter, Passkey plugin, and Device Authorization plugin for
+  `wowget login`. Validate passkey-first signup without collecting email
+  or phone and device-scoped revocation before building the dashboard.
+  The PowerShell client uses HTTP for device enrollment and sync.
+  [Better Auth on D1](https://better-auth.com/blog/1-5)
 - **Catalogue contributions.** During installation and device approval,
   explain that enrolled devices contribute public addon IDs on explicit
   sync by default and show how to opt out. Validate candidates and publish
@@ -313,3 +319,85 @@ flow of SPEC-SEARCH.md and SPEC-REGISTRY-SUGGEST.md. Details in
   pushing code to clients.
 - **One public repository** for client and service. The service's defences do
   not depend on its code being private; secrets live in Cloudflare and GitHub.
+
+## Related work and lessons (2026-11-20)
+
+The Strongbox directory is a starting point. Verify provider support in
+each project's own documentation. For example, the directory marks
+CurseForge as unsupported for WowUp, whose current guide documents a
+dedicated CurseForge edition.
+[Addon manager directory](https://ogri-la.github.io/wow-addon-managers/)
+and [WowUp provider guide](https://wowup.io/guide/get-addons/overview).
+
+- **wowaddon** uses Bun, TypeScript, React and OpenTUI. It has editable
+  manifests per flavor, JSON output, dry runs, and a way to adopt existing
+  installs. Its standalone binaries target Linux. Plan output and adoption
+  are useful references for wowget. One manifest with named cross-platform
+  targets remains worth testing on a fresh Windows and macOS setup. Its
+  CurseForge adapter reads the website's file list and download endpoint.
+  Search uses a developer key or the community `api.curse.tools` proxy.
+  [README](https://github.com/cjber/wowaddon)
+  and [CurseForge adapter](https://github.com/cjber/wowaddon/blob/HEAD/src/sources/curseforge.ts).
+- **forever-addons** uses Python's standard library, a JSON manifest,
+  several AddOns directories, backups and rollback. It can reapply local
+  patches after an update. This is a close reference for a small manifest
+  CLI and for keeping rollback local. It uses the official CurseForge API
+  when given a key and otherwise uses the website endpoints by project ID.
+  [README](https://github.com/julius-retzer/forever-addons)
+  and [source adapters](https://github.com/julius-retzer/forever-addons/blob/HEAD/forever_addons/sources.py).
+- **instawow** has a Python CLI and a Svelte desktop frontend, broad
+  provider coverage, profiles and rollback. Its resolver is a reference
+  for flavor-aware file selection and reporting when a file is unavailable
+  for third-party distribution. CurseForge's official endpoint uses a
+  developer token configured by the user.
+  [README](https://github.com/layday/instawow)
+  and [CurseForge resolver](https://github.com/layday/instawow/blob/main/src/instawow/_sources/cfcore.py).
+- **WowUp** uses TypeScript, Angular and Electron. It offers automatic
+  updates and an export string for reinstalling an addon list. WowUp says
+  Overwolf approved its dedicated CurseForge edition, which uses
+  Overwolf's Electron build. It sets the desktop convenience benchmark.
+  The dashboard proposal addresses a different workflow: checking what
+  a specific device last reported and queuing an edit for its next sync.
+  [Addon management](https://wowup.io/guide/my-addons/addons),
+  [import and export](https://wowup.io/guide/my-addons/addon-import),
+  and [CurseForge edition announcement](https://www.patreon.com/jliddev/posts/next-thing-74232257).
+- **CurseBreaker** offers a Python terminal client, headless updates and
+  multiple WoW installs. Its current source list omits CurseForge. It shows
+  how far an open-source provider workflow can go without that integration.
+  [README](https://github.com/AcidWeb/CurseBreaker).
+- **wowpkg** is a C CLI with a package-manager workflow for GitHub
+  releases. **Strongbox** uses Clojure and maintains a searchable catalogue
+  for open providers. Both are precedents for pieces of wowget's core
+  workflow. Strongbox also documents dropping CurseForge updates and
+  helping users migrate sources.
+  [wowpkg](https://github.com/ccassise/wowpkg)
+  and [Strongbox](https://github.com/ogri-la/strongbox).
+- **Underwolf** uses Python and Selenium to check versions and route
+  downloads through Firefox. It shows the additional dependencies a
+  browser automation approach can bring. The existing wowget plan keeps
+  normal terminal output and a command-only client. **clet** offers an
+  optional terminal Markdown renderer if richer summaries become useful.
+  Its upstream README describes direct Windows downloads as unsigned.
+  [Underwolf](https://github.com/Lesona-Systems/Underwolf)
+  and [clet](https://github.com/tui-cs/clet#native-binaries-install).
+
+### CurseForge findings for later work
+
+The website file-list endpoint returned metadata without a key for Questie,
+Deadly Boss Mods and Details! on 2026-11-20. The website download endpoint
+redirected to ForgeCDN for each, and the followed requests returned 404 from
+the test environment. The community search proxy returned 403 for the Questie
+query. This verifies metadata lookup for known project IDs. Automatic ZIP
+delivery and reliable broad search still need verification. CurseForge
+documents API-key authentication for direct CDN downloads.
+[CDN authentication](https://blog.curseforge.com/introducing-api-key-authentication-for-curseforge-file-downloads/).
+
+A future feature could accept a CurseForge project URL, track its file ID,
+and open the exact file page for a browser download and local ZIP import.
+The existing contribution model could also accept verified public project
+IDs and show them as browser-download entries in public search. Seek
+approval for an official key if automated downloads are pursued, including
+the intended Cloudflare delivery and metadata-cache design. The rewrite
+release does not depend on these experiments.
+[API application guide](https://support.curseforge.com/support/solutions/articles/9000208346)
+and [third-party API terms](https://support.curseforge.com/support/solutions/articles/9000207405-curseforge-3rd-party-api-terms-and-conditions).
