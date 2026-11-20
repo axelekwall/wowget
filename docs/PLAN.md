@@ -265,13 +265,13 @@ flow of SPEC-SEARCH.md and SPEC-REGISTRY-SUGGEST.md. Details in
   SPEC-POWERSHELL.md repeats the test with the pinned PowerShell.
 - **Runtime: PowerShell 7 LTS, shipped privately on every platform.** Chosen
   over Node, Python, Java and Bun because Windows is the main platform,
-  PowerShell is Microsoft's own, every binary in its Windows package is signed
-  by Microsoft, and Terminal.Gui comes signed by Microsoft through
-  ConsoleGuiTools. Users install nothing first. The costs: about 110 MB
-  first download on Windows, slower start-up, and a language that suits a
-  codebase of this size less well than TypeScript. Windows PowerShell 5.1 was
-  considered and dropped: no Terminal.Gui, and two language versions to test.
-- **TUI: Terminal.Gui 1.16** instead of OpenTUI.
+  PowerShell is Microsoft's own and every binary in the checked Windows
+  package is signed by Microsoft. Users install nothing first. The costs
+  include about 110 MB for the first Windows download and slower startup.
+  Keeping one PowerShell version gives the client one test matrix.
+- **Command-only client.** Retire OpenTUI and drop the planned Terminal.Gui
+  port. Use a compact, Git-style summary for an explicit sync, with
+  optional terminal color and structured JSON output.
 - **Formats: JSON for the manifest, marker files for state.** `wowget.json`
   replaces `wowget.toml`; comments in the manifest are no longer possible. A
   `.wowget.json` marker in every installed addon folder replaces `state.db`,
@@ -285,9 +285,23 @@ flow of SPEC-SEARCH.md and SPEC-REGISTRY-SUGGEST.md. Details in
   registry moves from `registry/addons.toml` to the service database, managed
   through a private admin interface behind Cloudflare Access. Suggestions go
   to a queue there instead of GitHub issues.
-- **Sharing without accounts.** `wowget link` syncs the manifest between
-  machines through the service, end-to-end encrypted with a key that only the
-  token carries. Dotfiles keep working through `WOWGET_MANIFEST`.
+- **Account-free by default.** The CLI uses public search and resolution
+  and keeps its inventory local. Reconciliation uses local metadata and
+  the registry snapshot. Dotfiles keep working through `WOWGET_MANIFEST`.
+- **Public web catalogue and optional dashboard.** Anyone can browse and
+  search. Users can create a passkey account without an email address or
+  phone number, save a recovery code, and approve each device in the browser
+  with `wowget login`. The dashboard shows last reported versions per device
+  and lets users queue add, remove and update operations. The local CLI
+  applies them only during an explicit `wowget sync` and reports the outcome.
+  The service can read the limited fields synced for this feature.
+- **Catalogue contributions.** During installation and device approval,
+  explain that enrolled devices contribute public addon IDs on explicit
+  sync by default and show how to opt out. Validate candidates and publish
+  verified public metadata in batches, without linking it to contributors.
+  Deliberate `wowget suggest` submissions remain available without accounts.
+- **Release order.** Ship the account-free CLI with public search and
+  resolution before the dashboard and device sync.
 - **Signed releases.** The project signs each release zip with its own ECDSA
   key, and clients verify it before updating. This is not Authenticode and
   does not involve Windows; it stops the service, or a tampered download, from
