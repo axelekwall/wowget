@@ -190,10 +190,16 @@ works while wowget runs.
 
 ### Size and speed
 
-- First install: about 110 MB download on Windows, 70 MB on macOS. Updates
-  that keep the runtime: the app zip, a few hundred KB.
-- PowerShell starts in roughly 0.3–0.6 s. Every command pays it once. Measure
-  in phase 0 and record the numbers here.
+- First install: about 110 MB download on Windows (the 7.6.10 `win-x64` zip
+  is 109.6 MB), 70 MB on macOS (68.1 MB for `osx-arm64`). Updates that keep
+  the runtime: the app zip, a few hundred KB.
+- Startup, measured in phase 0 on Windows 11 (see "Phase 0 results"): a
+  `wowget --version` round trip through `wowget.cmd`, which imports the module,
+  takes 0.40–0.44 s warm (median 0.41–0.42 s over 10 runs) and 0.46 s for
+  the first run of a session. The very first start after extraction took
+  2.2 s. A bare `pwsh -NoProfile -Command 'exit 0'` takes 0.19 s, so cmd,
+  the script and the module import add about 0.22 s. Every command pays this
+  once.
 
 ## Code layout
 
@@ -201,7 +207,9 @@ works while wowget runs.
 client/
   Wowget/
     Wowget.psd1, Wowget.psm1     module manifest and loader
-    Paths.ps1                    locations, env overrides, game directory candidates
+    Errors.ps1                   the WowgetError class and its codes
+    Fs.ps1                       atomic writes through symlinks, JSON text, the lock
+    Paths.ps1                    locations, env overrides, game directory detection
     Manifest.ps1                 read, validate, write wowget.json
     TomlImport.ps1               one-time TOML manifest conversion
     Markers.ps1                  read and write .wowget.json markers
@@ -218,9 +226,15 @@ client/
     SelfUpdate.ps1
     Cli.ps1                      argument parsing, formatting, --json, exit codes
   wowget.ps1                     entry point: imports the module, calls Cli
-  tests/                         Pester 5 tests, mirroring the module
+  runtime.json                   pinned runtime version, URLs and SHA-256 per platform
+  tests/                         Pester 5 tests, mirroring the module; run.ps1 runs them
+                                 (and PSScriptAnalyzer with -Lint)
   install.ps1, install.sh
 ```
+
+`Errors.ps1` and `Fs.ps1` are not in the first plan: the error class must load
+before every file that throws it, and the write and lock helpers are shared by
+the manifest, the markers and the url: source records.
 
 Rules carried over from the Bun client:
 
@@ -233,7 +247,9 @@ Rules carried over from the Bun client:
   `zip`, `flavor`, `conflict`, `locked`, `source`, `io`. Service errors map
   to them: `rate_limited` to `rate_limited` (the message gives the
   `Retry-After` time), `upstream` and a per-item `flavor` or `source` result to
-  `source` or `flavor` for that row, anything else to `network`.
+  `source` or `flavor` for that row, anything else to `network`. A per-item
+  `not_found` or `bad_request` (an unknown repository or pin) is also `source`
+  for that row, since it says nothing about the network.
 - `Http.ps1` is the only file that calls `Invoke-WebRequest`. Tests replace
   it with a fake through a module-scoped variable, the same role `fakeFetch`
   plays today.
@@ -384,7 +400,8 @@ wowget writes one marker into every addon folder it installs:
   folder's marker. The other addon then counts the folder as missing, which
   matches today's "displaced" rule.
 - `previous` holds the install that this one replaced, so `rollback` can find
-  its zip in the cache. One level of history, as `rollback` uses today.
+  its zip in the cache. One level of history, as `rollback` uses today. A
+  reinstall of the same release (a repair) keeps the marker's `previous`.
 - Folders without a marker are unmanaged: `reconcile` lists them, `update`
   and `remove` never touch them. Folders starting with `Blizzard_` are
   ignored.
@@ -394,7 +411,9 @@ wowget writes one marker into every addon folder it installs:
   machine, or through an externally edited manifest. `doctor` reports it as
   an issue (`orphan_marker`), naming the folders. `remove <name> -t <target>`
   also accepts such a name and deletes its folders. Nothing deletes them
-  without being asked.
+  without being asked. `remove` and `target remove` on a target not on this
+  machine therefore change only the manifest, with a `target:absent` event;
+  there is no state row to forget.
 - WoW ignores files in addon folders it does not know. Copying an addon
   folder to another machine carries its marker, which is correct.
 
@@ -403,7 +422,9 @@ wowget writes one marker into every addon folder it installs:
 Commands that write take an exclusive lock on `<state>/wowget.lock`
 (`[IO.File]::Open` with `FileShare.None`), so two wowget processes never
 install at once. A second process waits up to 10 seconds, then fails with a
-`locked` error naming the lock file.
+`locked` error naming the lock file. Every command except `list`,
+`target list`, help and `--version` takes it; `outdated` does because
+url: sources write the cache.
 
 ## Sources
 
@@ -452,6 +473,17 @@ The steps of SPEC-MVP.md, "Installer", with markers in place of state rows:
 Uninstall removes the folders whose marker names the addon. Cache pruning keeps
 the zips named by current markers and their `previous` entries.
 
+Each cache path segment (the addon name in lower case, the release id, the
+filename) must be a valid file name on every platform. A segment is used as it
+is when it already is one. Otherwise `<>:"/\|?*`, control characters and
+trailing dots and spaces become `_`, reserved Windows device names (`CON`,
+`PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, with any extension) get a
+`_` prefix, and `-` plus the first 6 hex digits of the original's SHA-256 is
+appended. The hash keeps names that differ only in those characters (`A?B`,
+`A*B`) in separate directories, so pruning one addon's cache never touches
+another's. The Bun client replaced only `/`, `\`, `:` and NUL, which is why
+adoption recovers release ids instead of trusting directory names.
+
 ## Commands
 
 For the non-TUI commands, names, flags, outputs and exit codes stay as the Bun
@@ -460,7 +492,7 @@ client's, except:
 | Command | Change |
 |---|---|
 | `init`, `target *` | Write JSON. Otherwise unchanged. |
-| `add <source \| name>` | Bare names resolve against the service registry (snapshot when offline). |
+| `add <source \| name>` | Bare names resolve against the service registry (snapshot when offline). `add wowi:<id>` without `--name` takes the name of the registry entry with that source, else `wowi-<id>`, since the service does not return the WoWInterface title. |
 | `list` | Reads markers. |
 | `outdated`, `update`, `install` | One `/v1/resolve` request per batch instead of per-addon lookups. |
 | `pin`, `unpin`, `rollback` | Pins in the manifest as today; rollback reinstalls `previous` from the cache. `pin <name>` without a release on an install whose marker says `releaseId: "unknown"` is a `usage` error asking for a release or an `update` first. |
@@ -687,6 +719,71 @@ Keep tokens out of URLs, logs, and command output.
 2. **Search** against service phase 2. `suggest` keeps the GitHub issue flow.
 3. **Account-free release**: new signed packages and installers, the switch
    from the Bun client, README and AGENTS.md updated.
+
+### Phase 0 results (2026-11-21)
+
+A Windows 11 machine, driven from WSL2, with Smart App Control on and enforcing
+(`VerifiedAndReputablePolicyState` 1, `SmartAppControlState` On). macOS was
+not tested in this run.
+
+- **Runtime.** `PowerShell-7.6.10-win-x64.zip` (7.6.10 is the current 7.6
+  tag) matched the SHA-256 in the release asset's digest and in
+  `hashes.sha256`. Of its 658 files, 517 are executables and DLLs (2 `.exe`,
+  515 `.dll`), and `Get-AuthenticodeSignature` reports all 517 as `Valid`
+  (signers: .NET 410, Microsoft Corporation 63, Microsoft 3rd Party
+  Application Component 34, Microsoft Windows 7, .NET DAC 3). The archive was
+  downloaded without a Mark of the Web, as `install.ps1` will download it.
+- **Launcher.** The `wowget.cmd` above, unchanged, ran `wowget.ps1`, which
+  imported a module made of dot-sourced `.ps1` files. The script ran in
+  `FullLanguage` mode, so Smart App Control does not put unsigned scripts
+  in Constrained Language mode.
+- **Download.** `Invoke-WebRequest -MaximumRedirection 0
+  -SkipHttpErrorCheck` returns the 3xx response but also writes a
+  non-terminating "maximum redirection count" error, so the client calls it
+  with `-ErrorAction SilentlyContinue -ErrorVariable` and fails only when no
+  response came back. A GitHub release asset redirected once, from
+  `github.com` to `release-assets.githubusercontent.com`; a WoWInterface
+  download (`cdn.wowinterface.com/downloads/getfile.php`) answered 200
+  directly. A host outside the allowlist was refused before any request.
+  The allowlist keeps `objects.githubusercontent.com`, GitHub's earlier
+  asset host.
+- **Extraction, markers, manifest.** `System.IO.Compression.ZipFile` extracted
+  a 142-entry addon zip. A marker and a JSON manifest were written through
+  `[IO.File]::WriteAllText` with UTF-8 without BOM and `[IO.File]::Move`, and
+  read back with `ConvertFrom-Json`. `ConvertTo-Json` writes CRLF on Windows,
+  so the manifest writer normalises to LF.
+- **Release signature.** A zip signed with a throwaway P-256 key
+  (`ECDsa.SignHash`, DER) verified with `ECDsa.VerifyHash` and the public key
+  as base64 SubjectPublicKeyInfo; a different file with the same signature
+  did not.
+- **Code Integrity.** The `Microsoft-Windows-CodeIntegrity/Operational` log
+  had no events of any id (so none of 3033, 3034, 3076, 3077, 3089, 3118,
+  3119) between the start of the test and its end, which covered the
+  extraction, the signature check and every launcher run.
+- **Arguments.** Results through `wowget.cmd`:
+
+  | Argument | From `cmd.exe` | From PowerShell 5.1 and 7.6 |
+  |---|---|---|
+  | `url:https://x.test/a%20b.zip`, unquoted or quoted | unchanged | unchanged |
+  | `100%` | unchanged | unchanged |
+  | `%OS%` (a defined variable), unquoted or quoted | expanded to `Windows_NT` | expanded to `Windows_NT` |
+  | `a^b`, unquoted | `^` dropped | `^` dropped |
+  | `"a^b"`, quoted | unchanged | `^` dropped |
+  | `a?x=1&y=2`, quoted | unchanged | cut at `&`, cmd then runs `y` |
+
+  The launcher itself does not re-expand `%` in `%*`; the expansion and the
+  `^` and `&` handling come from the `cmd /c` that runs any `.cmd` file,
+  which PowerShell also uses and to which it passes arguments without spaces
+  unquoted. `%XX` escapes are safe unless they spell a defined variable
+  between two `%`. From PowerShell, an argument with `&` or `^` survives when
+  wrapped in double quotes inside single quotes
+  (`'"url:https://x.test/a?x=1&y=2"'`) or after `--%`. The README written in
+  phase 3 documents this for `url:` sources with query strings.
+- **Ctrl+C.** Not tested: the "Terminate batch job (Y/N)?" prompt needs an
+  interactive console, which this run did not have.
+- **Linux.** The `linux-x64` runtime aborts at start without libicu.
+  `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` makes it run, so `install.sh` and the
+  `sh` launcher are to set it when libicu is missing.
 
 Phases 0 to 3 are the vertical slice: feature parity with the Bun client
 except the TUI, with no accounts, sync or admin interface. It also produces
