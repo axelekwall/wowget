@@ -258,16 +258,17 @@ function Invoke-WowgetSelfUpdate {
             [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($rtDir))
             Move-WowgetDirectoryInto $rtTmp $rtDir
         }
-        $appDir = [System.IO.Path]::Combine($Root, 'app', $latest)
-        [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($appDir))
-        Move-WowgetDirectoryInto $appTmp $appDir
-
+        # Probe the staged copy before it replaces anything, so a forced reinstall of the running
+        # version that fails the probe leaves the working app in place.
         try {
-            $reported = ([string](& $script:WowgetVersionProbe $pwsh ([System.IO.Path]::Combine($appDir, 'wowget.ps1')))).Trim()
+            $reported = ([string](& $script:WowgetVersionProbe $pwsh ([System.IO.Path]::Combine($appTmp, 'wowget.ps1')))).Trim()
             if ($reported -cne "wowget $latest") { throw "it reported `"$reported`"" }
         } catch {
             throw (New-WowgetError 'source' "wowget $latest did not start on PowerShell $rtVersion ($(Get-WowgetErrorMessage $_)); the installed version was kept.")
         }
+        $appDir = [System.IO.Path]::Combine($Root, 'app', $latest)
+        [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($appDir))
+        Move-WowgetDirectoryInto $appTmp $appDir
 
         # The switch: the launchers read both versions from this one file.
         $currentPath = [System.IO.Path]::Combine($Root, 'current')

@@ -127,7 +127,9 @@ InModuleScope Wowget {
             (Get-Content -Raw ([System.IO.Path]::Combine($root, 'previous'))) | Should -BeExactly "1.0.0 7.6.10`n"
             [System.IO.File]::Exists([System.IO.Path]::Combine($root, 'app', '9.9.9', 'wowget.ps1')) | Should -BeTrue
             (Get-Content -Raw ([System.IO.Path]::Combine($root, 'app', '9.9.9', 'Wowget', 'Wowget.psm1'))) | Should -Match "WowgetVersion = '9.9.9'"
-            $script:WgProbed[1] | Should -Be ([System.IO.Path]::Combine($root, 'app', '9.9.9', 'wowget.ps1'))
+            # The probe runs on the staged copy, before it is moved into app/.
+            $script:WgProbed[1] | Should -BeLike '*wowget.ps1'
+            $script:WgProbed[1] | Should -Not -Be ([System.IO.Path]::Combine($root, 'app', '9.9.9', 'wowget.ps1'))
             # The next run keeps current and previous and removes the rest.
             $stale = [System.IO.Path]::Combine($root, 'app', '0.9.0')
             $recent = [System.IO.Path]::Combine($root, 'app', '9.9.10')
@@ -152,6 +154,21 @@ InModuleScope Wowget {
             (Get-Content -Raw ([System.IO.Path]::Combine($root, 'current'))) | Should -BeExactly "1.0.0 7.6.10`n"
             $script:WowgetReleasePublicKey = 'not-a-key'
             Get-WgErrorText { Invoke-WowgetSelfUpdate -Options $o -Root $root } | Should -Match 'no valid release public key'
+        }
+
+        It 'keeps the running version when a forced reinstall of it fails to start' {
+            $root = New-WgInstallRoot $dirs
+            Set-WgRelease
+            $script:WowgetVersion = '9.9.9'
+            $running = [System.IO.Path]::Combine($root, 'app', '9.9.9')
+            [void][System.IO.Directory]::CreateDirectory($running)
+            [System.IO.File]::WriteAllText([System.IO.Path]::Combine($running, 'wowget.ps1'), 'the running copy')
+            Write-WowgetFileAtomic ([System.IO.Path]::Combine($root, 'current')) "9.9.9 7.6.10`n"
+            $script:WowgetVersionProbe = { param($pwsh, $script) 'wowget broken' }
+            $o.Force = $true
+            Get-WgErrorText { Invoke-WowgetSelfUpdate -Options $o -Root $root } | Should -Match 'did not start'
+            [System.IO.File]::ReadAllText([System.IO.Path]::Combine($running, 'wowget.ps1')) | Should -BeExactly 'the running copy'
+            (Get-Content -Raw ([System.IO.Path]::Combine($root, 'current'))) | Should -BeExactly "9.9.9 7.6.10`n"
         }
 
         It 'downloads, checks and extracts a runtime the new release pins' {
