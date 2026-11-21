@@ -47,9 +47,10 @@ jobs:
           sha=$(jq -r --arg a "${{ matrix.asset }}" '.assets[$a].sha256' client/runtime.json)
           archive="$RUNNER_TEMP/pwsh-archive"
           curl -fsSL --retry 3 -o "$archive" "$url"
-          echo "$sha  $archive" | shasum -a 256 -c -
+          # Git Bash on Windows has sha256sum but no shasum; macOS has shasum.
+          if command -v sha256sum >/dev/null; then echo "$sha  $archive" | sha256sum -c -; else echo "$sha  $archive" | shasum -a 256 -c -; fi
           mkdir -p "$RUNNER_TEMP/pwsh"
-          if [[ "$url" == *.zip ]]; then unzip -q "$archive" -d "$RUNNER_TEMP/pwsh"; else tar -xzf "$archive" -C "$RUNNER_TEMP/pwsh"; chmod +x "$RUNNER_TEMP/pwsh/pwsh"; fi
+          if [[ "$url" == *.zip ]]; then 7z x -y -bd -o"$RUNNER_TEMP/pwsh" "$archive" >/dev/null; else tar -xzf "$archive" -C "$RUNNER_TEMP/pwsh"; chmod +x "$RUNNER_TEMP/pwsh/pwsh"; fi
           echo "PWSH=$RUNNER_TEMP/pwsh/${{ matrix.exe }}" >> "$GITHUB_ENV"
           echo "PSModulePath=$RUNNER_TEMP/modules" >> "$GITHUB_ENV"
       - name: Install Pester and PSScriptAnalyzer
