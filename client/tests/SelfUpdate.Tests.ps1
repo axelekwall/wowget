@@ -39,7 +39,9 @@ InModuleScope Wowget {
             param($Dirs, [string]$Runtime = '7.6.10')
             $root = [System.IO.Path]::Combine($Dirs.Root, 'root')
             [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::Combine($root, 'app', '1.0.0'))
-            [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::Combine($root, 'runtime', $Runtime))
+            $rt = [System.IO.Path]::Combine($root, 'runtime', $Runtime)
+            [void][System.IO.Directory]::CreateDirectory($rt)
+            [System.IO.File]::WriteAllText([System.IO.Path]::Combine($rt, $(if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' })), '')
             [System.IO.File]::WriteAllText([System.IO.Path]::Combine($root, 'current'), "1.0.0 $Runtime`n")
             return $root
         }
@@ -127,9 +129,14 @@ InModuleScope Wowget {
             (Get-Content -Raw ([System.IO.Path]::Combine($root, 'app', '9.9.9', 'Wowget', 'Wowget.psm1'))) | Should -Match "WowgetVersion = '9.9.9'"
             $script:WgProbed[1] | Should -Be ([System.IO.Path]::Combine($root, 'app', '9.9.9', 'wowget.ps1'))
             # The next run keeps current and previous and removes the rest.
-            [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::Combine($root, 'app', '0.9.0'))
+            $stale = [System.IO.Path]::Combine($root, 'app', '0.9.0')
+            $recent = [System.IO.Path]::Combine($root, 'app', '9.9.10')
+            [void][System.IO.Directory]::CreateDirectory($stale)
+            [void][System.IO.Directory]::CreateDirectory($recent)
+            [System.IO.Directory]::SetLastWriteTimeUtc($stale, [DateTime]::UtcNow.AddHours(-2))
             Remove-WowgetOldVersions $root
-            Get-WgFolders ([System.IO.Path]::Combine($root, 'app')) | Should -Be @('1.0.0', '9.9.9')
+            # A directory changed in the last hour may be one an installer is about to switch to.
+            Get-WgFolders ([System.IO.Path]::Combine($root, 'app')) | Should -Be @('1.0.0', '9.9.10', '9.9.9')
         }
 
         It 'refuses a release whose signature does not verify, and one that does not start' {

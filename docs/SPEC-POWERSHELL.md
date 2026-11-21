@@ -123,9 +123,15 @@ push code to clients:
 | Active versions | `<root>\current` (one line: `<app version> <runtime version>`) | `<root>/current` |
 | Launcher | `<root>\bin\wowget.cmd`, on the user PATH | `~/.local/bin/wowget` |
 
-`WOWGET_INSTALL_DIR` overrides the install root, as today. Self-update and the
-installers also write `<root>/previous` with the line `current` held before a
-switch to another app version; the clean-up keeps the versions both name.
+`WOWGET_INSTALL_DIR` overrides the install root. For the Bun client it named
+the directory of the binary, so the installers also remove a Bun binary found
+directly in it. Self-update and the installers also write `<root>/previous`
+with the line `current` held before a switch to another app version; the
+clean-up keeps the versions both name. It runs only while the command holds
+the write lock, and it keeps directories changed in the last hour, since an
+installer (which takes no lock) may be about to switch to them. It also
+removes the `.update-*` and `.install-*` directories that interrupted runs
+left in the root.
 
 ### Launchers
 
@@ -438,6 +444,8 @@ Implementation notes:
   and goes through the JSON manifest's validation, so errors name JSON-style
   positions (`addon #2.name`) prefixed with the TOML file. A manifest with the
   old `[install]` table is a `manifest` error saying to run `wowget init`.
+- The JSON file takes the TOML file's name: `wowget.toml` becomes
+  `wowget.json`, and a `--manifest` file `addons.toml` becomes `addons.json`.
 - A `wowget.json` that already exists next to the resolved TOML file (another
   machine converted the shared file) is used as it is, and the symlink next to
   the link is still created.
@@ -661,9 +669,16 @@ Implementation notes:
 - Release id recovery also asks for the latest release when the addon is not
   pinned: a directory name the Bun client had to change (a tag such as
   `bundle/v1.2`) resolves to nothing, while the installed release is often
-  still the latest one. The filename and checksum check applies to it too.
+  still the latest one. Every recovery needs a matching filename and a
+  matching checksum (SHA-256 or MD5); a result with neither checksum leaves
+  the id `unknown`, since assets without a version in their name would
+  otherwise match any release.
 - Identification is by the SHA-256 of every file the zip extracts into its
   folders; extra files on disk, such as the marker, do not count against it.
+  So a release that only adds files to an older one matches where the older
+  one is installed too: of several matches, the one whose files include all
+  the others' is taken, and only matches that no single one covers go to
+  step 4.
 - `previous` is the newest other cached release, and only when its release id
   is recovered: `rollback` finds the zip by its release id, which `unknown`
   does not name.

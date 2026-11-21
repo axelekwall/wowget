@@ -557,13 +557,14 @@ function Invoke-WowgetCli {
             Force              = [bool]$values['force']
             OnEvent            = $progress.OnEvent
         }
-        $root = Get-WowgetInstallRoot
-        if ($root) { Remove-WowgetOldVersions $root }
         $need = $null
         if ($script:NoMigrationCommands -cnotcontains $key) { $need = Get-WowgetMigrationNeed $manifestPath $overridden $Env $platform }
         $migrating = $null -ne $need -and ($null -ne $need.Toml -or $need.Adopt)
         if ($migrating -or $script:ReadOnlyCommands -cnotcontains $key) {
             $lock = Enter-WowgetLock -StateDir (Get-WowgetStateDir $Env $platform) -TimeoutMs $LockTimeoutMs
+            # Under the lock, so no self-update of another wowget is between installing and switching.
+            $root = Get-WowgetInstallRoot
+            if ($root) { Remove-WowgetOldVersions $root }
         }
         if ($migrating) { $options.ManifestPath = Invoke-WowgetFirstStart $options $need $progress $Stderr }
         if ($key -ceq 'search' -and $values['refresh']) {

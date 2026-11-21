@@ -133,7 +133,10 @@ function Install-Wowget {
         $bin = Join-Path $root 'bin'
         New-Item -ItemType Directory -Force -Path $bin | Out-Null
         # The Bun client's binary would be found before wowget.cmd on PATH.
-        $leftovers = @(Get-ChildItem -LiteralPath $bin -Force | Where-Object { $_.Name -eq 'wowget.exe' -or $_.Name -eq 'wowget.exe.old' -or $_.Name -like '.wowget.exe.new-*' })
+        # The previous wowget's WOWGET_INSTALL_DIR named the directory of its binary, so look there too.
+        $leftovers = @(foreach ($dir in @($bin, $root)) {
+                Get-ChildItem -LiteralPath $dir -Force | Where-Object { $_.Name -eq 'wowget.exe' -or $_.Name -eq 'wowget.exe.old' -or $_.Name -like '.wowget.exe.new-*' }
+            })
         foreach ($item in $leftovers) {
             try { Remove-Item -LiteralPath $item.FullName -Force; Write-Host "Removed the previous wowget's $($item.Name)" }
             catch { Write-Warning "Could not remove $($item.FullName); delete it by hand once no wowget is running." }
@@ -157,16 +160,22 @@ function Install-Wowget {
         }
 
         if ($env:WOWGET_SKIP_PATH -ne '1') {
-            $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+            # Read and written unexpanded, so entries such as %USERPROFILE%\... keep their variables.
+            $key = Get-Item -LiteralPath 'HKCU:\Environment'
+            $userPath = [string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
             if (($userPath -split ';') -notcontains $bin) {
                 $joined = if ($userPath) { "$userPath;$bin" } else { $bin }
-                [Environment]::SetEnvironmentVariable('Path', $joined, 'User')
+                Set-ItemProperty -LiteralPath 'HKCU:\Environment' -Name 'Path' -Value $joined -Type ExpandString
+                # Setting a variable through .NET tells running programs that the environment changed.
+                [Environment]::SetEnvironmentVariable('WOWGET_INSTALLER', '1', 'User')
+                [Environment]::SetEnvironmentVariable('WOWGET_INSTALLER', $null, 'User')
                 Write-Host "Added $bin to your user PATH; open a new terminal to use wowget."
             }
             if (($env:Path -split ';') -notcontains $bin) { $env:Path = "$env:Path;$bin" }
         }
 
         $installed = & (Join-Path $bin 'wowget.cmd') --version
+        if ($LASTEXITCODE -ne 0) { throw "wowget: the installed wowget does not start; run $bin\wowget.cmd --version to see why." }
         Write-Host "Installed $installed to $root"
         Write-Host 'wowget needs no account, and installing and using it uploads nothing about your addons.'
         Write-Host 'If you later enroll a device for sync, explicit syncs contribute public addon IDs to the'

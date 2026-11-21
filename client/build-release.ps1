@@ -40,7 +40,8 @@ try {
     } catch {
         throw "$PublicKeyPath does not hold a base64 SubjectPublicKeyInfo public key; put the release public key there."
     }
-    if ($verifier.KeySize -ne 256) { throw "$PublicKeyPath is not a P-256 key." }
+    # install.ps1 imports the key as a NIST P-256 key blob.
+    if ($verifier.ExportParameters($false).Curve.Oid.Value -ne '1.2.840.10045.3.1.7') { throw "$PublicKeyPath is not a NIST P-256 key." }
     $probe = [System.Security.Cryptography.SHA256]::HashData([byte[]](1, 2, 3))
     $format = [System.Security.Cryptography.DSASignatureFormat]::Rfc3279DerSequence
     if (-not $verifier.VerifyHash($probe, $signer.SignHash($probe, $format), $format)) {

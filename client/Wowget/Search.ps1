@@ -24,9 +24,13 @@ function Invoke-WowgetServiceSearch {
     $rows = foreach ($r in $doc['rows']) {
         if (-not (Test-WowgetJsonDictionary $r) -or -not (Test-WowgetNonEmptyString $r['name']) -or -not (Test-WowgetNonEmptyString $r['source'])) { continue }
         if ($r['origin'] -cnotin 'registry', 'wowi', 'github') { continue }
+        # The filter's flavors first, then the rest in the usual order, as the Bun client lists them.
         $support = [ordered]@{}
         if (Test-WowgetJsonDictionary $r['flavors']) {
-            foreach ($f in $r['flavors'].Keys) { if ((Test-WowgetFlavor $f) -and $r['flavors'][$f] -cin 'yes', 'unknown') { $support[[string]$f] = [string]$r['flavors'][$f] } }
+            foreach ($f in @(@($Flavors | Where-Object { $_ }) + $script:Flavors)) {
+                if ($support.Contains($f) -or -not $r['flavors'].Contains($f)) { continue }
+                if ($r['flavors'][$f] -cin 'yes', 'unknown') { $support[$f] = [string]$r['flavors'][$f] }
+            }
         }
         [pscustomobject]@{
             Name = $r['name']; Source = $r['source']; Origin = $r['origin']; Flavors = $support; Description = (& $text $r['description'])
@@ -126,8 +130,7 @@ function Invoke-WowgetSuggest {
     $registry = Get-WowgetRegistry -ApiUrl $apiUrl -CacheDir $cacheDir
     $listed = @{}
     foreach ($e in $registry.Entries) {
-        $k = Get-WowgetSourceKey $e.Source
-        if (-not $listed.ContainsKey($k)) { $listed[$k] = $e.Name }
+        $listed[(Get-WowgetSourceKey $e.Source)] = $e.Name
     }
     $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $entries = foreach ($a in (Get-WowgetSortedByName @($addons))) {

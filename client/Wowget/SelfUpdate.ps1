@@ -108,22 +108,29 @@ function Get-WowgetRuntimeAsset {
     }
 }
 
-# Deletes app and runtime directories that are neither current nor previous, and leftovers of
-# interrupted updates. Never fails.
+# Deletes app and runtime directories that are neither current nor previous, and the temporary
+# directories of interrupted updates and installs. Directories changed in the last hour are kept, since
+# an installer, which takes no lock, may be about to switch to them. Never fails.
 function Remove-WowgetOldVersions {
     param([Parameter(Mandatory)][string]$Root)
     try {
         $current = Read-WowgetVersionsFile ([System.IO.Path]::Combine($Root, 'current'))
         if (-not $current) { return }
         $previous = Read-WowgetVersionsFile ([System.IO.Path]::Combine($Root, 'previous'))
+        $cutoff = [DateTime]::UtcNow.AddHours(-1)
+        $old = { param($path) [System.IO.Directory]::GetLastWriteTimeUtc($path) -lt $cutoff }
         foreach ($kind in 'app', 'runtime') {
             $dir = [System.IO.Path]::Combine($Root, $kind)
             if (-not [System.IO.Directory]::Exists($dir)) { continue }
             $keep = @(if ($kind -eq 'app') { $current.App; if ($previous) { $previous.App } } else { $current.Runtime; if ($previous) { $previous.Runtime } })
             foreach ($sub in [System.IO.Directory]::GetDirectories($dir)) {
-                if ($keep -ccontains [System.IO.Path]::GetFileName($sub)) { continue }
+                if ($keep -ccontains [System.IO.Path]::GetFileName($sub) -or -not (& $old $sub)) { continue }
                 [void](Remove-WowgetBestEffort $sub)
             }
+        }
+        foreach ($sub in [System.IO.Directory]::GetDirectories($Root)) {
+            $name = [System.IO.Path]::GetFileName($sub)
+            if (($name.StartsWith('.update-') -or $name.StartsWith('.install-')) -and (& $old $sub)) { [void](Remove-WowgetBestEffort $sub) }
         }
     } catch {
         return
@@ -231,7 +238,8 @@ function Invoke-WowgetSelfUpdate {
 
         $platform = Get-WowgetOptionPlatform $Options
         $rtDir = [System.IO.Path]::Combine($Root, 'runtime', $rtVersion)
-        if (-not [System.IO.Directory]::Exists($rtDir)) {
+        $pwsh = [System.IO.Path]::Combine($rtDir, $(if ($platform -eq 'Windows') { 'pwsh.exe' } else { 'pwsh' }))
+        if (-not [System.IO.File]::Exists($pwsh)) {
             $assetName = Get-WowgetRuntimeAsset $platform
             $asset = $runtime['assets'][$assetName]
             if (-not (Test-WowgetJsonDictionary $asset) -or -not (Test-WowgetNonEmptyString $asset['url']) -or $asset['sha256'] -notmatch '^[0-9a-fA-F]{64}$') {
@@ -248,13 +256,12 @@ function Invoke-WowgetSelfUpdate {
             [void][System.IO.Directory]::CreateDirectory($rtTmp)
             Expand-WowgetRuntimeArchive $archive $rtTmp $fileName
             [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($rtDir))
-            [System.IO.Directory]::Move($rtTmp, $rtDir)
+            Move-WowgetDirectoryInto $rtTmp $rtDir
         }
         $appDir = [System.IO.Path]::Combine($Root, 'app', $latest)
         [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($appDir))
         Move-WowgetDirectoryInto $appTmp $appDir
 
-        $pwsh = [System.IO.Path]::Combine($rtDir, $(if ($platform -eq 'Windows') { 'pwsh.exe' } else { 'pwsh' }))
         try {
             $reported = ([string](& $script:WowgetVersionProbe $pwsh ([System.IO.Path]::Combine($appDir, 'wowget.ps1')))).Trim()
             if ($reported -cne "wowget $latest") { throw "it reported `"$reported`"" }

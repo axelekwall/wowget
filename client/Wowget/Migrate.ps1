@@ -138,6 +138,8 @@ function Resolve-WowgetCachedReleaseIds {
         foreach ($item in $c.Items) {
             $r = $results[(Get-WowgetResolveKey $item)]
             if ($null -eq $r -or $r -is [System.Exception] -or $r.Filename -cne $c.Release.Filename) { continue }
+            # A filename alone does not tell releases apart when assets carry no version in their name.
+            if (-not $r.Sha256 -and -not $r.Md5) { continue }
             if ($r.Sha256 -and $r.Sha256.ToLowerInvariant() -ne $c.Sha256) { continue }
             if ($r.Md5 -and $r.Md5.ToLowerInvariant() -ne (Get-WowgetFileHash $c.Release.Path 'MD5')) { continue }
             $c.ReleaseId = $r.ReleaseId
@@ -207,6 +209,20 @@ function Invoke-WowgetAdoption {
                     $folders = Find-WowgetInstalledContents $contents $target.Path $markers
                     if ($null -ne $folders) { [pscustomobject]@{ Release = $release; Contents = $contents; Folders = $folders } }
                 })
+            # A release that only adds files to an older one matches where the older one is installed too;
+            # the candidate whose files include every other match's is the installed one.
+            if ($hits.Count -gt 1) {
+                $sets = @($hits | ForEach-Object { , [string[]]@($_.Contents.Folders | ForEach-Object { $f = $_.Name; $_.Files | ForEach-Object { "$f/$($_.Path)" } }) })
+                $widest = @(for ($i = 0; $i -lt $hits.Count; $i++) {
+                        $mine = [System.Collections.Generic.HashSet[string]]::new([string[]]$sets[$i])
+                        $covers = $true
+                        for ($j = 0; $j -lt $hits.Count; $j++) {
+                            if ($j -ne $i -and ($sets[$j].Count -ge $sets[$i].Count -or -not $mine.IsSupersetOf([string[]]$sets[$j]))) { $covers = $false }
+                        }
+                        if ($covers) { $hits[$i] }
+                    })
+                if ($widest.Count -eq 1) { $hits = $widest }
+            }
             if ($hits.Count -eq 1) {
                 $m = $hits[0]
                 $others = @($releases | Where-Object { $_.Path -ne $m.Release.Path -and $null -ne (& $contentsOf $_) })

@@ -37,6 +37,7 @@ esac
 rid="$os-$arch"
 
 root="${WOWGET_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/wowget}"
+case "$root" in /*) ;; *) root="$PWD/$root" ;; esac
 bin="$HOME/.local/bin"
 api="${WOWGET_API_URL:-https://api.wowget.dev}"
 
@@ -66,6 +67,7 @@ fi
 [ -n "$version" ] || fail "could not find the latest release; set WOWGET_VERSION"
 version="${version#v}"
 case "$version" in
+  *[!0-9A-Za-z.-]* | .* | *..*) fail "\"$version\" is not a release version" ;;
   [0-9]*.[0-9]*.[0-9]*) ;;
   *) fail "\"$version\" is not a release version" ;;
 esac
@@ -119,12 +121,17 @@ mv "$tmp/app" "$root/app/$version"
 # The launcher, with the install root filled in.
 mkdir -p "$bin"
 launcher="$bin/wowget"
-if [ -f "$launcher" ]; then
-  magic=$(head -c 4 "$launcher" | od -An -tx1 | tr -d ' \n')
-  case "$magic" in
-    7f454c46 | cffaedfe | cefaedfe | feedfacf | feedface | cafebabe)
-      echo "Replacing the previous wowget binary at $launcher" ;;
+is_binary() {
+  [ -f "$1" ] || return 1
+  case "$(head -c 4 "$1" | od -An -tx1 | tr -d ' \n')" in
+    7f454c46 | cffaedfe | cefaedfe | feedfacf | feedface | cafebabe) return 0 ;;
   esac
+  return 1
+}
+if is_binary "$launcher"; then echo "Replacing the previous wowget binary at $launcher"; fi
+# The previous wowget's WOWGET_INSTALL_DIR named the directory of its binary.
+if is_binary "$root/wowget"; then
+  rm -f "$root/wowget" && echo "Removed the previous wowget binary $root/wowget"
 fi
 quoted_root=$(printf '%s' "$root" | sed "s/'/'\\\\''/g")
 ROOT_LINE="root='$quoted_root'" awk '$0 == "root=@WOWGET_ROOT@" { print ENVIRON["ROOT_LINE"]; next } { print }' \
@@ -151,7 +158,8 @@ if [ "${WOWGET_CATALOGUE_CONTRIBUTIONS:-}" = off ]; then
   echo "Saved your opt-out of catalogue contributions."
 fi
 
-echo "Installed $("$launcher" --version) to $root"
+installed=$("$launcher" --version) || fail "the installed wowget does not start; run $launcher --version to see why"
+echo "Installed $installed to $root"
 echo "wowget needs no account, and installing and using it uploads nothing about your addons."
 echo "If you later enroll a device for sync, explicit syncs contribute public addon IDs to the"
 echo "catalogue unless you opt out: run this installer with WOWGET_CATALOGUE_CONTRIBUTIONS=off, or"

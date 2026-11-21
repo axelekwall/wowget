@@ -106,6 +106,24 @@ InModuleScope Wowget {
             [System.IO.File]::Exists((Get-WowgetCachedZipPath $dirs.Cache 'Questie' 'bundle/v1' 'Questie.zip')) | Should -BeTrue
         }
 
+        It 'needs a checksum to recover a release id, and prefers the release whose files include the others' {
+            $old = New-WgAddonZipBytes @{ Questie = '' } -Content 'q'
+            $entries = [ordered]@{ 'Questie/Questie.toc' = "## Interface: 11507, 16000`n## Title: Questie`n"; 'Questie/code.lua' = 'q'; 'Questie/extra.lua' = 'new' }
+            $newPath = New-WgZip -Path ([System.IO.Path]::Combine($dirs.Root, 'new.zip')) -Entries $entries
+            $new = [System.IO.File]::ReadAllBytes($newPath)
+            Add-WgBunCache $dirs 'Questie' 'old' 'Questie.zip' $old -AgeMinutes 60 | Out-Null
+            Add-WgBunCache $dirs 'Questie' 'new' 'Questie.zip' $new | Out-Null
+            Add-WgPinned 'github:o/questie' 'new' 'v2' 'Questie.zip' $new
+            $script:WgPins['github:o/questie|new']['sha256'] = $null
+            Install-WgBunZip $new $paths.era
+            $m = Read-WowgetManifest $dirs.Manifest
+            [void](Save-WowgetManifest $dirs.Manifest (Read-WowgetText $dirs.Manifest) (New-WowgetManifestObject -Targets $m.Targets -Addons @(New-WowgetAddonEntry -Name 'Questie' -Source 'github:o/questie' -Targets @('era'))))
+            $r = Invoke-WowgetMigrate -Options $o
+            $r.adopted[0].how | Should -Be 'cache'
+            $r.adopted[0].releaseId | Should -Be 'unknown'
+            (Read-WowgetMarker ([System.IO.Path]::Combine($paths.era, 'Questie'))).Marker.Sha256 | Should -Be (Get-WgSha256 $new)
+        }
+
         It 'writes releaseId unknown when the service cannot be reached' {
             $zip = New-WgAddonZipBytes @{ Questie = '' } -Content 'q'
             Add-WgBunCache $dirs 'Questie' 'v1.0' 'Questie-v1.0.zip' $zip | Out-Null

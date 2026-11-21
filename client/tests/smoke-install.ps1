@@ -74,10 +74,11 @@ try {
     if ($IsWindows) {
         # Users run install.ps1 through "irm | iex" in Windows PowerShell 5.1.
         $shell = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
-        if (-not $shell) { $shell = $pwsh }
+        if (-not $shell) { throw 'smoke test failed: Windows PowerShell (powershell.exe) is not available.' }
         # PowerShell 7's module path would load its own modules into Windows PowerShell.
         $environment['PSModulePath'] = $null
-        $install = { Invoke-Program $shell @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', [System.IO.Path]::Combine($release, 'install.ps1')) $environment }
+        $script = [System.IO.Path]::Combine($release, 'install.ps1')
+        $install = { Invoke-Program $shell @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Get-Content -Raw -LiteralPath '$script' | Invoke-Expression") $environment }
         $run = { param([string[]]$a) Invoke-Program $env:ComSpec (@('/d', '/c', [System.IO.Path]::Combine($root, 'bin', 'wowget.cmd')) + $a) }
     } else {
         $install = { Invoke-Program '/bin/sh' @([System.IO.Path]::Combine($release, 'install.sh')) $environment }
