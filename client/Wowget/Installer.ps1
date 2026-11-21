@@ -6,14 +6,18 @@
 
 # A single path segment made from an arbitrary id or filename, valid on every platform: Windows
 # rejects the characters <>:"/\|?* and control characters, drops trailing dots and spaces, and
-# reserves device names such as CON or COM1 with any extension.
+# reserves device names such as CON or COM1 with any extension. A segment that had to change gets
+# a short hash of the original, so two names that differ only in those characters (A?B, A*B) do
+# not share a cache directory.
 function Get-WowgetSafeSegment {
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
     $cleaned = $Value -replace '[<>:"/\\|?*\x00-\x1f]', '_'
     $cleaned = $cleaned -replace '[. ]+$', { '_' * $_.Value.Length }
-    if ($cleaned -eq '') { return '_' }
-    if ($cleaned -match '^(?i:CON|PRN|AUX|NUL|COM[0-9\u00b9\u00b2\u00b3]|LPT[0-9\u00b9\u00b2\u00b3])(\.|$)') { return "_$cleaned" }
-    return $cleaned
+    if ($cleaned -eq '') { $cleaned = '_' }
+    if ($cleaned -match '^(?i:CON|PRN|AUX|NUL|COM[0-9\u00b9\u00b2\u00b3]|LPT[0-9\u00b9\u00b2\u00b3])(\.|$)') { $cleaned = "_$cleaned" }
+    if ($cleaned -ceq $Value) { return $cleaned }
+    $sha = [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($Value))
+    return '{0}-{1}' -f $cleaned, [System.Convert]::ToHexString($sha, 0, 3).ToLowerInvariant()
 }
 
 # Every cached release of an addon: "<cache>/<addon, lower-case>".

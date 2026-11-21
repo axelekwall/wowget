@@ -23,17 +23,25 @@ InModuleScope Wowget {
 
     Describe 'cache paths' {
         It 'makes segments that are valid file names on every platform' {
-            Get-WowgetSafeSegment 'A?B<c>|d*"e' | Should -Be 'A_B_c__d__e'
-            Get-WowgetSafeSegment "tab`there" | Should -Be 'tab_here'
-            Get-WowgetSafeSegment 'v1.2.' | Should -Be 'v1.2_'
-            Get-WowgetSafeSegment 'trail  ' | Should -Be 'trail__'
-            Get-WowgetSafeSegment '..' | Should -Be '__'
-            Get-WowgetSafeSegment '' | Should -Be '_'
-            Get-WowgetSafeSegment 'CON.zip' | Should -Be '_CON.zip'
-            Get-WowgetSafeSegment 'com1' | Should -Be '_com1'
-            Get-WowgetSafeSegment 'LPT9.tar.gz' | Should -Be '_LPT9.tar.gz'
+            Get-WowgetSafeSegment 'A?B<c>|d*"e' | Should -Match '^A_B_c__d__e-[0-9a-f]{6}$'
+            Get-WowgetSafeSegment "tab`there" | Should -Match '^tab_here-[0-9a-f]{6}$'
+            Get-WowgetSafeSegment 'v1.2.' | Should -Match '^v1\.2_-[0-9a-f]{6}$'
+            Get-WowgetSafeSegment 'trail  ' | Should -Match '^trail__-[0-9a-f]{6}$'
+            Get-WowgetSafeSegment '..' | Should -Match '^__-[0-9a-f]{6}$'
+            Get-WowgetSafeSegment '' | Should -Match '^_-[0-9a-f]{6}$'
+            Get-WowgetSafeSegment 'CON.zip' | Should -Match '^_CON\.zip-[0-9a-f]{6}$'
+            Get-WowgetSafeSegment 'com1' | Should -Match '^_com1-[0-9a-f]{6}$'
+            Get-WowgetSafeSegment 'LPT9.tar.gz' | Should -Match '^_LPT9\.tar\.gz-[0-9a-f]{6}$'
+            Get-WowgetSafeSegment 'bundle/v1:x\y' | Should -Match '^bundle_v1_x_y-[0-9a-f]{6}$'
+        }
+
+        It 'keeps names that need no change and keeps changed names apart' {
             Get-WowgetSafeSegment 'CONSOLE.zip' | Should -Be 'CONSOLE.zip'
-            Get-WowgetSafeSegment 'bundle/v1:x\y' | Should -Be 'bundle_v1_x_y'
+            Get-WowgetSafeSegment 'Questie-v11.4.2.zip' | Should -Be 'Questie-v11.4.2.zip'
+            Get-WowgetSafeSegment 'a_b' | Should -Be 'a_b'
+            $names = 'a?b', 'a*b', 'a_b', 'a|b' | ForEach-Object { Get-WowgetSafeSegment $_ }
+            @($names | Select-Object -Unique).Count | Should -Be 4
+            Get-WowgetSafeSegment 'a?b' | Should -Be (Get-WowgetSafeSegment 'a?b')
         }
     }
 
@@ -51,7 +59,7 @@ InModuleScope Wowget {
             $r.Filename = 'CON.zip'
             & $install $r 'A?B' | Out-Null
             $zip = Get-WowgetCachedZipPath $dirs.Cache 'A?B' 'v1' 'CON.zip'
-            $zip | Should -BeLike '*a_b*_CON.zip'
+            $zip | Should -Match 'a_b-[0-9a-f]{6}.+_CON\.zip-[0-9a-f]{6}$'
             [System.IO.File]::Exists($zip) | Should -BeTrue
         }
 

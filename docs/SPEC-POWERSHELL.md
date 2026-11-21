@@ -473,6 +473,17 @@ The steps of SPEC-MVP.md, "Installer", with markers in place of state rows:
 Uninstall removes the folders whose marker names the addon. Cache pruning keeps
 the zips named by current markers and their `previous` entries.
 
+Each cache path segment (the addon name in lower case, the release id, the
+filename) must be a valid file name on every platform. A segment is used as it
+is when it already is one. Otherwise `<>:"/\|?*`, control characters and
+trailing dots and spaces become `_`, reserved Windows device names (`CON`,
+`PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, with any extension) get a
+`_` prefix, and `-` plus the first 6 hex digits of the original's SHA-256 is
+appended. The hash keeps names that differ only in those characters (`A?B`,
+`A*B`) in separate directories, so pruning one addon's cache never touches
+another's. The Bun client replaced only `/`, `\`, `:` and NUL, which is why
+adoption recovers release ids instead of trusting directory names.
+
 ## Commands
 
 For the non-TUI commands, names, flags, outputs and exit codes stay as the Bun
