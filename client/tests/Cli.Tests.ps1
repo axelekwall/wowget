@@ -25,9 +25,77 @@ InModuleScope Wowget {
             (Invoke-WgCli $dirs @('unpin')).Err | Should -Match 'Wrong number of arguments'
             (Invoke-WgCli $dirs @('add', 'x', '--name')).Err | Should -Match 'argument missing'
             (Invoke-WgCli $dirs @('init', '--flavor', 'tbc')).Err | Should -Match 'Unknown flavor'
-            $later = Invoke-WgCli $dirs @('search', 'questie')
-            $later.Exit | Should -Be 2
-            $later.Err | Should -Match 'not available in this version'
+            $limit = Invoke-WgCli $dirs @('search', 'questie', '--limit', '51')
+            $limit.Exit | Should -Be 2
+            $limit.Err | Should -Match '--limit must be a whole number from 1 to 50'
+        }
+
+        It 'prints search results, marking those in the manifest, and notes that --refresh does nothing' {
+            [void](New-WowgetManifestFile $dirs.Manifest @(New-WowgetTarget -Name 'era' -Path (New-WgDir $dirs @('era')) -Flavor 'classic'))
+            Add-WgRelease -Source 'github:Questie/Questie' -ReleaseId 'v1' | Out-Null
+            (Invoke-WgCli $dirs @('add', 'github:Questie/Questie', '--name', 'Questie')).Exit | Should -Be 0
+            $script:WgRoutes['https://api.test/v1/search?q=ques&flavors=classic&github=0&limit=20'] = @{
+                StatusCode = 200
+                Body       = '{"rows":[{"name":"Questie","source":"github:questie/questie","origin":"registry","flavors":{"classic":"yes","mists":"unknown"},"folders":["Questie"],"description":null,"downloads":null,"stars":null,"updatedAt":null,"url":null},{"name":"QuestHelper","source":"wowi:1","origin":"wowi","flavors":{"classic":"yes"},"folders":[],"description":"x","downloads":12,"stars":null,"updatedAt":"2026-01-02T03:04:05Z","url":"https://example.com"}],"warnings":["WoWInterface catalogue unavailable"]}'
+            }
+            $r = Invoke-WgCli $dirs @('search', 'ques', '--refresh')
+            $r.Err | Should -Not -Match 'error'
+            $r.Exit | Should -Be 0
+            $lines = $r.Out.TrimEnd("`n") -split "`n"
+            $lines[0] | Should -Match '^\s+NAME\s+SOURCE\s+FLAVORS\s+POPULARITY\s+UPDATED$'
+            $lines[1] | Should -Match '^\*\s+Questie\s+github:questie/questie\s+classic mists\?'
+            $lines[2] | Should -Match 'QuestHelper\s+wowi:1\s+classic\s+12/month\s+2026-01-02$'
+            $r.Err | Should -Match 'note: --refresh does nothing'
+            $r.Err | Should -Match 'warning: WoWInterface catalogue unavailable'
+            $j = Invoke-WgCli $dirs @('search', 'ques', '--json')
+            $doc = $j.Out | ConvertFrom-Json -AsHashtable
+            $doc['results'][0]['inManifest'] | Should -BeTrue
+            $doc['results'][1]['downloadsMonthly'] | Should -Be 12
+            $doc['flavors'] | Should -Be @('classic')
+        }
+
+        It 'opens the suggestion issue in a browser unless --print is given' {
+            [void](New-WowgetManifestFile $dirs.Manifest @(New-WowgetTarget -Name 'era' -Path (New-WgDir $dirs @('era')) -Flavor 'classic'))
+            Add-WgRelease -Source 'github:o/foo' -ReleaseId 'v1' | Out-Null
+            (Invoke-WgCli $dirs @('add', 'github:o/foo', '--name', 'Foo')).Exit | Should -Be 0
+            $script:WgRoutes['https://api.test/v1/registry'] = @{ StatusCode = 200; Body = '{"version":"x","addons":[]}' }
+            $script:WgOpened = [System.Collections.Generic.List[string]]::new()
+            $saved = $script:WowgetOpenUrl
+            $script:WowgetOpenUrl = { param($u) $script:WgOpened.Add($u); $true }
+            try {
+                $r = Invoke-WgCli $dirs @('suggest')
+                $r.Exit | Should -Be 0
+                $r.Out | Should -Match 'Foo\s+github:o/foo\s+not in the registry'
+                $script:WgOpened.Count | Should -Be 1
+                $script:WgOpened[0] | Should -Match 'addons=github%3Ao%2Ffoo\+Foo'
+                (Invoke-WgCli $dirs @('suggest', '--print')).Exit | Should -Be 0
+                $script:WgOpened.Count | Should -Be 1
+            } finally {
+                $script:WowgetOpenUrl = $saved
+            }
+        }
+
+        It 'reports the automatic first start on stderr and keeps --json output clean' {
+            $era = New-WgDir $dirs @('era')
+            $dir = New-WgDir $dirs @('wowget')
+            [System.IO.File]::WriteAllText([System.IO.Path]::Combine($dir, 'wowget.toml'), "[targets.era]`npath = $(ConvertTo-WowgetJsonString $era)`nflavor = `"classic`"`n")
+            $r = Invoke-WgCli $dirs @('list', '--json') @{ WOWGET_MANIFEST = $null; XDG_CONFIG_HOME = $dirs.Root; APPDATA = $dirs.Root }
+            $r.Out | Should -Not -Match '"error"'
+            $r.Exit | Should -Be 0
+            ($r.Out | ConvertFrom-Json).targets[0].name | Should -Be 'era'
+            $r.Err | Should -Match 'wowget: Converted .*wowget.toml'
+            $again = Invoke-WgCli $dirs @('list') @{ WOWGET_MANIFEST = $null; XDG_CONFIG_HOME = $dirs.Root; APPDATA = $dirs.Root }
+            $again.Err | Should -BeNullOrEmpty
+        } -Skip:($IsMacOS)
+
+        It 'exits 1 when doctor finds issues, and refuses self-update outside an install' {
+            [void](New-WowgetManifestFile $dirs.Manifest @(New-WowgetTarget -Name 'era' -Path ([System.IO.Path]::Combine($dirs.Root, 'nowhere')) -Flavor 'classic'))
+            $d = Invoke-WgCli $dirs @('doctor')
+            $d.Exit | Should -Be 1
+            $d.Out | Should -Match 'Issue \[missing_target_dir\]'
+            $s = Invoke-WgCli $dirs @('self-update', '--check')
+            $s.Exit | Should -Be 2
+            $s.Err | Should -Match 'development copy'
         }
 
         It 'prints only JSON on stdout for init and list --json' {

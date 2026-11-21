@@ -21,10 +21,29 @@ $script:Commands = [ordered]@{
     'pin'             = @{ Flags = @(); Min = 1; Max = 2 }
     'unpin'           = @{ Flags = @(); Min = 1; Max = 1 }
     'rollback'        = @{ Flags = @('target'); Min = 1; Max = 1 }
+    'search'          = @{ Flags = @('target', 'flavor', 'all-flavors', 'github', 'limit', 'refresh'); Min = 1; Max = [int]::MaxValue }
+    'reconcile'       = @{ Flags = @('target', 'adopt'); Min = 0; Max = 0 }
+    'doctor'          = @{ Flags = @('target', 'clean'); Min = 0; Max = 0 }
+    'suggest'         = @{ Flags = @('print'); Min = 0; Max = [int]::MaxValue }
+    'migrate'         = @{ Flags = @(); Min = 0; Max = 0 }
+    'self-update'     = @{ Flags = @('check'); Min = 0; Max = 0 }
 }
 
-# Commands of the Bun client that this client gets in a later phase.
-$script:LaterCommands = @('search', 'suggest', 'reconcile', 'doctor', 'migrate', 'self-update')
+# Commands that do not run the automatic first-start migration.
+$script:NoMigrationCommands = @('migrate', 'self-update')
+
+# Opens a URL in the default browser; returns whether that worked. Tests replace it.
+$script:WowgetOpenUrl = {
+    param([string]$Url)
+    try {
+        if ($IsWindows) { Start-Process -FilePath $Url; return $true }
+        $opener = if ($IsMacOS) { 'open' } else { 'xdg-open' }
+        & $opener $Url *> $null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
 
 # Commands that only read; every other command takes the write lock.
 $script:ReadOnlyCommands = @('target list', 'list')
@@ -54,6 +73,9 @@ Commands:
   target remove <name>                  uninstall everything on a target and remove it
   target portable [name...]             rewrite path targets as version folders where that finds
                                         the same AddOns directory here (all path targets by default)
+  search <query...> [--flavor F | --all-flavors] [--github] [--limit N]
+                                        find addons in the registry and on WoWInterface
+                                        (and GitHub with --github); filters on the targets' flavors
   add <source|name> [--name N] [--prerelease] [--pin ID]
                                         install an addon and add it to the manifest; a bare name
                                         is looked up in the addon registry
@@ -65,21 +87,35 @@ Commands:
   pin <name> [release]                  freeze an addon at its installed release or a given release
   unpin <name>                          remove the release pin from an addon
   rollback <name>                       reinstall the previous release of an addon from the cache
+  reconcile [--adopt]                   find hand-installed addons and optionally adopt them
+  doctor [--clean]                      check targets, markers, TOC interfaces and cache health
+  suggest [name...] [--print]           open a GitHub issue that proposes the manifest addons
+                                        missing from the addon registry
+  migrate                               convert a TOML manifest and adopt the addons the previous
+                                        wowget installed (runs by itself on the first start)
+  self-update [--check]                 install the latest wowget release
 
-add, remove, list, outdated, update, install and rollback act on every target unless filtered
-with -t/--target, which can be repeated. "add -t" records the targets in the manifest; "remove -t"
-removes the addon from those targets only. Targets whose version folder is not on this machine are
-skipped. search, suggest, reconcile, doctor, migrate and self-update come in a later version of
-this client.
+search, add, remove, list, outdated, update, install, rollback, reconcile and doctor act on every
+target unless filtered with -t/--target, which can be repeated. "add -t" records the targets in the
+manifest; "remove -t" removes the addon from those targets only. Targets whose version folder is
+not on this machine are skipped.
 
 Sources: github:owner/repo, wowi:<id>, url:https://...
 Flavors: $($script:Flavors -join ', ')
 
 Options:
   -t, --target <name> act on this target only (repeatable)
+  --adopt             with reconcile: install and add matched addons to the manifest
+  --clean             with doctor: remove leftover temp folders and unreferenced cache dirs
+  --check             with self-update: only report whether a newer release exists
+  --all-flavors       with search: do not filter on flavors
+  --github            with search: also search GitHub repositories tagged wow-addon
+  --limit <n>         with search: show at most n results (default 20, at most 50)
+  --print             with suggest: print the issue URL without opening a browser
   --manifest <path>   manifest file (default `$WOWGET_MANIFEST, else $defaultManifest)
   --json              print the result as JSON
-  --force             install over unmanaged folders and unverifiable flavors
+  --force             install over unmanaged folders and unverifiable flavors;
+                      with self-update: reinstall the latest release even if it is not newer
   --verbose           show every progress step and stack traces
   -h, --help          show this help
   --version           show the version
@@ -304,8 +340,93 @@ function Format-WowgetResult {
             }
             return $lines -join "`n"
         }
+        'search' {
+            if (@($Result.results).Count -eq 0) {
+                if ($null -ne $Result.flavors) { return "No addons found for $(@($Result.flavors) -join ', '); --all-flavors searches every flavor." }
+                return 'No addons found.'
+            }
+            # The "*" column only appears when a result is already in the manifest.
+            $marked = @($Result.results | Where-Object inManifest).Count -gt 0
+            $head = @('NAME', 'SOURCE', 'FLAVORS', 'POPULARITY', 'UPDATED')
+            if ($marked) { $head = @('') + $head }
+            $rows = @(, $head) + @(foreach ($a in $Result.results) {
+                    # Nothing about a GitHub result's releases is known, so it gets a single "?".
+                    $flavors = if ($a.origin -eq 'github') { '?' } else { (@($a.flavors.GetEnumerator() | ForEach-Object { if ($_.Value -eq 'unknown') { "$($_.Key)?" } else { $_.Key } }) -join ' ') }
+                    if (-not $flavors) { $flavors = '?' }
+                    $popularity = if ($null -ne $a.downloadsMonthly) { "$($a.downloadsMonthly)/month" } elseif ($null -ne $a.stars) { "$($a.stars) stars" } else { '' }
+                    $updated = if ($a.updatedAt) { $a.updatedAt.Substring(0, [Math]::Min(10, $a.updatedAt.Length)) } else { '' }
+                    $cells = @($a.name, $a.source, $flavors, $popularity, $updated)
+                    if ($marked) { $cells = @($(if ($a.inManifest) { '*' } else { '' })) + $cells }
+                    , $cells
+                })
+            return Format-WowgetTable $rows
+        }
+        'reconcile' {
+            if (@($Result.addons).Count -eq 0) { return 'No unmanaged addon folders found.' }
+            $rows = @(, @('NAME', 'TARGET', 'VERSION', 'STATUS', 'SOURCE', 'FOLDERS')) + @(foreach ($a in $Result.addons) {
+                    $status = if ($a.status -eq 'error') { "error: $($a.error)" } else { $a.status }
+                    $source = if ($a.source) { $a.source } elseif ($null -ne $a.PSObject.Properties['curseforge']) { 'CurseForge only' } else { '-' }
+                    , @($a.name, $a.target, (Get-WowgetVersionLabel $a.version), $status, $source, (@($a.folders) -join ', '))
+                })
+            return Format-WowgetTable $rows
+        }
+        'doctor' {
+            $rows = @(, @('TARGET', 'FLAVOR', 'CLIENT', 'EXISTS', 'PATH')) + @(foreach ($t in $Result.targets) {
+                    $client = if ($null -ne $t.PSObject.Properties['clientInterface']) { "$($t.clientInterface) ($($t.clientVersion))" } else { '-' }
+                    , @($t.name, $t.flavor, $client, $(if ($t.exists) { 'yes' } else { 'no' }), $t.path)
+                })
+            $lines = @(Format-WowgetTable $rows)
+            foreach ($path in $Result.cleaned) { $lines += "Cleaned $path" }
+            if (@($Result.issues).Count -eq 0) { $lines += 'No issues found.' }
+            foreach ($issue in $Result.issues) { $lines += "Issue [$($issue.kind)]: $($issue.message)" }
+            foreach ($hint in $Result.hints) { $lines += "Hint [$($hint.kind)]: $($hint.message)" }
+            return $lines -join "`n"
+        }
+        'suggest' {
+            if (@($Result.addons).Count -eq 0) { return 'No addons in the manifest.' }
+            $rows = @(, @('NAME', 'SOURCE', 'STATUS')) + @(foreach ($a in $Result.addons) {
+                    $status = switch ($a.status) {
+                        'listed' { "in the registry$(if ($a.registryName -cne $a.name) { " as $($a.registryName)" })" }
+                        'url' { 'url: sources cannot be in the registry' }
+                        default { 'not in the registry' }
+                    }
+                    , @($a.name, $a.source, $status)
+                })
+            $lines = @(Format-WowgetTable $rows)
+            if ($Result.url) {
+                $count = @($Result.addons | Where-Object status -EQ 'suggested').Count
+                $what = if ($count -eq 1) { 'the addon' } else { "the $count addons" }
+                $lines += @('', "Submit this issue to suggest $what for the registry; a bot checks them and opens a pull request:", $Result.url)
+            } else {
+                $lines += @('', 'Nothing to suggest.')
+            }
+            return $lines -join "`n"
+        }
+        'migrate' { return Format-WowgetMigrateResult $Result }
+        'self-update' {
+            if ($Result.status -eq 'updated') { return "Updated wowget $($Result.current) -> $($Result.latest) at $($Result.path)" }
+            if ($Result.status -eq 'available') { return "wowget $($Result.latest) is available (installed: $($Result.current)); run `"wowget self-update`" to install it." }
+            return "wowget $($Result.current) is up to date (latest release: $($Result.latest))."
+        }
         default { return Format-WowgetUpdateResult $Result }
     }
+}
+
+function Format-WowgetMigrateResult {
+    param($Result)
+    $lines = @($Result.notes)
+    if ($null -ne $Result.PSObject.Properties['adopted']) {
+        foreach ($a in $Result.adopted) {
+            $release = if ($a.releaseId -eq 'unknown') { 'release unknown until the next update' } elseif ($a.version) { $a.version } else { $a.releaseId }
+            $how = if ($a.how -eq 'cache') { 'identified in the download cache' } else { 'folders from the registry or the cache' }
+            $lines += "Adopted $($a.name) on $($a.target): $release, $how ($(@($a.folders) -join ', '))"
+        }
+        foreach ($s in $Result.skipped) { $lines += "Not adopted $($s.name) on $($s.target): $($s.reason)" }
+        foreach ($c in $Result.conflicts) { $lines += "Left without a marker on $($c.target): $($c.folder), claimed by $(@($c.addons) -join ', ')" }
+        foreach ($u in $Result.unmarked) { $lines += "Folders without a marker on $($u.target): $(@($u.folders) -join ', '); see `"wowget reconcile`"" }
+    }
+    if ($lines.Count -eq 0) { $lines += 'Nothing to migrate.' }
+    return $lines -join "`n"
 }
 
 function Get-WowgetResultRows {
@@ -317,6 +438,8 @@ function Get-WowgetResultRows {
 
 function Test-WowgetResultErrors {
     param($Result)
+    $issues = $Result.PSObject.Properties['issues']
+    if ($null -ne $issues -and @($issues.Value).Count) { return $true }
     foreach ($a in (Get-WowgetResultRows $Result)) {
         if ($null -ne $a.PSObject.Properties['status'] -and $a.status -eq 'error') { return $true }
     }
@@ -353,6 +476,20 @@ function Invoke-WowgetCommand {
         'pin' { return Invoke-WowgetPin -Options $base -Name $CmdArgs[0] -Release $(if ($CmdArgs.Count -gt 1) { $CmdArgs[1] } else { $null }) }
         'unpin' { return Invoke-WowgetUnpin -Options $base -Name $CmdArgs[0] }
         'rollback' { return Invoke-WowgetRollback -Options $base -Name $CmdArgs[0] }
+        'search' {
+            $limit = $null
+            if ($Values.ContainsKey('limit')) {
+                $n = 0
+                if ($Values['limit'] -notmatch '^[1-9][0-9]{0,8}$' -or -not [int]::TryParse($Values['limit'], [ref]$n)) { throw [WowgetUsageError]::new("--limit must be a whole number from 1 to $script:SearchMaxLimit.") }
+                $limit = $n
+            }
+            return Invoke-WowgetSearch -Options $base -Query ($CmdArgs -join ' ') -Flavor $flavor -AllFlavors:([bool]$Values['all-flavors']) -Github:([bool]$Values['github']) -Limit $limit
+        }
+        'reconcile' { return Invoke-WowgetReconcile -Options $base -Adopt:([bool]$Values['adopt']) }
+        'doctor' { return Invoke-WowgetDoctor -Options $base -Clean:([bool]$Values['clean']) }
+        'suggest' { return Invoke-WowgetSuggest -Options $base -Names $CmdArgs }
+        'migrate' { return Invoke-WowgetMigrate -Options $base }
+        'self-update' { return Invoke-WowgetSelfUpdate -Options $base -Check:([bool]$Values['check']) }
     }
     throw [WowgetUsageError]::new("Unknown command `"$Key`". Run `"wowget --help`".")
 }
@@ -394,9 +531,6 @@ function Invoke-WowgetCli {
             $key = "target $($rest[0])"
             $rest = @($rest | Select-Object -Skip 1)
         }
-        if ($script:LaterCommands -ccontains $key) {
-            throw [WowgetUsageError]::new("`"$key`" is not available in this version of the PowerShell client yet.")
-        }
         $spec = $script:Commands[$key]
         if ($null -eq $spec) { throw [WowgetUsageError]::new("Unknown command `"$key`". Run `"wowget --help`".") }
         foreach ($flag in $values.Keys) {
@@ -414,15 +548,26 @@ function Invoke-WowgetCli {
         }
 
         $manifestPath = Get-WowgetManifestPath -Override $values['manifest'] -Env $Env -Platform $platform
+        $overridden = $values.ContainsKey('manifest') -or $null -ne (Get-WowgetEnvValue $Env 'WOWGET_MANIFEST')
         $options = @{
-            ManifestPath = $manifestPath
-            Env          = $Env
-            Platform     = $platform
-            Force        = [bool]$values['force']
-            OnEvent      = $progress.OnEvent
+            ManifestPath       = $manifestPath
+            ManifestOverridden = $overridden
+            Env                = $Env
+            Platform           = $platform
+            Force              = [bool]$values['force']
+            OnEvent            = $progress.OnEvent
         }
-        if ($script:ReadOnlyCommands -cnotcontains $key) {
+        $root = Get-WowgetInstallRoot
+        if ($root) { Remove-WowgetOldVersions $root }
+        $need = $null
+        if ($script:NoMigrationCommands -cnotcontains $key) { $need = Get-WowgetMigrationNeed $manifestPath $overridden $Env $platform }
+        $migrating = $null -ne $need -and ($null -ne $need.Toml -or $need.Adopt)
+        if ($migrating -or $script:ReadOnlyCommands -cnotcontains $key) {
             $lock = Enter-WowgetLock -StateDir (Get-WowgetStateDir $Env $platform) -TimeoutMs $LockTimeoutMs
+        }
+        if ($migrating) { $options.ManifestPath = Invoke-WowgetFirstStart $options $need $progress $Stderr }
+        if ($key -ceq 'search' -and $values['refresh']) {
+            $Stderr.Write("wowget: note: --refresh does nothing: the addon catalogue is kept by the wowget service.`n")
         }
         $result = Invoke-WowgetCommand -Key $key -CmdArgs $rest -Values $values -Options $options
 
@@ -432,6 +577,11 @@ function Invoke-WowgetCli {
         $seen = [System.Collections.Generic.HashSet[string]]::new()
         foreach ($row in (Get-WowgetResultRows $result)) {
             if ($null -ne $row.PSObject.Properties['note'] -and $seen.Add("$($row.name)`0$($row.note)")) { $Stderr.Write("wowget: note: $($row.name): $($row.note)`n") }
+        }
+        $warnings = $result.PSObject.Properties['warnings']
+        if (-not $json -and $null -ne $warnings) { foreach ($w in @($warnings.Value)) { $Stderr.Write("wowget: warning: $w`n") } }
+        if ($key -ceq 'suggest' -and -not $values['print'] -and -not $json -and $result.url) {
+            if (-not (& $script:WowgetOpenUrl $result.url)) { $Stderr.Write("wowget: warning: could not open a browser; open the URL above.`n") }
         }
         foreach ($row in (Get-WowgetResultRows $result)) {
             if ($null -ne $row.PSObject.Properties['leftoverDir']) {
@@ -466,4 +616,33 @@ function Invoke-WowgetCli {
     } finally {
         if ($null -ne $lock) { $lock.Dispose() }
     }
+}
+
+# The automatic first start after the Bun client: the TOML import and adoption, reported on stderr so
+# that the command's own output stays as it is. Returns the manifest path to use. A failed TOML import
+# stops the command; a failed adoption is a warning, and the command runs anyway.
+function Invoke-WowgetFirstStart {
+    param([hashtable]$Options, $Need, $Progress, [System.IO.TextWriter]$Stderr)
+    $report = {
+        param($result)
+        & $Progress.Flush
+        $text = Format-WowgetMigrateResult $result
+        if ($text -ne 'Nothing to migrate.') { foreach ($line in ($text -split "`n")) { $Stderr.Write("wowget: $line`n") } }
+    }
+    $path = $Options.ManifestPath
+    if ($null -ne $Need.Toml) {
+        $converted = Invoke-WowgetMigrate -Options $Options -SkipAdoption
+        $path = $converted.manifestPath
+        & $report $converted
+    }
+    if (-not $Need.Adopt -or -not [System.IO.File]::Exists($path)) { return $path }
+    $adoptOptions = @{} + $Options
+    $adoptOptions.ManifestPath = $path
+    try {
+        & $report (Invoke-WowgetMigrate -Options $adoptOptions)
+    } catch {
+        & $Progress.Flush
+        $Stderr.Write("wowget: warning: adopting the addons the previous wowget installed failed: $(Get-WowgetErrorMessage $_); run `"wowget migrate`" to try again.`n")
+    }
+    return $path
 }
