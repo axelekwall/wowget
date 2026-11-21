@@ -15,7 +15,9 @@ if ($Lint) {
     $testSettings = [System.IO.Path]::Combine($PSScriptRoot, 'PSScriptAnalyzerSettings.psd1')
     $findings = @(
         Invoke-ScriptAnalyzer -Path ([System.IO.Path]::Combine($client, 'Wowget')) -Recurse -Settings $settings
-        Invoke-ScriptAnalyzer -Path ([System.IO.Path]::Combine($client, 'wowget.ps1')) -Settings $settings
+        foreach ($script in 'wowget.ps1', 'build-release.ps1', 'install.ps1') {
+            Invoke-ScriptAnalyzer -Path ([System.IO.Path]::Combine($client, $script)) -Settings $settings
+        }
         Invoke-ScriptAnalyzer -Path $PSScriptRoot -Recurse -Settings $testSettings
     )
     $findings | Format-Table -AutoSize RuleName, Severity, ScriptName, Line, Message | Out-String -Width 200
