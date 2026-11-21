@@ -209,9 +209,11 @@ function Invoke-WowgetReconcile {
         try {
             $read = Read-WowgetManifestText $Options.ManifestPath
             $manifest = $read.Manifest
-            $bySource = $manifest.Addons | Where-Object { $_.Source -ceq $group.source } | Select-Object -First 1
+            # GitHub owners and repositories are case-insensitive, so sources compare by their key.
+            $sourceKey = Get-WowgetSourceKey $group.source
+            $bySource = $manifest.Addons | Where-Object { (Get-WowgetSourceKey $_.Source) -ceq $sourceKey } | Select-Object -First 1
             $byName = Find-WowgetAddon $manifest $group.name
-            if ($byName -and $byName.Source -cne $group.source) {
+            if ($byName -and (Get-WowgetSourceKey $byName.Source) -cne $sourceKey) {
                 throw (New-WowgetError 'conflict' "Manifest already has `"$($byName.Name)`" with source `"$($byName.Source)`".")
             }
             $existing = if ($bySource) { $bySource } else { $byName }

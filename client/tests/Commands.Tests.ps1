@@ -134,6 +134,22 @@ InModuleScope Wowget {
             }
         }
 
+        Describe 'reconcile with an existing entry' {
+            It 'matches a manifest source that differs only in GitHub owner and repository case' {
+                $paths = New-WgManifest $dirs ([ordered]@{ era = 'classic' })
+                $m = Read-WowgetManifest $dirs.Manifest
+                [void](Save-WowgetManifest $dirs.Manifest (Read-WowgetText $dirs.Manifest) (New-WowgetManifestObject -Targets $m.Targets -Addons @(New-WowgetAddonEntry -Name 'Addon' -Source 'github:O/Addon')))
+                New-WgAddonFolder $paths.era 'Addon' "## X-GitHub: o/addon`n" | Out-Null
+                Add-WgRelease -Source 'github:O/Addon' -ReleaseId 'v2' | Out-Null
+                $r = Invoke-WowgetReconcile -Options (New-WgOptions $dirs) -Adopt
+                $r.addons[0].status | Should -Be 'adopted'
+                $addons = @((Read-WowgetManifest $dirs.Manifest).Addons)
+                $addons.Count | Should -Be 1
+                $addons[0].Source | Should -BeExactly 'github:O/Addon'
+                (Read-WowgetMarker ([System.IO.Path]::Combine($paths.era, 'Addon'))).Marker.Addon | Should -Be 'Addon'
+            }
+        }
+
         Describe 'doctor' {
             It 'reports invalid, orphaned and mismatched markers, missing folders and stale cache, and cleans' {
                 $paths = New-WgManifest $dirs ([ordered]@{ era = 'classic' })
