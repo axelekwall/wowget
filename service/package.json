@@ -3,6 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@12.21.0",
+  "engines": {
+    "node": ">=26"
+  },
   "scripts": {
     "registry": "node scripts/build-registry.ts",
     "dev": "wrangler dev",
