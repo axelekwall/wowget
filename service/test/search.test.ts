@@ -229,6 +229,24 @@ describe("search over the registry and the catalogue", () => {
     expect((await catalogueCandidates(env.DB, "foo options")).map((e) => e.id)).toEqual(["42"]);
   });
 
+  test("every query word filters the lookup, so the cap cannot hide a row matching all of them", async () => {
+    const words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"];
+    // 600 popular rows match the first eight words but not the ninth.
+    const decoys = Array.from({ length: 600 }, (_, i) => ({ UID: String(2000 + i), UIName: `${words.join(" ")} ${i}`, UIDownloadMonthly: String(1000 + i) }));
+    await importCatalogue([...decoys, { UID: "9", UIName: `${words.join(" ")} india`, UIDownloadMonthly: "1" }]);
+    const ids = (await catalogueCandidates(env.DB, `${words.join(" ")} india`)).map((e) => e.id);
+    expect(ids).toEqual(["9"]);
+  });
+
+  test("a name longer than D1's LIKE pattern limit still matches exactly and by prefix", async () => {
+    const long = "Supercalifragilistic Expialidocious Raid Frame Enhancements";
+    await importCatalogue([...FILELIST, { UID: "77", UIName: long, UIDir: ["SuperRaidFrames"] }]);
+    expect((await catalogueCandidates(env.DB, long)).map((e) => e.id)).toEqual(["77"]);
+    expect((await catalogueCandidates(env.DB, "Supercalifragilistic Expialidocious Raid Frame")).map((e) => e.id)).toEqual(["77"]);
+    const rows = await search(deps(), { query: long, github: false, limit: 5 });
+    expect(rows.rows.map((r) => r.source)).toEqual(["wowi:77"]);
+  });
+
   test("a query matching many rows keeps the exact match and the most downloaded", async () => {
     const many = Array.from({ length: 600 }, (_, i) => ({ UID: String(1000 + i), UIName: `Xyz helper ${i}`, UIDownloadMonthly: String(i + 10) }));
     await importCatalogue([...many, { UID: "5", UIName: "Xyz", UIDownloadMonthly: "1" }]);

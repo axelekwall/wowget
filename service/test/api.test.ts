@@ -157,7 +157,8 @@ describe("GET /v1/search", () => {
     const withoutGithub = await app.request("/v1/search?q=bags", {}, { ...env, GITHUB_SEARCH_LIMITER: limiter });
     expect(withoutGithub.status).toBe(200);
 
-    for (const query of ["", "?q=%20", "?q=x&flavors=titan", "?q=x&limit=51", "?q=x&limit=0", "?q=x&github=2"]) {
+    const tooManyWords = `?q=${Array.from({ length: 17 }, (_, i) => `w${i}`).join("%20")}`;
+    for (const query of ["", "?q=%20", "?q=x&flavors=titan", "?q=x&limit=51", "?q=x&limit=0", "?q=x&github=2", tooManyWords]) {
       const bad = await get(query);
       expect(bad.status, query).toBe(400);
       expect(((await bad.json()) as { error: { code: string } }).error.code).toBe("bad_request");

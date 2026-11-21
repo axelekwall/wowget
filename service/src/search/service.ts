@@ -9,8 +9,12 @@ import type { SearchRow } from "./types.ts";
 import { catalogRow, type CatalogEntry } from "./wowi-catalog.ts";
 
 export const GITHUB_SEARCH_MAX_AGE_MS = 60 * 60 * 1000;
-/** More words than this only narrow the database lookup further; ranking still checks them all. */
-const MAX_SQL_WORDS = 8;
+/**
+ * The most distinct words a query may have. Every word filters the database lookup, since a
+ * candidate cap applied after filtering on only some words could fill with rows that ranking
+ * then drops, hiding real matches.
+ */
+export const MAX_QUERY_WORDS = 16;
 const MAX_CANDIDATES = 500;
 
 export interface SearchResponseRow {
@@ -79,13 +83,45 @@ function toEntry(row: CatalogueRow): CatalogEntry {
  * popularity, so a cap only drops rows that would rank below MAX_CANDIDATES more popular ones
  * of the same kind.
  */
+/** D1 rejects LIKE patterns longer than this many bytes. */
+const MAX_LIKE_PATTERN_BYTES = 50;
+const likeFits = (pattern: string) => new TextEncoder().encode(pattern).length <= MAX_LIKE_PATTERN_BYTES;
+
+type Condition = [sql: string, params: string[]];
+
+// LIKE can use the trigram index; the substr and instr forms cover longer text, which is rare
+// and selective, at the cost of scanning the index table.
+const startsWith = (text: string): Condition =>
+  likeFits(`${text}%`) ? ["search_text LIKE ?", [`${text}%`]] : ["substr(search_text, 1, length(?)) = ?", [text, text]];
+const endsWith = (text: string): Condition =>
+  likeFits(`%${text}`) ? ["search_text LIKE ?", [`%${text}`]] : ["substr(search_text, -length(?)) = ?", [text, text]];
+const contains = (text: string): Condition =>
+  likeFits(`%${text}%`) ? ["search_text LIKE ?", [`%${text}%`]] : ["instr(search_text, ?) > 0", [text]];
+
+function any(...conditions: Condition[]): Condition {
+  return [conditions.map(([sql]) => `(${sql})`).join(" OR "), conditions.flatMap(([, params]) => params)];
+}
+
+function all(...conditions: Condition[]): Condition {
+  return [conditions.map(([sql]) => `(${sql})`).join(" AND "), conditions.flatMap(([, params]) => params)];
+}
+
+/**
+ * Catalogue entries whose name or folders contain every query word, the widest set any match
+ * tier accepts. The trigram index answers LIKE for words of three or more characters.
+ *
+ * A short or common query matches thousands of rows, so exact, prefix and substring matches are
+ * fetched separately, each capped to the most downloaded. Ranking sorts by tier, then
+ * popularity, so a cap only drops rows that would rank below MAX_CANDIDATES more popular ones
+ * of the same kind.
+ */
 export async function catalogueCandidates(db: D1Database, query: string): Promise<CatalogEntry[]> {
-  const words = [...new Set(queryWords(query))].slice(0, MAX_SQL_WORDS);
+  const words = [...new Set(queryWords(query))];
+  if (words.length > MAX_QUERY_WORDS) throw new RangeError(`A query may have at most ${MAX_QUERY_WORDS} distinct words.`);
   const q = normaliseName(query);
   if (words.length === 0 || !q) return [];
-  const where = words.map(() => "search_text LIKE ?").join(" AND ");
   const columns = "id, name, author, version, updated_at, downloads_monthly, versions, folders, url";
-  const select = (condition: string, ...params: string[]) =>
+  const select = ([condition, params]: Condition) =>
     db
       .prepare(
         `SELECT ${columns} FROM catalogue WHERE id IN (SELECT rowid FROM catalogue_fts WHERE ${condition})
@@ -95,15 +131,9 @@ export async function catalogueCandidates(db: D1Database, query: string): Promis
   // search_text separates the name and each folder with a space, so a field boundary is the
   // start, the end or a space.
   const results = await db.batch<CatalogueRow>([
-    select(
-      "search_text = ? OR search_text LIKE ? OR search_text LIKE ? OR search_text LIKE ?",
-      q,
-      `${q} %`,
-      `% ${q}`,
-      `% ${q} %`,
-    ),
-    select("search_text LIKE ? OR search_text LIKE ?", `${q}%`, `% ${q}%`),
-    select(where, ...words.map((w) => `%${w}%`)),
+    select(any(["search_text = ?", [q]], startsWith(`${q} `), endsWith(` ${q}`), contains(` ${q} `))),
+    select(any(startsWith(q), contains(` ${q}`))),
+    select(all(...words.map(contains))),
   ]);
   const byId = new Map<number, CatalogueRow>();
   for (const row of results.flatMap((r) => r.results)) if (!byId.has(row.id)) byId.set(row.id, row);

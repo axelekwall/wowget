@@ -8,7 +8,8 @@ import type { FetchFn } from "./http.ts";
 import { ipHash } from "./ratelimit.ts";
 import { documentEntries } from "./registry.ts";
 import { MAX_ITEMS, resolveItems, ResolveRequestSchema } from "./resolve.ts";
-import { search } from "./search/service.ts";
+import { queryWords } from "./search/index.ts";
+import { MAX_QUERY_WORDS, search } from "./search/service.ts";
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_QUERY_LENGTH = 200;
@@ -98,6 +99,9 @@ export function createApp(options: AppOptions = {}) {
       const query = (c.req.query("q") ?? "").trim();
       if (!/[\p{L}\p{N}]/u.test(query)) return apiError(c, 400, "bad_request", "q needs at least one letter or digit.");
       if (query.length > MAX_QUERY_LENGTH) return apiError(c, 400, "bad_request", `q is longer than ${MAX_QUERY_LENGTH} characters.`);
+      if (new Set(queryWords(query)).size > MAX_QUERY_WORDS) {
+        return apiError(c, 400, "bad_request", `q has more than ${MAX_QUERY_WORDS} distinct words.`);
+      }
 
       let flavors: Flavor[] | undefined;
       const flavorParam = c.req.query("flavors");
