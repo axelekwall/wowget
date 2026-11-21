@@ -496,12 +496,12 @@ function Invoke-WowgetTargetAdd {
     # folder exists, which creating the new target's directory could make happen.
     $possible = {
         param($t)
-        if ($null -ne $t.Path) { , @(Resolve-WowgetRealDir $t.Path) }
-        else { , @($gameDirs | ForEach-Object { Resolve-WowgetRealDir ([System.IO.Path]::Combine($_, $t.Folder, 'Interface', 'AddOns')) }) }
+        if ($null -ne $t.Path) { Resolve-WowgetRealDir $t.Path }
+        else { foreach ($g in $gameDirs) { Resolve-WowgetRealDir ([System.IO.Path]::Combine($g, $t.Folder, 'Interface', 'AddOns')) } }
     }
     $mine = @(if ($null -ne $here) { Resolve-WowgetRealDir $here } else { & $possible ([pscustomobject]@{ Path = $null; Folder = $Folder }) })
     foreach ($t in (Find-WowgetTargetDirs $manifest.Targets $gameDirs)) {
-        foreach ($p in (& $possible $t)) {
+        foreach ($p in @(& $possible $t)) {
             foreach ($m in $mine) {
                 if (Test-WowgetSamePath $p $m) {
                     $what = if ($null -ne $here) { $here } else { "the $Folder folder" }
@@ -606,11 +606,22 @@ function Invoke-WowgetTargetRemove {
     if (-not $target) { throw (New-WowgetError 'not_found' "No target named `"$Name`" in the manifest.") }
     $plan = Remove-WowgetManifestTarget $manifest $target.Name
     [void](Assert-WowgetManifestPlanned $Options.ManifestPath $plan.Manifest)
-    $located = @(Find-WowgetTargetDirs @($target) @(Get-WowgetGameDirs $Options))[0]
+    $gameDirs = @(Get-WowgetGameDirs $Options)
+    $located = @(Find-WowgetTargetDirs @($target) $gameDirs)[0]
+    # A directory another target also uses holds that target's addons too, so removing a duplicate
+    # target only edits the manifest.
+    $shared = $false
+    if ($null -ne $located.Path) {
+        $real = Resolve-WowgetRealDir $located.Path
+        foreach ($other in @(Find-WowgetTargetDirs @($manifest.Targets | Where-Object { $_.Name -cne $target.Name }) $gameDirs)) {
+            if ($null -ne $other.Path -and (Test-WowgetSamePath (Resolve-WowgetRealDir $other.Path) $real)) { $shared = $true }
+        }
+    }
     $addons = [System.Collections.Generic.List[object]]::new()
     try {
         $names = @()
-        if ($null -ne $located.Path) { $names = Get-WowgetMarkedAddons (Get-WowgetTargetMarkers $located.Path) }
+        if ($shared) { $names = @() }
+        elseif ($null -ne $located.Path) { $names = Get-WowgetMarkedAddons (Get-WowgetTargetMarkers $located.Path) }
         else { Send-WowgetEvent $Options @{ type = 'target:absent'; target = $target.Name; message = "target `"$($target.Name)`" is not on this machine; its addon folders there were not touched" } }
         foreach ($markerName in (Get-WowgetSortedByName @($names | ForEach-Object { [pscustomobject]@{ Name = $_ } }) | ForEach-Object Name)) {
             $entry = Find-WowgetAddon $manifest $markerName
@@ -1068,9 +1079,12 @@ function Invoke-WowgetRollback {
         }
         $p = $install.Previous
         $zip = Get-WowgetCachedZipPath $ctx.CacheDir $entry.Name $p.ReleaseId $p.Filename
+        $label = if ($p.AddonVersion) { $p.AddonVersion } else { $p.ReleaseId }
         if (-not [System.IO.File]::Exists($zip)) {
-            $label = if ($p.AddonVersion) { $p.AddonVersion } else { $p.ReleaseId }
             throw (New-WowgetError 'not_found' "$($row.Target.Name): cached zip for $($entry.Name) $label ($zip) is missing.")
+        }
+        if (-not (Test-WowgetZip $zip)) {
+            throw (New-WowgetError 'zip' "$($row.Target.Name): cached zip for $($entry.Name) $label ($zip) is not a readable zip.")
         }
         $resolved = [pscustomobject]@{
             Source = $install.Source; ReleaseId = $p.ReleaseId; Version = $(if ($p.AddonVersion) { $p.AddonVersion } else { $p.ReleaseId })

@@ -64,7 +64,7 @@ function Resolve-WowgetUrlSource {
         [void](Remove-WowgetBestEffort $part)
     }
 
-    if ($null -ne $Pin -and $Pin -ne $sha256) {
+    if ($null -ne $Pin -and $Pin -cne $sha256) {
         throw (New-WowgetError 'source' "$($Spec.Url) now serves a file with sha256 $sha256, but the addon is pinned to $Pin.")
     }
     return [pscustomobject]@{

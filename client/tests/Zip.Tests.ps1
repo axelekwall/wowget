@@ -42,6 +42,12 @@ InModuleScope Wowget {
             [System.IO.File]::Exists([System.IO.Path]::Combine($dirs.Root, 'evil.txt')) | Should -BeFalse
         }
 
+        It 'rejects a drive-letter segment inside an entry name' {
+            [void](New-WgZip $zip ([ordered]@{ 'A/A.toc' = ''; 'A/D:/evil.txt' = 'x' }))
+            Get-WgErrorCode { Expand-WowgetZip $zip $dest } | Should -Be 'zip'
+            @([System.IO.Directory]::GetFileSystemEntries($dest)).Count | Should -Be 0
+        }
+
         It 'reports garbage bytes as a zip error' {
             [System.IO.File]::WriteAllText($zip, 'not a zip')
             Test-WowgetZip $zip | Should -BeFalse

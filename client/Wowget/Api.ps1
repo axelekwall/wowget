@@ -150,11 +150,12 @@ function Get-WowgetRegistrySnapshotPath {
     return [System.IO.Path]::Combine((Split-Path -Parent $script:WowgetModuleRoot), 'registry.json')
 }
 
-# The service registry, with an ETag cache in "<cache>/registry.json". When the service cannot be
+# The service registry, with an ETag cache in "<cache>/http/registry.json". When the service cannot be
 # reached, the cached copy or the snapshot is used and Stale says so.
 function Get-WowgetRegistry {
     param([Parameter(Mandatory)][string]$ApiUrl, [Parameter(Mandatory)][string]$CacheDir)
-    $cachePath = [System.IO.Path]::Combine($CacheDir, 'registry.json')
+    # Under http/, next to the url: records, so no addon cache directory can take its name.
+    $cachePath = [System.IO.Path]::Combine($CacheDir, 'http', 'registry.json')
     $cached = $null
     if ([System.IO.File]::Exists($cachePath)) {
         try {
@@ -173,7 +174,7 @@ function Get-WowgetRegistry {
             if ($response.StatusCode -eq 304 -and $cached) { return [pscustomobject]@{ Entries = $cached.Registry.Entries; Stale = $null } }
             $doc = ConvertFrom-WowgetJson (Get-WowgetResponseText $response)
             $registry = ConvertFrom-WowgetRegistryDoc $doc
-            [void][System.IO.Directory]::CreateDirectory($CacheDir)
+            [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($cachePath))
             $record = [ordered]@{ etag = $response.Headers['ETag']; registry = $doc }
             Write-WowgetFileAtomic $cachePath ((ConvertTo-WowgetJsonText $record -MultilineDepth 0) + "`n")
             return [pscustomobject]@{ Entries = $registry.Entries; Stale = $null }

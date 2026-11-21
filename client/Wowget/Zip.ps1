@@ -8,7 +8,8 @@ function Get-WowgetZipEntrySegments {
         throw (New-WowgetError 'zip' "Refusing zip entry with an absolute path: $Name")
     }
     $segments = @($normalised.Split('/') | Where-Object { $_ -ne '' -and $_ -ne '.' })
-    if ($segments -contains '..') {
+    # A segment with a colon ("D:") would be rooted on Windows and make Path.Combine drop the destination.
+    if ($segments -contains '..' -or @($segments | Where-Object { $_.Contains(':') }).Count) {
         throw (New-WowgetError 'zip' "Refusing zip entry that escapes the target directory: $Name")
     }
     return $segments
@@ -58,9 +59,13 @@ function Expand-WowgetZip {
                 IsDir    = $name.EndsWith('/') -or $name.EndsWith('\')
             }
         }
+        $root = [System.IO.Path]::GetFullPath($Dest).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
         foreach ($item in @($plan)) {
             if ($item.Segments.Count -eq 0) { continue }
-            $target = [System.IO.Path]::Combine([string[]](@($Dest) + $item.Segments))
+            $target = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine([string[]](@($Dest) + $item.Segments)))
+            if (-not $target.StartsWith($root, [System.StringComparison]::Ordinal)) {
+                throw (New-WowgetError 'zip' "Refusing zip entry that escapes the target directory: $($item.Entry.FullName)")
+            }
             if ($item.IsDir) {
                 [void][System.IO.Directory]::CreateDirectory($target)
                 continue

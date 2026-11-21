@@ -335,6 +335,26 @@ InModuleScope Wowget {
             Get-WgErrorCode { Invoke-WowgetTargetPortable -Options (New-WgOptions $dirs) -Names @('nope') } | Should -Be 'usage'
         }
 
+        It 'refuses a folder target that would share a directory, with several game directories' {
+            $second = [System.IO.Path]::Combine($dirs.Root, 'game2')
+            $addons = [System.IO.Path]::Combine($second, '_retail_', 'Interface', 'AddOns')
+            [void](New-WowgetManifestFile $dirs.Manifest @(New-WowgetTarget -Name 'retail' -Path $addons -Flavor 'mainline'))
+            $o = New-WgOptions $dirs -GameDirs @($dirs.Game, $second)
+            Get-WgErrorCode { Invoke-WowgetTargetAdd -Options $o -Name 'r2' -Folder '_retail_' -Flavor 'mainline' } | Should -Be 'usage'
+        }
+
+        It 'removes a duplicate target without uninstalling the addons the other target keeps' {
+            $paths = New-WgManifest $dirs
+            [void](Add-WgRelease -Source 'github:a/Foo' -ReleaseId 'v1' -Folders @{ Foo = '' })
+            [void](Invoke-WowgetAdd -Options (New-WgOptions $dirs) -Source 'github:a/Foo')
+            $read = Read-WowgetManifestText $dirs.Manifest
+            $dup = New-WowgetManifestObject -Targets (@($read.Manifest.Targets) + (New-WowgetTarget -Name 'dup' -Path $paths.forever -Flavor 'forever')) -Addons $read.Manifest.Addons
+            [void](Save-WowgetManifest $dirs.Manifest $read.Text $dup)
+            $result = Invoke-WowgetTargetRemove -Options (New-WgOptions $dirs) -Name 'dup'
+            @($result.addons).Count | Should -Be 0
+            Get-WgFolders $paths.forever | Should -Be @('Foo')
+        }
+
         It 'adds a folder target, refusing a folder another target has' {
             [void](New-WgDir $dirs @('game', '_classic_era_'))
             [void](New-WowgetManifestFile $dirs.Manifest @())

@@ -49,7 +49,7 @@ function ConvertFrom-WowgetMarkerText {
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
     try { $d = ConvertFrom-WowgetJson $Text } catch { return $null }
     if (-not (Test-WowgetJsonDictionary $d)) { return $null }
-    if ($d['version'] -ne $script:MarkerFormatVersion) { return $null }
+    if (-not ($d['version'] -is [long] -or $d['version'] -is [int]) -or $d['version'] -ne $script:MarkerFormatVersion) { return $null }
     foreach ($key in 'addon', 'source', 'releaseId', 'filename') { if (-not (Test-WowgetNonEmptyString $d[$key])) { return $null } }
     foreach ($key in 'addonVersion', 'sha256', 'installedAt') { if (-not (Test-WowgetOptionalString $d[$key])) { return $null } }
     $folders = $d['folders']
