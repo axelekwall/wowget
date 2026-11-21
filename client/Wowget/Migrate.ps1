@@ -116,15 +116,17 @@ function Get-WowgetUnmarkedFolders {
     return , [string[]]@($present | Select-Object -Unique)
 }
 
-# Recovers release ids of cached zips through POST /v1/resolve: a result for the release directory name
-# (or the manifest pin) whose filename and checksum are the zip's gives the id. Fills ReleaseId and
-# Version on each candidate it can; the rest keep $null.
+# Recovers release ids of cached zips through POST /v1/resolve: a result for the release directory name,
+# the manifest pin or the latest release whose filename and checksum are the zip's gives the id. The
+# directory name is not the id when the Bun client had to replace characters in it, which the latest
+# release often still covers. Fills ReleaseId and Version on each candidate it can; the rest keep $null.
 function Resolve-WowgetCachedReleaseIds {
     param([Parameter(Mandatory)][string]$ApiUrl, [object[]]$Candidates = @())
     $items = [System.Collections.Generic.List[object]]::new()
     foreach ($c in $Candidates) {
         $pins = @($c.Release.Dir)
         if ($c.Entry.Pin -and $c.Entry.Pin -cne $c.Release.Dir) { $pins += $c.Entry.Pin }
+        if (-not $c.Entry.Pin) { $pins += $null }
         $c | Add-Member -NotePropertyName Items -NotePropertyValue @(foreach ($pin in $pins) {
                 [pscustomobject]@{ source = $c.Entry.Source; flavor = $c.Flavor; prerelease = $c.Entry.Prerelease; pin = $pin }
             }) -Force

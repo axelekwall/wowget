@@ -95,6 +95,17 @@ InModuleScope Wowget {
             [System.IO.File]::Exists((Get-WowgetCachedZipPath $dirs.Cache 'Questie' 'v1?beta' 'Questie.zip')) | Should -BeTrue
         }
 
+        It 'recovers a release id the directory name lost from the latest release' {
+            $zip = New-WgAddonZipBytes @{ Questie = '' } -Content 'q'
+            Add-WgBunCache $dirs 'Questie' 'bundle_v1' 'Questie.zip' $zip | Out-Null
+            Add-WgPinned 'github:o/questie' '' 'bundle/v1' 'Questie.zip' $zip
+            Install-WgBunZip $zip $paths.era
+            $m = Read-WowgetManifest $dirs.Manifest
+            [void](Save-WowgetManifest $dirs.Manifest (Read-WowgetText $dirs.Manifest) (New-WowgetManifestObject -Targets $m.Targets -Addons @(New-WowgetAddonEntry -Name 'Questie' -Source 'github:o/questie' -Targets @('era'))))
+            (Invoke-WowgetMigrate -Options $o).adopted[0].releaseId | Should -Be 'bundle/v1'
+            [System.IO.File]::Exists((Get-WowgetCachedZipPath $dirs.Cache 'Questie' 'bundle/v1' 'Questie.zip')) | Should -BeTrue
+        }
+
         It 'writes releaseId unknown when the service cannot be reached' {
             $zip = New-WgAddonZipBytes @{ Questie = '' } -Content 'q'
             Add-WgBunCache $dirs 'Questie' 'v1.0' 'Questie-v1.0.zip' $zip | Out-Null

@@ -658,6 +658,10 @@ Implementation notes:
   release id whose cache path differs from where the Bun client put the zip
   (the sanitising rules differ, see "Installer") moves the zip to the path
   this client computes, so `rollback` and cache pruning find it.
+- Release id recovery also asks for the latest release when the addon is not
+  pinned: a directory name the Bun client had to change (a tag such as
+  `bundle/v1.2`) resolves to nothing, while the installed release is often
+  still the latest one. The filename and checksum check applies to it too.
 - Identification is by the SHA-256 of every file the zip extracts into its
   folders; extra files on disk, such as the marker, do not count against it.
 - `previous` is the newest other cached release, and only when its release id
