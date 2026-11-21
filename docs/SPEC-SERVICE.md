@@ -98,8 +98,13 @@ and [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing
   query.
 - **Search candidates** are bounded: exact, prefix and substring catalogue matches are read
   separately, each capped at the 500 most downloaded. Ranking (tier, then popularity) gives
-  the same results unless more than 500 rows of one kind outrank a row. Words shorter than
-  three characters cannot use the trigram index, so such queries scan the index table.
+  the same results unless more than 500 rows of one kind outrank a row. Every query word and
+  the flavor filter apply before the cap: each catalogue row stores the flavors its patch
+  numbers name as a bitmask column (`flavors`, computed at import), and a filter without
+  Forever adds `flavors & mask != 0`. Catalogue rows are unknown for Forever, so a filter that
+  includes it keeps every row. Queries are limited to 16 distinct words, and LIKE patterns over
+  D1's 50-byte limit use `substr` and `instr` instead. Words shorter than three characters
+  cannot use the trigram index, so such queries scan the index table.
   `github=1` searches also pass a second limiter, 10 per IP hash per 60 seconds, so one address
   cannot use up the token's 30 searches a minute.
 - **Pins** with `.` or `..` path segments are `bad_request`, since the pin becomes part of a

@@ -1,5 +1,5 @@
 import { loadBundles, saveBundles } from "../cache.ts";
-import { FLAVORS, type Flavor } from "../flavor.ts";
+import { FLAVORS, flavorMask, type Flavor } from "../flavor.ts";
 import { CachedHttp, type FetchFn } from "../http.ts";
 import { normaliseName, type RegistryEntry } from "../registry.ts";
 import { searchGithub } from "./github-search.ts";
@@ -115,19 +115,24 @@ function all(...conditions: Condition[]): Condition {
  * popularity, so a cap only drops rows that would rank below MAX_CANDIDATES more popular ones
  * of the same kind.
  */
-export async function catalogueCandidates(db: D1Database, query: string): Promise<CatalogEntry[]> {
+export async function catalogueCandidates(db: D1Database, query: string, flavors?: readonly Flavor[]): Promise<CatalogEntry[]> {
   const words = [...new Set(queryWords(query))];
   if (words.length > MAX_QUERY_WORDS) throw new RangeError(`A query may have at most ${MAX_QUERY_WORDS} distinct words.`);
   const q = normaliseName(query);
   if (words.length === 0 || !q) return [];
   const columns = "id, name, author, version, updated_at, downloads_monthly, versions, folders, url";
+  // The flavor filter runs before the cap, or a broad query could fill the cap with rows for
+  // other flavors that ranking then drops. Catalogue rows are "unknown" for Forever, so a filter
+  // that includes Forever keeps every row.
+  const mask = flavors?.length && !flavors.includes("forever") ? flavorMask(flavors) : 0;
+  const flavorSql = mask ? " AND (flavors & ?) != 0" : "";
   const select = ([condition, params]: Condition) =>
     db
       .prepare(
-        `SELECT ${columns} FROM catalogue WHERE id IN (SELECT rowid FROM catalogue_fts WHERE ${condition})
+        `SELECT ${columns} FROM catalogue WHERE id IN (SELECT rowid FROM catalogue_fts WHERE ${condition})${flavorSql}
          ORDER BY downloads_monthly DESC LIMIT ${MAX_CANDIDATES}`,
       )
-      .bind(...params);
+      .bind(...params, ...(mask ? [mask] : []));
   // search_text separates the name and each folder with a space, so a field boundary is the
   // start, the end or a space.
   const results = await db.batch<CatalogueRow>([
@@ -187,7 +192,7 @@ export async function search(
   const query = opts.query.trim();
   if (!normaliseName(query)) return { rows: [], warnings };
   const [catalogue, github] = await Promise.all([
-    catalogueCandidates(deps.db, query).catch((err) => {
+    catalogueCandidates(deps.db, query, opts.flavors).catch((err) => {
       console.error("catalogue search failed", err);
       warnings.push("WoWInterface catalogue unavailable; showing the other sources.");
       return [];

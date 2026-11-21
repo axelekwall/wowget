@@ -1,4 +1,4 @@
-import type { Flavor, Support } from "../flavor.ts";
+import { flavorMask, type Flavor, type Support } from "../flavor.ts";
 import { normaliseName } from "../registry.ts";
 import type { SearchRow } from "./types.ts";
 
@@ -75,6 +75,11 @@ export function flavorsForVersions(versions: string[]): Flavor[] {
     else if (major >= 6) flavors.add("mainline");
   }
   return [...flavors];
+}
+
+/** The flavors an entry's patch numbers name, as stored in the catalogue's flavors column. */
+export function catalogFlavorMask(entry: Pick<CatalogEntry, "versions">): number {
+  return flavorMask(flavorsForVersions(entry.versions));
 }
 
 export function catalogRow(entry: CatalogEntry): SearchRow {

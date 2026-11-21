@@ -247,6 +247,23 @@ describe("search over the registry and the catalogue", () => {
     expect(rows.rows.map((r) => r.source)).toEqual(["wowi:77"]);
   });
 
+  test("the flavor filter applies before the cap, so popular rows of other flavors cannot hide a match", async () => {
+    const retail = Array.from({ length: 600 }, (_, i) => ({
+      UID: String(3000 + i),
+      UIName: `Qwerty helper ${i}`,
+      UIDownloadMonthly: String(1000 + i),
+      UICompatibility: [{ version: "11.0.5", name: "The War Within" }],
+    }));
+    const classic = { UID: "8", UIName: "Qwerty classic", UIDownloadMonthly: "1", UICompatibility: [{ version: "1.15.7", name: "Classic" }] };
+    await importCatalogue([...retail, classic]);
+
+    const filtered = await search(deps(), { query: "qwerty", flavors: ["classic"], github: false, limit: 5 });
+    expect(filtered.rows.map((r) => r.source)).toEqual(["wowi:8"]);
+    // Catalogue rows are unknown for Forever, so a Forever filter keeps the popular rows.
+    const forever = await search(deps(), { query: "qwerty", flavors: ["forever"], github: false, limit: 2 });
+    expect(forever.rows.map((r) => r.source)).toEqual(["wowi:3599", "wowi:3598"]);
+  });
+
   test("a query matching many rows keeps the exact match and the most downloaded", async () => {
     const many = Array.from({ length: 600 }, (_, i) => ({ UID: String(1000 + i), UIName: `Xyz helper ${i}`, UIDownloadMonthly: String(i + 10) }));
     await importCatalogue([...many, { UID: "5", UIName: "Xyz", UIDownloadMonthly: "1" }]);

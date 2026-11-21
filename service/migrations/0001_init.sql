@@ -24,6 +24,9 @@ CREATE TABLE catalogue (
   updated_at TEXT,
   downloads_monthly INTEGER NOT NULL DEFAULT 0,
   versions TEXT NOT NULL DEFAULT '[]',
+  -- Flavors named by `versions`, one bit per flavor in the service's FLAVORS order, so search
+  -- can filter by flavor before it caps candidates.
+  flavors INTEGER NOT NULL DEFAULT 0,
   folders TEXT NOT NULL DEFAULT '[]',
   url TEXT,
   search_text TEXT NOT NULL
@@ -72,6 +75,7 @@ CREATE TABLE catalogue_staging (
   updated_at TEXT,
   downloads_monthly INTEGER NOT NULL DEFAULT 0,
   versions TEXT NOT NULL DEFAULT '[]',
+  flavors INTEGER NOT NULL DEFAULT 0,
   folders TEXT NOT NULL DEFAULT '[]',
   url TEXT,
   search_text TEXT NOT NULL,
@@ -94,8 +98,8 @@ BEGIN
   WHERE new.full = 1 AND id NOT IN (SELECT id FROM catalogue_staging WHERE import_id = new.id);
   DELETE FROM catalogue
   WHERE id IN (SELECT id FROM catalogue_staging_removed WHERE import_id = new.id);
-  INSERT INTO catalogue (id, name, author, version, updated_at, downloads_monthly, versions, folders, url, search_text)
-  SELECT id, name, author, version, updated_at, downloads_monthly, versions, folders, url, search_text
+  INSERT INTO catalogue (id, name, author, version, updated_at, downloads_monthly, versions, flavors, folders, url, search_text)
+  SELECT id, name, author, version, updated_at, downloads_monthly, versions, flavors, folders, url, search_text
   FROM catalogue_staging WHERE import_id = new.id
   ON CONFLICT (id) DO UPDATE SET
     name = excluded.name,
@@ -104,6 +108,7 @@ BEGIN
     updated_at = excluded.updated_at,
     downloads_monthly = excluded.downloads_monthly,
     versions = excluded.versions,
+    flavors = excluded.flavors,
     folders = excluded.folders,
     url = excluded.url,
     search_text = excluded.search_text;

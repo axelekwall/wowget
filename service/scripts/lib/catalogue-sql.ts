@@ -1,4 +1,4 @@
-import { catalogSearchText, type CatalogEntry } from "../../src/search/wowi-catalog.ts";
+import { catalogFlavorMask, catalogSearchText, type CatalogEntry } from "../../src/search/wowi-catalog.ts";
 
 export interface CatalogueDiff {
   /** True when `changed` is the whole catalogue and every other row goes. */
@@ -80,13 +80,14 @@ export function stagingSql(importId: string, diff: CatalogueDiff, entries: numbe
           sqlValue(e.updatedAt),
           e.downloadsMonthly,
           sqlValue(JSON.stringify(e.versions)),
+          catalogFlavorMask(e),
           sqlValue(JSON.stringify(e.folders)),
           sqlValue(e.url),
           sqlValue(catalogSearchText(e)),
         ].join(", ")})`,
     );
     lines.push(
-      `INSERT INTO catalogue_staging (import_id, id, name, author, version, updated_at, downloads_monthly, versions, folders, url, search_text) VALUES\n${rows.join(",\n")};`,
+      `INSERT INTO catalogue_staging (import_id, id, name, author, version, updated_at, downloads_monthly, versions, flavors, folders, url, search_text) VALUES\n${rows.join(",\n")};`,
     );
   }
   for (const chunk of chunks(diff.removed, IDS_PER_INSERT)) {
