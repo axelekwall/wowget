@@ -207,7 +207,9 @@ works while wowget runs.
 client/
   Wowget/
     Wowget.psd1, Wowget.psm1     module manifest and loader
-    Paths.ps1                    locations, env overrides, game directory candidates
+    Errors.ps1                   the WowgetError class and its codes
+    Fs.ps1                       atomic writes through symlinks, JSON text, the lock
+    Paths.ps1                    locations, env overrides, game directory detection
     Manifest.ps1                 read, validate, write wowget.json
     TomlImport.ps1               one-time TOML manifest conversion
     Markers.ps1                  read and write .wowget.json markers
@@ -224,9 +226,15 @@ client/
     SelfUpdate.ps1
     Cli.ps1                      argument parsing, formatting, --json, exit codes
   wowget.ps1                     entry point: imports the module, calls Cli
-  tests/                         Pester 5 tests, mirroring the module
+  runtime.json                   pinned runtime version, URLs and SHA-256 per platform
+  tests/                         Pester 5 tests, mirroring the module; run.ps1 runs them
+                                 (and PSScriptAnalyzer with -Lint)
   install.ps1, install.sh
 ```
+
+`Errors.ps1` and `Fs.ps1` are not in the first plan: the error class must load
+before every file that throws it, and the write and lock helpers are shared by
+the manifest, the markers and the url: source records.
 
 Rules carried over from the Bun client:
 
@@ -239,7 +247,9 @@ Rules carried over from the Bun client:
   `zip`, `flavor`, `conflict`, `locked`, `source`, `io`. Service errors map
   to them: `rate_limited` to `rate_limited` (the message gives the
   `Retry-After` time), `upstream` and a per-item `flavor` or `source` result to
-  `source` or `flavor` for that row, anything else to `network`.
+  `source` or `flavor` for that row, anything else to `network`. A per-item
+  `not_found` or `bad_request` (an unknown repository or pin) is also `source`
+  for that row, since it says nothing about the network.
 - `Http.ps1` is the only file that calls `Invoke-WebRequest`. Tests replace
   it with a fake through a module-scoped variable, the same role `fakeFetch`
   plays today.
@@ -390,7 +400,8 @@ wowget writes one marker into every addon folder it installs:
   folder's marker. The other addon then counts the folder as missing, which
   matches today's "displaced" rule.
 - `previous` holds the install that this one replaced, so `rollback` can find
-  its zip in the cache. One level of history, as `rollback` uses today.
+  its zip in the cache. One level of history, as `rollback` uses today. A
+  reinstall of the same release (a repair) keeps the marker's `previous`.
 - Folders without a marker are unmanaged: `reconcile` lists them, `update`
   and `remove` never touch them. Folders starting with `Blizzard_` are
   ignored.
@@ -400,7 +411,9 @@ wowget writes one marker into every addon folder it installs:
   machine, or through an externally edited manifest. `doctor` reports it as
   an issue (`orphan_marker`), naming the folders. `remove <name> -t <target>`
   also accepts such a name and deletes its folders. Nothing deletes them
-  without being asked.
+  without being asked. `remove` and `target remove` on a target not on this
+  machine therefore change only the manifest, with a `target:absent` event;
+  there is no state row to forget.
 - WoW ignores files in addon folders it does not know. Copying an addon
   folder to another machine carries its marker, which is correct.
 
@@ -409,7 +422,9 @@ wowget writes one marker into every addon folder it installs:
 Commands that write take an exclusive lock on `<state>/wowget.lock`
 (`[IO.File]::Open` with `FileShare.None`), so two wowget processes never
 install at once. A second process waits up to 10 seconds, then fails with a
-`locked` error naming the lock file.
+`locked` error naming the lock file. Every command except `list`,
+`target list`, help and `--version` takes it; `outdated` does because
+url: sources write the cache.
 
 ## Sources
 
@@ -466,7 +481,7 @@ client's, except:
 | Command | Change |
 |---|---|
 | `init`, `target *` | Write JSON. Otherwise unchanged. |
-| `add <source \| name>` | Bare names resolve against the service registry (snapshot when offline). |
+| `add <source \| name>` | Bare names resolve against the service registry (snapshot when offline). `add wowi:<id>` without `--name` takes the name of the registry entry with that source, else `wowi-<id>`, since the service does not return the WoWInterface title. |
 | `list` | Reads markers. |
 | `outdated`, `update`, `install` | One `/v1/resolve` request per batch instead of per-addon lookups. |
 | `pin`, `unpin`, `rollback` | Pins in the manifest as today; rollback reinstalls `previous` from the cache. `pin <name>` without a release on an install whose marker says `releaseId: "unknown"` is a `usage` error asking for a release or an `update` first. |
