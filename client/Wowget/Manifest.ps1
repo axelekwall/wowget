@@ -128,10 +128,10 @@ function Get-WowgetRequiredString {
 # Parses and validates manifest text. Errors are "manifest" errors prefixed with $File.
 function ConvertFrom-WowgetManifestText {
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text, [string]$File = '')
+    $prefix = if ($File) { "${File}: " } else { '' }
     $fail = {
         param([string]$message)
-        $msg = if ($File) { "${File}: $message" } else { $message }
-        throw (New-WowgetError 'manifest' $msg)
+        throw (New-WowgetError 'manifest' "$prefix$message")
     }
 
     try {

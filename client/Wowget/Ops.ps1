@@ -27,8 +27,8 @@ function Get-WowgetGameDirs {
 }
 
 function Send-WowgetEvent {
-    param([hashtable]$Options, [hashtable]$Event)
-    Invoke-WowgetEvent (Get-WowgetOption $Options 'OnEvent') $Event
+    param([hashtable]$Options, [hashtable]$Fields)
+    Invoke-WowgetEvent (Get-WowgetOption $Options 'OnEvent') $Fields
 }
 
 # Whether two resolved paths name the same directory; macOS and Windows file systems ignore case by default.
@@ -744,7 +744,7 @@ function Invoke-WowgetRemove {
     $all = @(Find-WowgetTargetDirs $manifest.Targets @(Get-WowgetGameDirs $Options))
     $entry = Find-WowgetAddon $manifest $Name
     if (-not $entry) {
-        if ($filter.Count) { return Remove-WowgetOrphan $Options $Name $all $selected }
+        if ($filter.Count) { return Remove-WowgetOrphan $Name $all $selected }
         throw (New-WowgetError 'not_found' "No addon named `"$Name`" in the manifest.")
     }
     $filtered = $filter.Count -gt 0
@@ -787,7 +787,7 @@ function Invoke-WowgetRemove {
 }
 
 function Remove-WowgetOrphan {
-    param([hashtable]$Options, [string]$Name, [object[]]$All, [object[]]$Selected)
+    param([string]$Name, [object[]]$All, [object[]]$Selected)
     $names = @($Selected | ForEach-Object Name)
     $addons = foreach ($target in (Get-WowgetSortedByName @($All | Where-Object { $names -ccontains $_.Name }))) {
         if ($null -eq $target.Path) { throw (New-WowgetError 'not_found' "Target `"$($target.Name)`" is not on this machine.") }

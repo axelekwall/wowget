@@ -193,7 +193,7 @@ function Get-WowgetVersionLabel {
 function Format-WowgetUpdateResult {
     param($Result)
     if (@($Result.addons).Count -eq 0) { return 'No addons in the manifest.' }
-    $rows = foreach ($a in $Result.addons) {
+    $rows = @(foreach ($a in $Result.addons) {
         $cells = switch ($a.status) {
             'current' { @($a.name, $a.target, 'current', $a.version) }
             'updated' { @($a.name, $a.target, 'updated', "$($a.from) -> $($a.to)") }
@@ -203,8 +203,8 @@ function Format-WowgetUpdateResult {
             default { @($a.name, $a.target, 'error', $a.error) }
         }
         , $cells
-    }
-    return Format-WowgetTable @($rows)
+    })
+    return Format-WowgetTable $rows
 }
 
 function Format-WowgetRemoved {

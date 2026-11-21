@@ -12,9 +12,14 @@ $client = Split-Path -Parent $PSScriptRoot
 if ($Lint) {
     Import-Module PSScriptAnalyzer
     $settings = [System.IO.Path]::Combine($client, 'PSScriptAnalyzerSettings.psd1')
-    $findings = @(Invoke-ScriptAnalyzer -Path $client -Recurse -Settings $settings)
-    $findings | Format-Table -AutoSize RuleName, Severity, ScriptName, Line, Message | Out-String -Width 200 | Write-Host
-    Write-Host "PSScriptAnalyzer: $($findings.Count) finding(s)"
+    $testSettings = [System.IO.Path]::Combine($PSScriptRoot, 'PSScriptAnalyzerSettings.psd1')
+    $findings = @(
+        Invoke-ScriptAnalyzer -Path ([System.IO.Path]::Combine($client, 'Wowget')) -Recurse -Settings $settings
+        Invoke-ScriptAnalyzer -Path ([System.IO.Path]::Combine($client, 'wowget.ps1')) -Settings $settings
+        Invoke-ScriptAnalyzer -Path $PSScriptRoot -Recurse -Settings $testSettings
+    )
+    $findings | Format-Table -AutoSize RuleName, Severity, ScriptName, Line, Message | Out-String -Width 200
+    "PSScriptAnalyzer: $($findings.Count) finding(s)"
     exit $(if ($findings.Count) { 1 } else { 0 })
 }
 

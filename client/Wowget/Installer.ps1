@@ -37,8 +37,8 @@ function Get-WowgetFileHash {
 }
 
 function Invoke-WowgetEvent {
-    param([scriptblock]$OnEvent, [Parameter(Mandatory)][hashtable]$Event)
-    if ($null -ne $OnEvent) { & $OnEvent ([pscustomobject]$Event) }
+    param([scriptblock]$OnEvent, [Parameter(Mandatory)][hashtable]$Fields)
+    if ($null -ne $OnEvent) { & $OnEvent ([pscustomobject]$Fields) }
 }
 
 # The error for a download that is a web page rather than a zip, or $null. WoWInterface lists a new
