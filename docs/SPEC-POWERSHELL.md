@@ -66,8 +66,17 @@ Wowget/               the PowerShell module (see "Code layout")
 registry.json         snapshot of the service registry, the offline fallback
 runtime.json          pinned runtime version, URLs and SHA-256 per platform
 wowget.ps1            entry point
+release-public-key.txt  the release public key (see "Release signature")
+launchers/            wowget.cmd and wowget.sh, which the installers copy
 LICENSE, THIRD-PARTY-NOTICES.txt
 ```
+
+`client/build-release.ps1 -Version <v>` builds the zip, its `.sha256` and
+`.sig`, and the installers with the public key filled in. `registry.json` is
+the service's `/v1/registry` response passed with `-RegistryJson`, or else
+built from `registry/addons.toml` in the same document shape (its `version` a
+content hash, as the service's is). The launchers ship in the verified zip so
+that the installers stay small and carry no copy of them.
 
 The release also publishes `wowget-<version>.zip.sha256`,
 `wowget-<version>.zip.sig`, `install.ps1` and `install.sh`. Nothing is
@@ -85,8 +94,18 @@ push code to clients:
 - The release workflow signs the zip's SHA-256 with an ECDSA P-256 key
   (`ECDsa.SignHash`, DER encoding of the signature in `.sig`). The private key
   is a GitHub Actions secret used only by the release job.
-- The public key is a constant in the module and in both installers.
-  Self-update refuses a zip whose signature does not verify with it.
+- The public key is defined once, in `client/release-public-key.txt` (base64
+  SubjectPublicKeyInfo). The build script copies it into the zip, where the
+  module reads it from the app directory, and fills it into both installers.
+  Self-update refuses a zip whose signature does not verify with it. Until the
+  maintainer creates the key, the file holds a placeholder, and the build
+  script refuses to build. The build script also refuses a signing key that
+  does not belong to that public key.
+- `install.ps1` runs in Windows PowerShell 5.1, whose .NET Framework lacks
+  `ImportSubjectPublicKeyInfo`, so it verifies through CNG (`ECDsaCng` with
+  the key as an `ECCPUBLICBLOB` and the DER signature converted to r||s).
+  `install.sh` verifies with `openssl dgst -sha256 -verify`, so it needs
+  `openssl`, as well as `curl`, `unzip` and `tar`.
 - The first install trusts the installer script fetched over HTTPS from this
   repository. Every later update is checked against the key that install put
   on disk.
@@ -104,7 +123,9 @@ push code to clients:
 | Active versions | `<root>\current` (one line: `<app version> <runtime version>`) | `<root>/current` |
 | Launcher | `<root>\bin\wowget.cmd`, on the user PATH | `~/.local/bin/wowget` |
 
-`WOWGET_INSTALL_DIR` overrides the install root, as today.
+`WOWGET_INSTALL_DIR` overrides the install root, as today. Self-update and the
+installers also write `<root>/previous` with the line `current` held before a
+switch to another app version; the clean-up keeps the versions both name.
 
 ### Launchers
 
@@ -119,7 +140,10 @@ for /f "usebackq tokens=1,2" %%a in ("%~dp0..\current") do (set "APP=%%a" & set 
 ```
 
 macOS and Linux, `wowget` (`sh`): reads the two words from `current` the same
-way and `exec`s the runtime.
+way and `exec`s the runtime. The install root is written into it at install
+time, since `~/.local/bin` is outside the root. On Linux it sets
+`DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` when no `libicuuc.so*` is found in
+the usual library directories and the variable is not set already.
 
 - The launchers never change after install. Both versions come from
   `current`, which self-update replaces in one atomic write, so the app and the
@@ -162,6 +186,26 @@ way and `exec`s the runtime.
    opt out during install or later. The installer accepts
    `WOWGET_CATALOGUE_CONTRIBUTIONS=off` to save an opt-out before enrollment.
 
+Implementation notes:
+
+- The opt-out is `<state>/contributions.json`,
+  `{ "version": 1, "catalogueContributions": "off" }`, in the machine state
+  directory of "Locations" (`WOWGET_STATE_DIR` when set). Phase 4 reads it.
+- `install.sh` sets `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` for its own run of
+  the runtime when libicu is missing, and says so.
+- The Bun client's `~/.local/bin/wowget` is replaced by the launcher, which is
+  written to the same path; the installer reports it when the old file was a
+  Mach-O or ELF binary.
+- `WOWGET_DOWNLOAD_BASE` and `WOWGET_RUNTIME_BASE` fetch the release files and
+  the runtime archive from another URL or a local directory (`file:` URLs);
+  the signature and the SHA-256 are checked all the same, so they weaken
+  nothing. `WOWGET_SKIP_PATH=1` leaves PATH alone. The smoke test
+  (`client/tests/smoke-install.ps1`, in CI on all three platforms) uses them
+  to install a release signed with a throwaway key from local files into a
+  temporary root, then runs `wowget --version` and help through the launcher
+  and checks that a tampered zip is refused. On Windows it runs `install.ps1`
+  in Windows PowerShell 5.1, as `irm | iex` does.
+
 ### Self-update
 
 `wowget self-update [--check] [--force]`:
@@ -182,6 +226,11 @@ way and `exec`s the runtime.
    launcher reads both from this file.
 6. The next run of any command removes app and runtime directories that are
    neither current nor the previous version.
+
+Implementation notes: tar.gz runtimes are extracted with `System.Formats.Tar`,
+which keeps file modes; the release download hosts are those of "Sources"
+without WoWInterface. A development copy (version `0.0.0-dev`) or a module not
+under `<root>/app/<version>/` refuses to self-update with a `usage` error.
 
 Only data files and archives from Microsoft and from this project's releases
 are written. No executable built by the project exists, so Smart App Control
@@ -212,14 +261,16 @@ client/
     Paths.ps1                    locations, env overrides, game directory detection
     Manifest.ps1                 read, validate, write wowget.json
     TomlImport.ps1               one-time TOML manifest conversion
+    Migrate.ps1                  first start after the Bun client: TOML import and adoption
     Markers.ps1                  read and write .wowget.json markers
-    Api.ps1                      wowget service client (resolve, registry, search, version, suggestions)
+    Api.ps1                      wowget service client (resolve, registry)
     Http.ps1                     one Invoke-WowgetHttp function; the only network call site
     UrlSource.ps1                url: sources
     Zip.ps1                      extraction and addon-folder normalisation
     Flavor.ps1                   flavors, TOC parsing, folderSupportsFlavor
     Installer.ps1                download cache, stage, swap, rollback, uninstall
     Ops.ps1                      one function per command, returns objects
+    Search.ps1                   search over /v1/search, and suggest
     Reconcile.ps1, Doctor.ps1    as today, over markers
     Sync.ps1                     explicit device sync and operation receipts
     DeviceAuth.ps1               browser approval and local device credential
@@ -230,11 +281,17 @@ client/
   tests/                         Pester 5 tests, mirroring the module; run.ps1 runs them
                                  (and PSScriptAnalyzer with -Lint)
   install.ps1, install.sh
+  launchers/                     wowget.cmd and wowget.sh
+  build-release.ps1              builds the release zip, checksum, signature and installers
+  release-public-key.txt         the release public key
 ```
 
 `Errors.ps1` and `Fs.ps1` are not in the first plan: the error class must load
 before every file that throws it, and the write and lock helpers are shared by
-the manifest, the markers and the url: source records.
+the manifest, the markers and the url: source records. `Migrate.ps1` and
+`Search.ps1` keep the first start and the two service-backed commands out of
+`Ops.ps1`, which holds the commands of phase 1. `/v1/version` is read by
+`SelfUpdate.ps1`, its only user.
 
 Rules carried over from the Bun client:
 
@@ -369,6 +426,22 @@ Conversion:
   variable at the `.json` file from now on.
 - Prints that comments were dropped and that the old file can be deleted.
 
+Implementation notes:
+
+- The reader is tested against the 188 valid TOML 1.0.0 cases of
+  toml-lang/toml-test that hold no date or time (copied into
+  `client/tests/toml-test` with its MIT licence) and against
+  `registry/addons.toml`, the only TOML file in the repository; the test
+  fixtures hold none. Of the suite's 430 invalid cases without dates, it
+  accepts two, both a byte order mark after the start of the file.
+- The TOML layout (`[targets.<name>]`, `[[addon]]`) is mapped to the JSON one
+  and goes through the JSON manifest's validation, so errors name JSON-style
+  positions (`addon #2.name`) prefixed with the TOML file. A manifest with the
+  old `[install]` table is a `manifest` error saying to run `wowget init`.
+- A `wowget.json` that already exists next to the resolved TOML file (another
+  machine converted the shared file) is used as it is, and the symlink next to
+  the link is still created.
+
 ### Markers (`.wowget.json`)
 
 wowget writes one marker into every addon folder it installs:
@@ -496,15 +569,15 @@ client's, except:
 | `list` | Reads markers. |
 | `outdated`, `update`, `install` | One `/v1/resolve` request per batch instead of per-addon lookups. |
 | `pin`, `unpin`, `rollback` | Pins in the manifest as today; rollback reinstalls `previous` from the cache. `pin <name>` without a release on an install whose marker says `releaseId: "unknown"` is a `usage` error asking for a release or an `update` first. |
-| `search` | `GET /v1/search`. `--github` stays. `--refresh` is accepted and ignored with a note, since the catalogue lives on the service. |
+| `search` | `GET /v1/search`. `--github` stays. `--refresh` is accepted and ignored with a note, since the catalogue lives on the service. `--limit` is at most 50, the service's cap; more is a `usage` error. Rows are marked `inManifest` by comparing sources case-insensitively, as today. |
 | `suggest [name...]` | Until the service's suggestion queue exists (service phase 3), unchanged: opens the prefilled GitHub issue of SPEC-REGISTRY-SUGGEST.md. Afterwards it sends the manifest addons the registry lacks to `POST /v1/suggestions` and prints the result, with no browser and no GitHub account; `--print` lists what would be sent and sends nothing. |
-| `reconcile [--adopt]` | Unmanaged folders (no marker) are grouped and matched as today: registry `folders`, then TOC IDs (`X-GitHub`, `X-GitHub-Repo`, `X-Repository`, `X-Website`, `X-WoWI-ID`, and the `X-Curse-*` fields that only mark an addon as CurseForge). Matching runs on the device using the registry snapshot and local TOC IDs. Unmanaged folder names stay local, so the old WoWInterface catalogue-based guess is dropped. `--adopt` writes markers. |
-| `doctor [--clean]` | Adds marker checks: unparseable markers, an install whose folders disagree, orphaned markers. Keeps the `portable_target` hints. `--clean` prunes the cache. |
+| `reconcile [--adopt]` | Unmanaged folders (no marker) are grouped and matched as today: registry `folders`, then TOC IDs (`X-GitHub`, `X-GitHub-Repo`, `X-Repository`, `X-Website`, `X-WoWI-ID`, and the `X-Curse-*` fields that only mark an addon as CurseForge). Matching runs on the device using the registry snapshot and local TOC IDs. Unmanaged folder names stay local, so the old WoWInterface catalogue-based guess is dropped. `--adopt` writes markers. A group with no source whose TOCs carry `X-Curse-*` fields gets `curseforge: true` and shows "CurseForge only". `--adopt` installs the latest release over the folders, as today, so the markers name a real release; it needs the service. |
+| `doctor [--clean]` | Adds marker checks: unparseable markers, an install whose folders disagree, orphaned markers. Keeps the `portable_target` hints. `--clean` prunes the cache. The issue kinds are `invalid_marker`, `marker_mismatch` (folders of one addon whose markers name different releases, sources or folder lists) and `orphan_marker` (with `folders`). `missing_cached_zip` is not reported for `releaseId: "unknown"`, which names no zip. `stale_cache` covers release directories that no marker on a target on this machine names as current or previous. |
 | `self-update [--check] [--force]` | See "Self-update". |
 | `login` | Approve this device in the browser and enable optional sync. |
 | `sync` | Fetch and apply queued changes for this device and report results. |
 | `logout` | Revoke this device credential and clear local sync state. |
-| `migrate` | New. Runs the TOML import and the marker adoption below on request. Also runs by itself on first start. |
+| `migrate` | New. Runs the TOML import and the marker adoption below on request. Also runs by itself on first start. Its result: `manifestPath`, `converted` (`from`, `to`, `written`), `notes`, `adopted` (`name`, `target`, `how`: `cache` or `fallback`, `releaseId`, `version`, `folders`, `previous`), `skipped`, `conflicts` and `unmarked` (per target). |
 
 Running `wowget` without arguments prints command help. `--json` keeps the
 result shapes. Fields that came from state rows come from markers now;
@@ -568,6 +641,38 @@ not on this machine; exit codes 0, 1 and 2.
    fallback), and then, per target, every folder still without a marker, so
    leftovers of older releases are visible and `reconcile` can handle them.
    `migrate --json` prints it.
+
+Implementation notes:
+
+- "First start" is per machine: adoption runs by itself when
+  `<state>/migration.json` does not exist and either a TOML manifest is being
+  converted or the Bun client's `state.db` exists (its existence is checked;
+  it is never read). A finished adoption writes `migration.json`. The TOML
+  import runs whenever its conditions hold. The automatic run takes the write
+  lock, also before `list`, reports on stderr so that `--json` output stays as
+  it is, and does not run before `migrate`, `self-update`, help or
+  `--version`. A failed TOML import stops the command; a failed adoption is a
+  warning that names `wowget migrate`.
+- Cached zips are looked for under the Bun client's addon directory name
+  (`/`, `\`, `:` and NUL replaced by `_`) and this client's. A recovered
+  release id whose cache path differs from where the Bun client put the zip
+  (the sanitising rules differ, see "Installer") moves the zip to the path
+  this client computes, so `rollback` and cache pruning find it.
+- Identification is by the SHA-256 of every file the zip extracts into its
+  folders; extra files on disk, such as the marker, do not count against it.
+- `previous` is the newest other cached release, and only when its release id
+  is recovered: `rollback` finds the zip by its release id, which `unknown`
+  does not name.
+- The fallback of step 4 takes the registry entry's folders that are on the
+  target without a marker, else the folder set of the newest cached zip when
+  all of its folders are there (files changed by hand). A resolve adds no
+  folders the registry does not have, since the service takes them from it,
+  so it is not asked. Fallback markers have `filename: "unknown"` and no
+  `sha256`.
+- An addon with no folders found on a target is listed under `skipped`, as is
+  one whose folders are all claimed by another addon too. When a claimed
+  folder is dropped from a cache-identified install, the rest is adopted as a
+  fallback, since its folders no longer match the archive.
 
 ## Optional device sync
 
