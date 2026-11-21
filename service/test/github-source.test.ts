@@ -1,0 +1,253 @@
+import { describe, expect, test } from "vitest";
+import type { Flavor } from "../src/flavor.ts";
+import { CachedHttp } from "../src/http.ts";
+import { RESOLVE_MAX_AGE_MS } from "../src/resolve.ts";
+import { githubSource, sha256FromDigest } from "../src/sources/github.ts";
+import releaseJson from "./fixtures/release.json";
+import releases from "./fixtures/releases.json";
+import { fakeFetch, json } from "./helpers/fetch.ts";
+
+const API = "https://api.github.com/repos/Questie/Questie/releases?per_page=30";
+const DL = "https://github.com/Questie/Questie/releases/download";
+const betaReleaseJson = {
+  releases: [
+    {
+      version: "11.3.0-beta.2",
+      filename: "Questie-v11.3.0-beta.zip",
+      nolib: false,
+      metadata: [{ flavor: "forever", interface: 16001 }],
+    },
+  ],
+};
+
+const source = githubSource({ raw: "github:Questie/Questie", owner: "Questie", repo: "Questie" });
+
+function resolve(opts: { flavor?: Flavor; prerelease?: boolean; pin?: string } = {}, routes?: Parameters<typeof fakeFetch>[0]) {
+  const fake = fakeFetch(
+    routes ?? {
+      [API]: () => json(releases),
+      [`${DL}/v11.2.0/release.json`]: () => json(releaseJson),
+      [`${DL}/v11.3.0-beta/release.json`]: () => json(betaReleaseJson),
+    },
+  );
+  const http = new CachedHttp({ fetch: fake.fetch, maxAgeMs: RESOLVE_MAX_AGE_MS });
+  const result = source.resolve({
+    flavor: opts.flavor ?? "forever",
+    prerelease: opts.prerelease ?? false,
+    pin: opts.pin,
+    http,
+  });
+  return { result, requests: fake.requests };
+}
+
+describe("github source", () => {
+  test("release.json picks the non-nolib zip for the flavor and marks it verified", async () => {
+    const { result, requests } = resolve();
+    expect(await result).toEqual({
+      source: "github:Questie/Questie",
+      releaseId: "v11.2.0",
+      version: "11.2.0",
+      filename: "Questie-v11.2.0.zip",
+      downloadUrl: `${DL}/v11.2.0/Questie-v11.2.0.zip`,
+      publishedAt: "2026-10-20T12:00:00Z",
+      flavorVerified: true,
+    });
+    expect(requests[0]!.headers.get("accept")).toBe("application/vnd.github+json");
+    expect((await resolve({ flavor: "classic" }).result).filename).toBe("Questie-v11.2.0-classic.zip");
+  });
+
+  test("without release.json, several zips are chosen by flavor name or rejected", async () => {
+    const forever = await resolve({ pin: "v11.1.0" }).result;
+    expect(forever.filename).toBe("Questie-v11.1.0-camelot.zip");
+    expect(forever.flavorVerified).toBe(false);
+    expect((await resolve({ pin: "v11.1.0", flavor: "classic" }).result).filename).toBe("Questie-v11.1.0-classic.zip");
+
+    const err = await resolve({ pin: "v11.1.0", flavor: "mainline" }).result.catch((e) => e);
+    expect(err.code).toBe("source");
+    expect(err.message).toContain("Questie-v11.1.0-classic.zip, Questie-v11.1.0-camelot.zip, Questie-v11.1.0-wrath.zip");
+  });
+
+  test("skips a newest release that lacks the wanted flavor and resolves an older release", async () => {
+    const wrath = await resolve({ flavor: "wrath" }).result;
+    expect(wrath.releaseId).toBe("v11.1.0");
+    expect(wrath.filename).toBe("Questie-v11.1.0-wrath.zip");
+    expect(wrath.flavorVerified).toBe(false);
+    expect(wrath.note).toMatch(/^using v11\.1\.0 because the newer release v11\.2\.0 could not be used:/);
+    // The newest release that has the flavor carries no note.
+    expect((await resolve({ flavor: "classic" }).result).note).toBeUndefined();
+  });
+
+  test("without release.json, prefers non-nolib zips and matches expanded flavor hints", async () => {
+    const assets = (names: string[]) => ({
+      tag_name: "v1.0.0",
+      draft: false,
+      prerelease: false,
+      assets: names.map((name) => ({ name, browser_download_url: `${DL}/v1.0.0/${name}` })),
+    });
+
+    const singleWithNolib = await resolve({}, { [API]: () => json([assets(["Foo-v1.0.0-nolib.zip", "Foo-v1.0.0.zip"])]) }).result;
+    expect(singleWithNolib.filename).toBe("Foo-v1.0.0.zip");
+
+    const multi = assets(["Foo-vanilla.zip", "Foo-classic.zip", "Foo-retail.zip", "Foo-retail-nolib.zip", "Foo-tbc.zip", "Foo-mop.zip"]);
+    const routes = { [API]: () => json([multi]) };
+    expect((await resolve({ flavor: "classic" }, routes).result).filename).toBe("Foo-vanilla.zip");
+    expect((await resolve({ flavor: "mainline" }, routes).result).filename).toBe("Foo-retail.zip");
+    expect((await resolve({ flavor: "bcc" }, routes).result).filename).toBe("Foo-tbc.zip");
+    expect((await resolve({ flavor: "mists" }, routes).result).filename).toBe("Foo-mop.zip");
+  });
+
+  test("version comes from the release.json entry when it has one, else from the tag", async () => {
+    expect((await resolve({ prerelease: true }).result).version).toBe("11.3.0-beta.2");
+    expect((await resolve({ flavor: "classic" }).result).version).toBe("11.2.0");
+    expect((await resolve({ pin: "v11.1.0" }).result).version).toBe("11.1.0");
+  });
+
+  test("pre-releases are skipped unless allowed, drafts always", async () => {
+    expect((await resolve().result).releaseId).toBe("v11.2.0");
+    const beta = await resolve({ prerelease: true }).result;
+    expect(beta.releaseId).toBe("v11.3.0-beta");
+    expect(beta.filename).toBe("Questie-v11.3.0-beta.zip");
+  });
+
+  test("pin selects by tag and fails for unknown or draft tags", async () => {
+    expect((await resolve({ pin: "v11.1.0" }).result).releaseId).toBe("v11.1.0");
+    expect(await resolve({ pin: "v9.0.0" }).result.catch((e) => e.message)).toContain('no release tagged "v9.0.0"');
+    expect((await resolve({ pin: "v11.2.1" }).result.catch((e) => e)).code).toBe("source");
+  });
+
+  test("a pin outside the newest releases is fetched by tag", async () => {
+    const tagUrl = "https://api.github.com/repos/Questie/Questie/releases/tags/v10.0.0";
+    const old = {
+      tag_name: "v10.0.0",
+      draft: false,
+      prerelease: false,
+      assets: [{ name: "Questie-v10.0.0.zip", browser_download_url: `${DL}/v10.0.0/Questie-v10.0.0.zip` }],
+    };
+    const resolved = await resolve({ pin: "v10.0.0" }, { [API]: () => json(releases), [tagUrl]: () => json(old) }).result;
+    expect(resolved).toMatchObject({ releaseId: "v10.0.0", filename: "Questie-v10.0.0.zip", flavorVerified: false });
+
+    const draft = await resolve({ pin: "v10.0.0" }, { [API]: () => json(releases), [tagUrl]: () => json({ ...old, draft: true }) })
+      .result.catch((e) => e);
+    expect(draft.message).toContain('no release tagged "v10.0.0"');
+  });
+
+  test("a pin containing a slash is fetched by tag with the slash kept", async () => {
+    const tagUrl = "https://api.github.com/repos/Questie/Questie/releases/tags/bundle/v1.0";
+    const bundle = {
+      tag_name: "bundle/v1.0",
+      draft: false,
+      prerelease: false,
+      assets: [{ name: "Questie.zip", browser_download_url: `${DL}/bundle/v1.0/Questie.zip` }],
+    };
+    const resolved = await resolve({ pin: "bundle/v1.0" }, { [API]: () => json(releases), [tagUrl]: () => json(bundle) }).result;
+    expect(resolved.releaseId).toBe("bundle/v1.0");
+  });
+
+  test("a release.json that lists only other flavors is a flavor error before any zip download", async () => {
+    const release = {
+      tag_name: "v1.0.0",
+      draft: false,
+      prerelease: false,
+      assets: [
+        { name: "Questie-classic.zip", browser_download_url: `${DL}/v1.0.0/Questie-classic.zip` },
+        { name: "release.json", browser_download_url: `${DL}/v1.0.0/release.json` },
+      ],
+    };
+    const meta = {
+      releases: [
+        { filename: "Questie-classic.zip", nolib: false, metadata: [{ flavor: "titan" }, { flavor: "classic" }] },
+        { filename: "Questie-classic-nolib.zip", nolib: true, metadata: [{ flavor: "mists" }, { flavor: "classic" }] },
+      ],
+    };
+    const { result, requests } = resolve({}, { [API]: () => json([release]), [`${DL}/v1.0.0/release.json`]: () => json(meta) });
+    const err = await result.catch((e) => e);
+    expect(err.code).toBe("flavor");
+    expect(err.message).toBe('Questie/Questie v1.0.0 has no build for flavor "forever" (release.json lists: classic, mists, titan).');
+    expect(requests.some((r) => r.url.endsWith(".zip"))).toBe(false);
+  });
+
+  test("a release.json filename matches an asset after normalising, else the zips are chosen by name", async () => {
+    const release = (assetName: string) => ({
+      tag_name: "v1.0.0",
+      draft: false,
+      prerelease: false,
+      assets: [
+        { name: assetName, browser_download_url: `${DL}/v1.0.0/${assetName}` },
+        { name: "release.json", browser_download_url: `${DL}/v1.0.0/release.json` },
+      ],
+    });
+    const meta = { releases: [{ filename: "Questie v1.0.0.zip", nolib: false, metadata: [{ flavor: "forever" }] }] };
+    const routes = (assetName: string) => ({
+      [API]: () => json([release(assetName)]),
+      [`${DL}/v1.0.0/release.json`]: () => json(meta),
+    });
+
+    const normalised = await resolve({}, routes("Questie.v1.0.0.zip")).result;
+    expect(normalised).toMatchObject({ filename: "Questie.v1.0.0.zip", flavorVerified: true });
+
+    const fallback = await resolve({}, routes("Other-1.0.0.zip")).result;
+    expect(fallback).toMatchObject({ filename: "Other-1.0.0.zip", flavorVerified: false });
+  });
+
+  test("an invalid release.json is ignored and the zips are chosen by name", async () => {
+    const release = {
+      tag_name: "v1.0.0",
+      draft: false,
+      prerelease: false,
+      assets: [
+        { name: "Questie.zip", browser_download_url: `${DL}/v1.0.0/Questie.zip` },
+        { name: "release.json", browser_download_url: `${DL}/v1.0.0/release.json` },
+      ],
+    };
+    const resolved = await resolve({}, { [API]: () => json([release]), [`${DL}/v1.0.0/release.json`]: () => new Response("{nope") })
+      .result;
+    expect(resolved).toMatchObject({ filename: "Questie.zip", flavorVerified: false });
+  });
+
+  test("pages past a first page of pre-releases, up to 150 releases", async () => {
+    const pre = (i: number) => ({ tag_name: `v2.0.0-beta.${i}`, draft: false, prerelease: true, assets: [] });
+    const firstPage = Array.from({ length: 30 }, (_, i) => pre(i));
+    const stable = {
+      tag_name: "v1.0.0",
+      draft: false,
+      prerelease: false,
+      assets: [{ name: "Questie.zip", browser_download_url: `${DL}/v1.0.0/Questie.zip` }],
+    };
+    const page = (n: number) => `${API}&page=${n}`;
+    const found = await resolve({}, { [API]: () => json(firstPage), [page(2)]: () => json([pre(30), stable]) }).result;
+    expect(found.releaseId).toBe("v1.0.0");
+
+    const allPre = { [API]: () => json(firstPage), ...Object.fromEntries([2, 3, 4, 5].map((n) => [page(n), () => json(firstPage)])) };
+    const { result, requests } = resolve({}, allPre);
+    expect((await result.catch((e) => e)).message).toContain("newest 150");
+    expect(requests.length).toBe(5);
+  });
+
+  test("a rate-limited response is a rate_limited error", async () => {
+    const limited = () =>
+      new Response("{}", { status: 403, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1793491200" } });
+    const err = await resolve({}, { [API]: limited }).result.catch((e) => e);
+    expect(err.code).toBe("rate_limited");
+    expect(err.message).toContain("GitHub API rate limit");
+  });
+
+  test("an unknown repository is a source error", async () => {
+    const err = await resolve({}, {}).result.catch((e) => e);
+    expect(err.code).toBe("source");
+    expect(err.message).toContain("Questie/Questie was not found");
+  });
+
+  test("the asset digest and size are returned, without the sha256: prefix", async () => {
+    const hex = "ab".repeat(32);
+    const release = {
+      tag_name: "v1.0.0",
+      draft: false,
+      prerelease: false,
+      assets: [{ name: "Questie.zip", browser_download_url: `${DL}/v1.0.0/Questie.zip`, digest: `sha256:${hex}`, size: 1234 }],
+    };
+    const resolved = await resolve({}, { [API]: () => json([release]) }).result;
+    expect(resolved).toMatchObject({ sha256: hex, size: 1234 });
+    expect(sha256FromDigest(null)).toBeUndefined();
+    expect(sha256FromDigest("md5:abc")).toBeUndefined();
+  });
+});

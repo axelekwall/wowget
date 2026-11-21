@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wowget",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-10",
+  "build": {
+    "command": "node scripts/build-registry.ts"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "wowget",
+      // Replace with the id `wrangler d1 create wowget` prints before the first deployment.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "ratelimits": [
+    { "name": "RESOLVE_LIMITER", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } },
+    { "name": "SEARCH_LIMITER", "namespace_id": "1002", "simple": { "limit": 30, "period": 60 } }
+  ]
+}
