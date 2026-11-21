@@ -4,11 +4,15 @@
 # FlavorVerified, and optionally Sha256 and Md5 (checksums a download must match), LocalPath (a file
 # already on disk), AllowedHosts (download hosts; $null allows any http or https URL) and Note.
 
-# A single path segment made from an arbitrary id or filename.
+# A single path segment made from an arbitrary id or filename, valid on every platform: Windows
+# rejects the characters <>:"/\|?* and control characters, drops trailing dots and spaces, and
+# reserves device names such as CON or COM1 with any extension.
 function Get-WowgetSafeSegment {
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
-    $cleaned = $Value -replace '[/\\:\x00]', '_'
-    if ($cleaned -eq '' -or $cleaned -eq '.' -or $cleaned -eq '..') { return '_' }
+    $cleaned = $Value -replace '[<>:"/\\|?*\x00-\x1f]', '_'
+    $cleaned = $cleaned -replace '[. ]+$', { '_' * $_.Value.Length }
+    if ($cleaned -eq '') { return '_' }
+    if ($cleaned -match '^(?i:CON|PRN|AUX|NUL|COM[0-9\u00b9\u00b2\u00b3]|LPT[0-9\u00b9\u00b2\u00b3])(\.|$)') { return "_$cleaned" }
     return $cleaned
 }
 

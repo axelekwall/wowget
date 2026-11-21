@@ -21,6 +21,22 @@ InModuleScope Wowget {
         }
     }
 
+    Describe 'cache paths' {
+        It 'makes segments that are valid file names on every platform' {
+            Get-WowgetSafeSegment 'A?B<c>|d*"e' | Should -Be 'A_B_c__d__e'
+            Get-WowgetSafeSegment "tab`there" | Should -Be 'tab_here'
+            Get-WowgetSafeSegment 'v1.2.' | Should -Be 'v1.2_'
+            Get-WowgetSafeSegment 'trail  ' | Should -Be 'trail__'
+            Get-WowgetSafeSegment '..' | Should -Be '__'
+            Get-WowgetSafeSegment '' | Should -Be '_'
+            Get-WowgetSafeSegment 'CON.zip' | Should -Be '_CON.zip'
+            Get-WowgetSafeSegment 'com1' | Should -Be '_com1'
+            Get-WowgetSafeSegment 'LPT9.tar.gz' | Should -Be '_LPT9.tar.gz'
+            Get-WowgetSafeSegment 'CONSOLE.zip' | Should -Be 'CONSOLE.zip'
+            Get-WowgetSafeSegment 'bundle/v1:x\y' | Should -Be 'bundle_v1_x_y'
+        }
+    }
+
     Describe 'install' {
         BeforeEach {
             $dirs = New-WgTestDirs
@@ -29,6 +45,15 @@ InModuleScope Wowget {
             Set-WgFakeHttp
         }
         AfterEach { Remove-WgTestDirs $dirs; Clear-WgFakeHttp }
+
+        It 'caches a release whose addon name and filename Windows would reject' {
+            $r = & $release 'v1' (New-WgAddonZipBytes @{ Addon = '' })
+            $r.Filename = 'CON.zip'
+            & $install $r 'A?B' | Out-Null
+            $zip = Get-WowgetCachedZipPath $dirs.Cache 'A?B' 'v1' 'CON.zip'
+            $zip | Should -BeLike '*a_b*_CON.zip'
+            [System.IO.File]::Exists($zip) | Should -BeTrue
+        }
 
         It 'places folders with markers, caches the zip and emits events' {
             $r = & $release 'v1' (New-WgAddonZipBytes @{ Addon = ''; AddonData = '' })
