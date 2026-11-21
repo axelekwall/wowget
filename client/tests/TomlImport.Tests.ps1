@@ -1,11 +1,5 @@
 BeforeDiscovery {
     Import-Module ([System.IO.Path]::Combine($PSScriptRoot, '..', 'Wowget', 'Wowget.psd1'))
-    # The valid TOML 1.0.0 cases of toml-lang/toml-test (commit 96fd088), without those holding dates
-    # or times. MIT licence in toml-test/LICENSE.
-    $root = [System.IO.Path]::Combine($PSScriptRoot, 'toml-test')
-    $script:TomlCases = foreach ($file in (Get-ChildItem -LiteralPath $root -Recurse -Filter '*.toml' | Sort-Object FullName)) {
-        @{ Name = [System.IO.Path]::GetRelativePath($root, $file.FullName).Replace('\', '/'); Toml = $file.FullName; Json = [System.IO.Path]::ChangeExtension($file.FullName, '.json') }
-    }
 }
 
 InModuleScope Wowget {
@@ -78,7 +72,14 @@ InModuleScope Wowget {
     }
 
     Describe 'TOML reader' {
-        It 'reads toml-test <Name>' -ForEach $TomlCases {
+        # The valid TOML 1.0.0 cases of toml-lang/toml-test (commit 96fd088), without those holding
+        # dates or times. MIT licence in toml-test/LICENSE.
+        $root = [System.IO.Path]::Combine($PSScriptRoot, 'toml-test')
+        $cases = foreach ($file in (Get-ChildItem -LiteralPath $root -Recurse -Filter '*.toml' | Sort-Object FullName)) {
+            @{ Name = [System.IO.Path]::GetRelativePath($root, $file.FullName).Replace('\', '/'); Toml = $file.FullName; Json = [System.IO.Path]::ChangeExtension($file.FullName, '.json') }
+        }
+
+        It 'reads toml-test <Name>' -ForEach $cases {
             $parsed = ConvertFrom-WowgetToml (Read-WowgetText $Toml)
             $expected = ConvertFrom-WgJsonElement ([System.Text.Json.JsonDocument]::Parse((Read-WowgetText $Json)).RootElement)
             @(Compare-WgTagged (ConvertTo-WgTagged $parsed) $expected) | Should -BeNullOrEmpty

@@ -75,6 +75,8 @@ try {
         # Users run install.ps1 through "irm | iex" in Windows PowerShell 5.1.
         $shell = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
         if (-not $shell) { $shell = $pwsh }
+        # PowerShell 7's module path would load its own modules into Windows PowerShell.
+        $environment['PSModulePath'] = $null
         $install = { Invoke-Program $shell @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', [System.IO.Path]::Combine($release, 'install.ps1')) $environment }
         $run = { param([string[]]$a) Invoke-Program $env:ComSpec (@('/d', '/c', [System.IO.Path]::Combine($root, 'bin', 'wowget.cmd')) + $a) }
     } else {
