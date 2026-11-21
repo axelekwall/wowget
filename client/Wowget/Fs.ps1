@@ -134,6 +134,11 @@ function ConvertTo-WowgetJsonText {
     if ($Value -is [bool]) { return $(if ($Value) { 'true' } else { 'false' }) }
     if ($Value -is [string]) { return ConvertTo-WowgetJsonString $Value }
     if ($Value -is [int] -or $Value -is [long]) { return $Value.ToString([System.Globalization.CultureInfo]::InvariantCulture) }
+    if ($Value -is [double]) {
+        # JSON has no infinity or NaN; such a value can only end up in a field that rejects it anyway.
+        if ([double]::IsNaN($Value) -or [double]::IsInfinity($Value)) { return 'null' }
+        return $Value.ToString('R', [System.Globalization.CultureInfo]::InvariantCulture)
+    }
     if ($Value -is [System.Management.Automation.PSCustomObject]) {
         $dict = [ordered]@{}
         foreach ($p in $Value.PSObject.Properties) { $dict[$p.Name] = $p.Value }
