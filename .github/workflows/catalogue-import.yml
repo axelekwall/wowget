@@ -57,13 +57,17 @@ jobs:
       - name: Fetch the previous projection
         env:
           GH_TOKEN: ${{ github.token }}
+        # A successful run whose import job was skipped has no artifact, so look further back. The
+        # import script checks the projection against the live entry count before trusting it.
         run: |
-          run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow catalogue-import.yml --status success --limit 1 \
-            --json databaseId --jq '.[0].databaseId // empty')
-          if [ -n "$run_id" ]; then
-            gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name catalogue-projection --dir "$RUNNER_TEMP/previous" \
-              || echo "No projection in run $run_id; importing the whole catalogue."
-          fi
+          for run_id in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow catalogue-import.yml --status success \
+            --limit 20 --json databaseId --jq '.[].databaseId'); do
+            if gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name catalogue-projection --dir "$RUNNER_TEMP/previous"; then
+              echo "Using the projection from run $run_id."
+              exit 0
+            fi
+          done
+          echo "No previous projection; importing the whole catalogue."
       - name: Import
         run: |
           args=(--remote --out "$RUNNER_TEMP/projection.json")
