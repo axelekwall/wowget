@@ -32,7 +32,7 @@ jobs:
             asset: osx-arm64
             exe: pwsh
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     defaults:
       run:
         shell: bash
@@ -61,3 +61,7 @@ jobs:
         run: '"$PWSH" -NoLogo -NoProfile -File client/tests/run.ps1'
       - name: PSScriptAnalyzer
         run: '"$PWSH" -NoLogo -NoProfile -File client/tests/run.ps1 -Lint'
+      # Builds a release signed with a throwaway key and runs this platform's installer against it from
+      # local files, with the runtime archive downloaded above.
+      - name: Installer smoke test
+        run: '"$PWSH" -NoLogo -NoProfile -File client/tests/smoke-install.ps1 -RuntimeArchive "$RUNNER_TEMP/pwsh-archive"'
