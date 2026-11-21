@@ -465,7 +465,7 @@ client's, except:
 | `outdated`, `update`, `install` | One `/v1/resolve` request per batch instead of per-addon lookups. |
 | `pin`, `unpin`, `rollback` | Pins in the manifest as today; rollback reinstalls `previous` from the cache. `pin <name>` without a release on an install whose marker says `releaseId: "unknown"` is a `usage` error asking for a release or an `update` first. |
 | `search` | `GET /v1/search`. `--github` stays. `--refresh` is accepted and ignored with a note, since the catalogue lives on the service. |
-| `suggest [name...]` | Sends the manifest addons the registry lacks to `POST /v1/suggestions` and prints the result. No browser, no GitHub account. `--print` lists what would be sent and sends nothing. |
+| `suggest [name...]` | Until the service's suggestion queue exists (service phase 3), unchanged: opens the prefilled GitHub issue of SPEC-REGISTRY-SUGGEST.md. Afterwards it sends the manifest addons the registry lacks to `POST /v1/suggestions` and prints the result, with no browser and no GitHub account; `--print` lists what would be sent and sends nothing. |
 | `reconcile [--adopt]` | Unmanaged folders (no marker) are grouped and matched as today: registry `folders`, then TOC IDs (`X-GitHub`, `X-GitHub-Repo`, `X-Repository`, `X-Website`, `X-WoWI-ID`, and the `X-Curse-*` fields that only mark an addon as CurseForge). Matching runs on the device using the registry snapshot and local TOC IDs. Unmanaged folder names stay local, so the old WoWInterface catalogue-based guess is dropped. `--adopt` writes markers. |
 | `doctor [--clean]` | Adds marker checks: unparseable markers, an install whose folders disagree, orphaned markers. Keeps the `portable_target` hints. `--clean` prunes the cache. |
 | `self-update [--check] [--force]` | See "Self-update". |
@@ -659,12 +659,19 @@ Keep tokens out of URLs, logs, and command output.
    quoting), dot-sourced modules, signed release verification, archive
    download and extraction, markers and JSON manifest handling. Check Code
    Integrity events on Windows and record the results.
-1. **Core CLI** with `url:` sources, service resolution, the registry and
-   version metadata. Include TOML import and marker adoption.
-2. **Account-free release** with search, manual suggestions, new signed
-   packages and installers. Replace the Bun client at the switch and
-   update README and AGENTS.md. This release can ship before device sync.
-3. **Optional device sync** with `login`, `sync`, `logout`, dashboard
+1. **Core CLI** against a development deployment of the service (service
+   phase 1): manifest, markers, installer, `url:` sources, and every command
+   that resolves. Include TOML import and marker adoption. It runs beside the
+   Bun client with its own install root and `WOWGET_API_URL`.
+2. **Search** against service phase 2. `suggest` keeps the GitHub issue flow.
+3. **Account-free release**: new signed packages and installers, the switch
+   from the Bun client, README and AGENTS.md updated.
+
+Phases 0 to 3 are the vertical slice: feature parity with the Bun client
+except the TUI, with no accounts, sync or admin interface. It also produces
+the measurements the open service decisions need.
+
+4. **Optional device sync** with `login`, `sync`, `logout`, dashboard
    integration, and catalogue contributions with a separate opt-out.
 
 ## Not in scope

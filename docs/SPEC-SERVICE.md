@@ -315,8 +315,9 @@ addressable. A shared cross-device profile is outside the first version.
 
 ## Registry and suggestions
 
-The registry lives in D1. `registry/addons.toml` is removed from the
-repository in the switch phase, after one import.
+From phase 3 the registry lives in D1. `registry/addons.toml` is removed from
+the repository then, after one import. Until phase 3 the file stays the source
+of truth (see "Phases").
 
 Tables (sketch):
 
@@ -433,14 +434,24 @@ CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- versi
    requests on cold batches, including older flavor-compatible builds
    and pinned releases. Benchmark the full catalogue import and ZIP checks
    on Cloudflare before choosing the production plan.
-1. Ship public resolution, the registry import and endpoint, version
-   metadata and the release cache.
-2. Add public search, the web catalogue, catalogue imports, manual
-   suggestions and the private registry admin interface. Run scheduled
-   imports and verification on Cloudflare and retire the legacy registry
-   and suggestion workflows at the switch. The account-free CLI can ship
-   at this point.
-3. Prototype Better Auth signup, sessions and device approval on
+1. Public `/v1/resolve`, `/v1/version` and the release cache. `/v1/registry`
+   serves a JSON registry built from `registry/addons.toml` at deploy time,
+   so the existing registry check, daily update and suggestion workflows keep
+   working unchanged.
+2. Public `/v1/search` over the registry and the WoWInterface catalogue. The
+   catalogue import runs as a scheduled GitHub Actions job with the existing
+   projection code, writing to D1 with Wrangler and the deploy token, so the
+   Free-or-Paid decision waits for the benchmark.
+
+Phases 0 to 2 are the service side of the vertical slice (see
+SPEC-POWERSHELL.md, "Phases"): no accounts, admin interface, suggestion
+queue or web pages yet.
+
+3. Move the registry into D1 and add the private admin interface, the
+   suggestion queue, the public web catalogue and scheduled verification,
+   where the "heavy jobs" decision places it. Retire the legacy registry and
+   suggestion workflows.
+4. Prototype Better Auth signup, sessions and device approval on
    Workers with D1. Then add the optional dashboard and sync for
    independent devices. Add discovery with a separate opt-out and batch
    publication. Test credentials and recovery, device isolation, stale
@@ -455,7 +466,7 @@ CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- versi
   Either derive candidates on the service from the reports of devices with
   contributions on (dropping the device link when queueing), or keep the
   separate request with a delayed, randomized submission and word the
-  disclosure as "not stored with your account". Decide before phase 3.
+  disclosure as "not stored with your account". Decide before phase 4.
 - **Where heavy jobs run.** Full catalogue imports and ZIP inspection are
   unlikely to fit the Free plan's 10 ms CPU per invocation. Choose between
   Workers Paid with all jobs on Cloudflare, and keeping those two jobs in
