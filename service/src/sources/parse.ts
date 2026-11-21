@@ -1,0 +1,44 @@
+import { WowgetError } from "../errors.ts";
+
+export type SourceSpec =
+  | { kind: "github"; raw: string; owner: string; repo: string }
+  | { kind: "wowi"; raw: string; id: string }
+  | { kind: "url"; raw: string; url: string };
+
+const SUPPORTED = 'supported forms are "github:owner/repo", "wowi:<id>" and "url:https://..."';
+
+export function parseSource(raw: string): SourceSpec {
+  const colon = raw.indexOf(":");
+  const kind = colon === -1 ? "" : raw.slice(0, colon);
+  const rest = colon === -1 ? "" : raw.slice(colon + 1);
+
+  if (kind === "github") {
+    const match = /^([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9._-]+)$/.exec(rest);
+    if (!match || match[2] === "." || match[2] === "..") {
+      throw new WowgetError("source", `Invalid GitHub source "${raw}"; expected "github:owner/repo".`);
+    }
+    return { kind: "github", raw, owner: match[1]!, repo: match[2]! };
+  }
+
+  if (kind === "wowi") {
+    if (!/^[1-9][0-9]*$/.test(rest)) {
+      throw new WowgetError("source", `Invalid WoWInterface source "${raw}"; expected "wowi:<id>" with a numeric id.`);
+    }
+    return { kind: "wowi", raw, id: rest };
+  }
+
+  if (kind === "url") {
+    let url: URL;
+    try {
+      url = new URL(rest);
+    } catch {
+      throw new WowgetError("source", `Invalid URL source "${raw}"; expected "url:https://...".`);
+    }
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      throw new WowgetError("source", `Invalid URL source "${raw}"; only http and https URLs are supported.`);
+    }
+    return { kind: "url", raw, url: url.href };
+  }
+
+  throw new WowgetError("source", `Unknown source "${raw}"; ${SUPPORTED}.`);
+}

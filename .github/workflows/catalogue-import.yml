@@ -1,0 +1,82 @@
+name: Catalogue import
+
+# Loads the WoWInterface catalogue into the service's D1 database for /v1/search. Each run
+# compares the download with the projection the last successful run saved as an artifact and
+# writes only the changes.
+on:
+  schedule:
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: catalogue-import
+  cancel-in-progress: false
+
+jobs:
+  # Secrets cannot be read in a job-level `if`, so this job tells the next one whether the
+  # Cloudflare token exists; without it (forks, before the service is set up) the import is skipped.
+  enabled:
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - id: check
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: echo "enabled=${{ env.CLOUDFLARE_API_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+
+  import:
+    needs: enabled
+    if: needs.enabled.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Reads the previous run's projection artifact.
+      actions: read
+    defaults:
+      run:
+        working-directory: service
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: service/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: pnpm
+          cache-dependency-path: service/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Fetch the previous projection
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # A successful run whose import job was skipped has no artifact, so look further back. The
+        # import script checks the projection against the live entry count before trusting it.
+        run: |
+          for run_id in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow catalogue-import.yml --status success \
+            --limit 20 --json databaseId --jq '.[].databaseId'); do
+            if gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name catalogue-projection --dir "$RUNNER_TEMP/previous"; then
+              echo "Using the projection from run $run_id."
+              exit 0
+            fi
+          done
+          echo "No previous projection; importing the whole catalogue."
+      - name: Import
+        run: |
+          args=(--remote --out "$RUNNER_TEMP/projection.json")
+          if [ -f "$RUNNER_TEMP/previous/projection.json" ]; then
+            args+=(--previous "$RUNNER_TEMP/previous/projection.json")
+          fi
+          node scripts/import-catalogue.ts "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: catalogue-projection
+          path: ${{ runner.temp }}/projection.json
+          retention-days: 30

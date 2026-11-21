@@ -1,0 +1,46 @@
+[
+  {
+    "tag_name": "v11.3.0-beta",
+    "html_url": "https://github.com/Questie/Questie/releases/tag/v11.3.0-beta",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-10-30T12:00:00Z",
+    "assets": [
+      { "name": "Questie-v11.3.0-beta.zip", "browser_download_url": "https://github.com/Questie/Questie/releases/download/v11.3.0-beta/Questie-v11.3.0-beta.zip" },
+      { "name": "release.json", "browser_download_url": "https://github.com/Questie/Questie/releases/download/v11.3.0-beta/release.json" }
+    ]
+  },
+  {
+    "tag_name": "v11.2.1",
+    "html_url": "https://github.com/Questie/Questie/releases/tag/v11.2.1",
+    "draft": true,
+    "prerelease": false,
+    "published_at": null,
+    "assets": []
+  },
+  {
+    "tag_name": "v11.2.0",
+    "html_url": "https://github.com/Questie/Questie/releases/tag/v11.2.0",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-10-20T12:00:00Z",
+    "assets": [
+      { "name": "Questie-v11.2.0-nolib.zip", "browser_download_url": "https://github.com/Questie/Questie/releases/download/v11.2.0/Questie-v11.2.0-nolib.zip" },
+      { "name": "Questie-v11.2.0.zip", "browser_download_url": "https://github.com/Questie/Questie/releases/download/v11.2.0/Questie-v11.2.0.zip" },
+      { "name": "Questie-v11.2.0-classic.zip", "browser_download_url": "https://github.com/Questie/Questie/releases/download/v11.2.0/Questie-v11.2.0-classic.zip" },
+      { "name": "release.json", "browser_download_url": "https://github.com/Questie/Questie/releases/download/v11.2.0/release.json" }
+    ]
+  },
+  {
+    "tag_name": "v11.1.0",
+    "html_url": "https://github.com/Questie/Questie/releases/tag/v11.1.0",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-10-01T12:00:00Z",
+    "assets": [
+      { "name": "Questie-v11.1.0-classic.zip", "browser_download_url": "https://github.com/Questie/Questie/releases/download/v11.1.0/Questie-v11.1.0-classic.zip" },
+      { "name": "Questie-v11.1.0-camelot.zip", "browser_download_url": "https://github.com/Questie/Questie/releases/download/v11.1.0/Questie-v11.1.0-camelot.zip" },
+      { "name": "Questie-v11.1.0-wrath.zip", "browser_download_url": "https://github.com/Questie/Questie/releases/download/v11.1.0/Questie-v11.1.0-wrath.zip" }
+    ]
+  }
+]

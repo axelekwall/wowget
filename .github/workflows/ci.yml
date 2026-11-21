@@ -3,9 +3,22 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore: ["docs/**", "**/*.md", "LICENSE"]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
+      # The service has its own workflows.
+      - "service/**"
+      - ".github/workflows/service-ci.yml"
+      - ".github/workflows/catalogue-import.yml"
   pull_request:
-    paths-ignore: ["docs/**", "**/*.md", "LICENSE"]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
+      - "service/**"
+      - ".github/workflows/service-ci.yml"
+      - ".github/workflows/catalogue-import.yml"
 
 permissions:
   contents: read

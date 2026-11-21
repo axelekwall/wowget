@@ -1,0 +1,44 @@
+name: Service CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "service/**"
+      # The service builds its /v1/registry response from this file and fails on an invalid one.
+      - "registry/addons.toml"
+      - ".github/workflows/service-ci.yml"
+  pull_request:
+    paths:
+      - "service/**"
+      - "registry/addons.toml"
+      - ".github/workflows/service-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: service-ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: service
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: service/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: pnpm
+          cache-dependency-path: service/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm test

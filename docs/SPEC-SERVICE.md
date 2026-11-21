@@ -63,6 +63,60 @@ is more practical to run there. Host ongoing jobs on Cloudflare in either
 case. [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
 and [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/).
 
+## Stack
+
+- Node 26 and pnpm in `service/`, a pnpm project of its own. The Bun client and `scripts/`
+  stay on Bun; the root `bun test` only scans `test/`.
+- Hono for routing, Valibot for request validation, Wrangler to build, run locally and
+  deploy. D1 schema changes are Wrangler migrations in `service/migrations/`.
+- Tests are Vitest inside the Workers runtime through `@cloudflare/vitest-plugin` (the
+  renamed `@cloudflare/vitest-pool-workers`), against local D1 with the migrations applied.
+  The source code takes an injected `fetch`, so tests never reach the network.
+- `/v1/registry` is generated at build time: `scripts/build-registry.ts` validates
+  `registry/addons.toml` strictly (with `smol-toml`) and writes a module the Worker imports.
+- Catalogue search uses an FTS5 table with the trigram tokenizer over a normalised
+  name-and-folders column, so `LIKE '%word%'` uses the index for words of three or more
+  characters. Ranking runs in the Worker on the matching rows.
+- `service-ci.yml` runs typecheck and tests. There is no deploy workflow yet.
+
+### Deviations in phases 0 to 2
+
+- **Registry `version`** is the first 16 hex digits of a SHA-256 of the registry content,
+  not an increasing integer, and `updatedAt` is `null`. A counter needs stored state, which
+  arrives with the D1 registry in phase 3. The `ETag` is the same hash.
+- **`/v1/version`** reads its body from a one-row D1 table (`app_version`), since the admin
+  API that writes it is phase 3. Until a row exists it answers `404 not_found`.
+- **Resolve results** also carry `defaultName` (the WoWInterface name `add` uses when none is
+  given) and `note` (why an older release was chosen), both `null` when absent. Item error
+  codes are `bad_request`, `source`, `flavor`, `upstream` and `internal`.
+- **Search rows** also carry `stars` and `url`, as the client's JSON output does. `downloads`
+  is WoWInterface's monthly count.
+- **Release cache**: one D1 row per (source, prerelease, pin) holds every upstream response
+  that key needed (release pages, `release.json` files, file details), each with its ETag or
+  Last-Modified and fetch time. Release lists are trimmed to the fields resolution reads
+  before they are stored. GitHub topic search uses the same table, keyed by the lower-cased
+  query.
+- **Search candidates** are bounded: exact, prefix and substring catalogue matches are read
+  separately, each capped at the 500 most downloaded. Ranking (tier, then popularity) gives
+  the same results unless more than 500 rows of one kind outrank a row. Every query word and
+  the flavor filter apply before the cap: each catalogue row stores the flavors its patch
+  numbers name as a bitmask column (`flavors`, computed at import), and a filter without
+  Forever adds `flavors & mask != 0`. Catalogue rows are unknown for Forever, so a filter that
+  includes it keeps every row. Queries are limited to 16 distinct words, and LIKE patterns over
+  D1's 50-byte limit use `substr` and `instr` instead. Words shorter than three characters
+  cannot use the trigram index, so such queries scan the index table.
+  `github=1` searches also pass a second limiter, 10 per IP hash per 60 seconds, so one address
+  cannot use up the token's 30 searches a minute.
+- **Pins** with `.` or `..` path segments are `bad_request`, since the pin becomes part of a
+  GitHub API path requested with the service token.
+- **Catalogue import** compares the download with the previous successful run's projection
+  (a workflow artifact) instead of reading the live catalogue. When the artifact is missing or
+  its entry count differs from D1, the import replaces the whole catalogue. A download with
+  fewer than half the live entries is refused. `wrangler d1 execute` offers no `batch()`, so the
+  staged rows are applied by a single `UPDATE` of the import's status whose trigger moves them
+  into the catalogue; one statement is atomic in SQLite. An import still staging when the next
+  one starts is marked abandoned and its rows are deleted.
+
 ## API
 
 All endpoints are under `/v1`, take and return JSON (`application/json`,
