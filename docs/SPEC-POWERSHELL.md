@@ -495,19 +495,40 @@ not on this machine; exit codes 0, 1 and 2.
    directory on each platform).
    1. For each cached release of the addon, list the addon folders its zip
       produces, with the installer's normalisation.
-   2. Take the cached release whose folders all exist on the target without a
-      marker. With several, take the one with the most folders, then the
-      newest zip. Write markers with that release id (the cache directory's
-      name), the zip's SHA-256 and its folder list, so the install is exact
-      and needs no reinstall. Set `previous` to the next newest other cached
-      release, so `rollback` keeps working.
-   3. With no matching cached release (the cache was cleaned, or the folders
-      differ), fall back to the folders a registry entry or a resolve of the
-      source names, and write markers with `releaseId: "unknown"`. `outdated`
-      reports such addons as `outdated`, and the next `update` reinstalls them
-      and writes a real marker. Folders an older release used and the current
-      one does not are not found this way; step 4 shows them.
-   4. A folder two addons would claim is left without a marker and reported.
+   2. **Identify the installed archive by content, per target.** A candidate
+      matches when its folders all exist on the target without a marker and
+      every file the zip extracts into them exists on disk with the same
+      SHA-256. Releases of one addon usually produce the same folder set, so
+      folder names alone cannot tell the active release from the previous
+      one; file contents can, since WoW writes saved variables to `WTF/`, not
+      into addon folders. Each target is checked on its own, because targets
+      of different flavors can have different releases installed. Exactly one
+      matching candidate is adopted. None, or more than one with identical
+      files, goes to step 4.
+   3. **Recover the release id.** The Bun client's cache directory name is
+      the release id with `/`, `\`, `:` and NUL replaced by `_`, so it is not
+      always the id itself.
+      - `url:` sources: the release id is the zip's SHA-256, computed.
+      - `github:` and `wowi:` sources: resolve the source with
+        `pin` set to the directory name, and with the manifest's `pin` when
+        the addon has one. A result whose download has the cached zip's
+        filename and checksum gives the release id.
+      - Otherwise (no match, or the service unreachable) the marker gets
+        `releaseId: "unknown"`, with the identified folders and SHA-256, so
+        only the version label is missing and the next `update` writes a real
+        marker.
+
+      Write markers with the folder list and the zip's SHA-256. Set
+      `previous` to another cached release of the addon when one exists, with
+      its release id recovered the same way, so `rollback` keeps working.
+   4. With no identified archive (the cache was cleaned, files were changed
+      by hand, or two cached zips are identical), fall back to the folders a
+      registry entry or a resolve of the source names, and write markers with
+      `releaseId: "unknown"`. `outdated` reports such addons as `outdated`,
+      and the next `update` reinstalls them and writes a real marker. Folders
+      an older release used and the current one does not are not found this
+      way; step 5 shows them.
+   5. A folder two addons would claim is left without a marker and reported.
    Pins are kept, since they live in the manifest.
 3. Rollback history beyond the cached `previous` zip is lost, because it lived
    in `state.db`.
