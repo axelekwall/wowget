@@ -95,10 +95,12 @@ describe("POST /v1/resolve", () => {
         { source: "github:Questie/Questie", flavor: "forever" },
         { source: "github:Nobody/Nothing", flavor: "forever" },
         { source: "github:Questie/Questie", flavor: "forever", pin: "" },
+        { source: "github:Questie/Questie", flavor: "forever", pin: "../../../../users/x" },
       ],
     });
     const { results } = (await res.json()) as { results: { ok: boolean; error?: { code: string; message: string } }[] };
-    expect(results.map((r) => r.error?.code)).toEqual(["upstream", "source", "bad_request"]);
+    expect(results.map((r) => r.error?.code)).toEqual(["upstream", "source", "bad_request", "bad_request"]);
+    expect(fake.requests.some((r) => r.url.includes("users"))).toBe(false);
     expect(results[1]!.error!.message).toContain("Nobody/Nothing was not found");
   });
 
@@ -148,6 +150,12 @@ describe("GET /v1/search", () => {
     const body = (await res.json()) as { rows: { name: string; origin: string }[]; warnings: string[] };
     expect(body.rows[0]).toMatchObject({ name: "Questie", origin: "registry" });
     expect(body.warnings).toEqual([]);
+
+    const limiter = { limit: async () => ({ success: false }) };
+    const githubLimited = await app.request("/v1/search?q=bags&github=1", {}, { ...env, GITHUB_SEARCH_LIMITER: limiter });
+    expect(githubLimited.status).toBe(429);
+    const withoutGithub = await app.request("/v1/search?q=bags", {}, { ...env, GITHUB_SEARCH_LIMITER: limiter });
+    expect(withoutGithub.status).toBe(200);
 
     for (const query of ["", "?q=%20", "?q=x&flavors=titan", "?q=x&limit=51", "?q=x&limit=0", "?q=x&github=2"]) {
       const bad = await get(query);

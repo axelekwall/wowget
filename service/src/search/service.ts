@@ -11,6 +11,7 @@ import { catalogRow, type CatalogEntry } from "./wowi-catalog.ts";
 export const GITHUB_SEARCH_MAX_AGE_MS = 60 * 60 * 1000;
 /** More words than this only narrow the database lookup further; ranking still checks them all. */
 const MAX_SQL_WORDS = 8;
+const MAX_CANDIDATES = 500;
 
 export interface SearchResponseRow {
   name: string;
@@ -72,19 +73,41 @@ function toEntry(row: CatalogueRow): CatalogEntry {
 /**
  * Catalogue entries whose name or folders contain every query word, the widest set any match
  * tier accepts. The trigram index answers LIKE for words of three or more characters.
+ *
+ * A short or common query matches thousands of rows, so exact, prefix and substring matches are
+ * fetched separately, each capped to the most downloaded. Ranking sorts by tier, then
+ * popularity, so a cap only drops rows that would rank below MAX_CANDIDATES more popular ones
+ * of the same kind.
  */
 export async function catalogueCandidates(db: D1Database, query: string): Promise<CatalogEntry[]> {
   const words = [...new Set(queryWords(query))].slice(0, MAX_SQL_WORDS);
-  if (words.length === 0) return [];
+  const q = normaliseName(query);
+  if (words.length === 0 || !q) return [];
   const where = words.map(() => "search_text LIKE ?").join(" AND ");
-  const { results } = await db
-    .prepare(
-      `SELECT id, name, author, version, updated_at, downloads_monthly, versions, folders, url FROM catalogue
-       WHERE id IN (SELECT rowid FROM catalogue_fts WHERE ${where})`,
-    )
-    .bind(...words.map((w) => `%${w}%`))
-    .all<CatalogueRow>();
-  return results.map(toEntry);
+  const columns = "id, name, author, version, updated_at, downloads_monthly, versions, folders, url";
+  const select = (condition: string, ...params: string[]) =>
+    db
+      .prepare(
+        `SELECT ${columns} FROM catalogue WHERE id IN (SELECT rowid FROM catalogue_fts WHERE ${condition})
+         ORDER BY downloads_monthly DESC LIMIT ${MAX_CANDIDATES}`,
+      )
+      .bind(...params);
+  // search_text separates the name and each folder with a space, so a field boundary is the
+  // start, the end or a space.
+  const results = await db.batch<CatalogueRow>([
+    select(
+      "search_text = ? OR search_text LIKE ? OR search_text LIKE ? OR search_text LIKE ?",
+      q,
+      `${q} %`,
+      `% ${q}`,
+      `% ${q} %`,
+    ),
+    select("search_text LIKE ? OR search_text LIKE ?", `${q}%`, `% ${q}%`),
+    select(where, ...words.map((w) => `%${w}%`)),
+  ]);
+  const byId = new Map<number, CatalogueRow>();
+  for (const row of results.flatMap((r) => r.results)) if (!byId.has(row.id)) byId.set(row.id, row);
+  return [...byId.values()].map(toEntry);
 }
 
 async function githubRows(deps: SearchDeps, query: string): Promise<SearchRow[]> {

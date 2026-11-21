@@ -100,6 +100,10 @@ function prepare(raw: unknown, index: number): Job | ItemError {
   }
   const { source: raw_source, flavor, prerelease, pin } = parsed.output;
   if (!isFlavor(flavor)) return { code: "bad_request", message: `Unknown flavor "${flavor}".` };
+  // The pin becomes part of a GitHub API path; dot segments would reach other endpoints with the service token.
+  if (pin?.split("/").some((s) => s === "." || s === "..")) {
+    return { code: "bad_request", message: `Invalid pin "${pin}".` };
+  }
   let source: Source;
   try {
     const spec = parseSource(raw_source);

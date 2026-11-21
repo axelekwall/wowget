@@ -7,11 +7,18 @@ export interface CatalogueDiff {
   removed: string[];
 }
 
+/** The first entry for each id, since the id is the catalogue table's key. */
+export function uniqueById(entries: CatalogEntry[]): CatalogEntry[] {
+  const seen = new Set<string>();
+  return entries.filter((e) => !seen.has(e.id) && seen.add(e.id));
+}
+
 /**
  * What changed between two projections. Without a previous projection every entry is staged
  * and the import replaces the whole catalogue.
  */
-export function diffCatalogue(previous: CatalogEntry[] | undefined, next: CatalogEntry[]): CatalogueDiff {
+export function diffCatalogue(previous: CatalogEntry[] | undefined, nextList: CatalogEntry[]): CatalogueDiff {
+  const next = uniqueById(nextList);
   if (!previous) return { full: true, changed: next, removed: [] };
   const before = new Map(previous.map((e) => [e.id, JSON.stringify(e)]));
   const nextIds = new Set(next.map((e) => e.id));

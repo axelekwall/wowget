@@ -1,4 +1,4 @@
-import { Hono, type MiddlewareHandler } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import * as v from "valibot";
 import { apiError } from "./api-error.ts";
 import type { Env } from "./env.ts";
@@ -21,14 +21,18 @@ export interface AppOptions {
   now?: () => number;
 }
 
+async function allowed(c: Context<{ Bindings: Env }>, limiter: RateLimit): Promise<boolean> {
+  const ip = c.req.header("cf-connecting-ip") ?? "unknown";
+  const key = await ipHash(ip, c.env.IP_HASH_SALT);
+  return (await limiter.limit({ key })).success;
+}
+
+const tooMany = (c: Context<{ Bindings: Env }>) =>
+  apiError(c, 429, "rate_limited", "Too many requests; try again in a minute.", { "Retry-After": "60" });
+
 function limited(binding: (env: Env) => RateLimit): MiddlewareHandler<{ Bindings: Env }> {
   return async (c, next) => {
-    const ip = c.req.header("cf-connecting-ip") ?? "unknown";
-    const key = await ipHash(ip, c.env.IP_HASH_SALT);
-    const { success } = await binding(c.env).limit({ key });
-    if (!success) {
-      return apiError(c, 429, "rate_limited", "Too many requests; try again in a minute.", { "Retry-After": "60" });
-    }
+    if (!(await allowed(c, binding(c.env)))) return tooMany(c);
     await next();
   };
 }
@@ -106,6 +110,7 @@ export function createApp(options: AppOptions = {}) {
 
       const githubParam = c.req.query("github") ?? "0";
       if (githubParam !== "0" && githubParam !== "1") return apiError(c, 400, "bad_request", "github must be 0 or 1.");
+      if (githubParam === "1" && !(await allowed(c, c.env.GITHUB_SEARCH_LIMITER))) return tooMany(c);
 
       const limitParam = c.req.query("limit");
       const limit = limitParam === undefined ? SEARCH_DEFAULT_LIMIT : Number(limitParam);

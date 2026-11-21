@@ -32,7 +32,7 @@ export async function saveBundles(db: D1Database, bundles: [string, CacheBundle]
   for (const [key, bundle] of bundles) {
     const kept = Object.fromEntries(Object.entries(bundle).filter(([, e]) => now - e.fetchedAt < ENTRY_RETENTION_MS));
     const body = JSON.stringify(kept);
-    if (body.length > MAX_BUNDLE_BYTES) continue;
+    if (new TextEncoder().encode(body).length > MAX_BUNDLE_BYTES) continue;
     statements.push(
       db
         .prepare(

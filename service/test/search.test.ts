@@ -180,6 +180,13 @@ describe("catalogue import", () => {
     expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM catalogue").first<{ n: number }>())?.n).toBe(3);
   });
 
+  test("a repeated id keeps its first entry", async () => {
+    const twice = [...FILELIST, { ...FILELIST[1], UIName: "Foo Bars again" }];
+    expect(diffCatalogue(undefined, projectCatalog(twice)).changed.map((e) => e.name)).toEqual(["Foo", "Foo Bars", "Questie mirror"]);
+    await importCatalogue(twice);
+    expect((await env.DB.prepare("SELECT name FROM catalogue WHERE id = 7").first<{ name: string }>())?.name).toBe("Foo Bars");
+  });
+
   test("SQL literals escape quotes and drop NUL", () => {
     expect(sqlValue("it's")).toBe("'it''s'");
     expect(sqlValue("a\0b")).toBe("'ab'");
@@ -220,6 +227,18 @@ describe("search over the registry and the catalogue", () => {
     expect((await catalogueCandidates(env.DB, "bars")).map((e) => e.id)).toEqual(["7"]);
     expect((await catalogueCandidates(env.DB, "fo")).map((e) => e.id).sort()).toEqual(["42", "7"]);
     expect((await catalogueCandidates(env.DB, "foo options")).map((e) => e.id)).toEqual(["42"]);
+  });
+
+  test("a query matching many rows keeps the exact match and the most downloaded", async () => {
+    const many = Array.from({ length: 600 }, (_, i) => ({ UID: String(1000 + i), UIName: `Xyz helper ${i}`, UIDownloadMonthly: String(i + 10) }));
+    await importCatalogue([...many, { UID: "5", UIName: "Xyz", UIDownloadMonthly: "1" }]);
+    const ids = (await catalogueCandidates(env.DB, "xyz")).map((e) => e.id);
+    expect(ids).toHaveLength(501);
+    expect(ids).toContain("5");
+    expect(ids).toContain("1599");
+    expect(ids).not.toContain("1000");
+    const top = await search(deps(), { query: "xyz", github: false, limit: 2 });
+    expect(top.rows.map((r) => r.name)).toEqual(["Xyz", "Xyz helper 599"]);
   });
 
   test("GitHub rows are cached for an hour and a failure is a warning", async () => {

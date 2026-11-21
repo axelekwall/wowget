@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { CATALOG_URL, projectCatalog, type CatalogEntry } from "../src/search/wowi-catalog.ts";
-import { applySql, diffCatalogue, stagingSql } from "./lib/catalogue-sql.ts";
+import { applySql, diffCatalogue, stagingSql, uniqueById } from "./lib/catalogue-sql.ts";
 
 const root = join(import.meta.dirname, "..");
 const { values } = parseArgs({
@@ -74,7 +74,7 @@ async function download(): Promise<unknown> {
 }
 
 const started = performance.now();
-const entries = projectCatalog(await download());
+const entries = uniqueById(projectCatalog(await download()));
 console.log(`Projected ${entries.length} catalogue entries.`);
 
 const live = query<{ n: number }>("SELECT COUNT(*) AS n FROM catalogue")[0]?.n ?? 0;
