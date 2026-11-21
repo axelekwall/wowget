@@ -123,6 +123,14 @@ function Invoke-WowgetResolve {
     return $results
 }
 
+# A source for comparing registry and manifest entries: GitHub owner and repo are case-insensitive.
+function Get-WowgetSourceKey {
+    param([Parameter(Mandatory)][string]$Source)
+    try { $spec = ConvertFrom-WowgetSource $Source } catch { return $Source }
+    if ($spec.Kind -eq 'github') { return "github:$($spec.Owner)/$($spec.Repo)".ToLowerInvariant() }
+    return $spec.Raw
+}
+
 function ConvertTo-WowgetNormalisedName {
     param([AllowEmptyString()][string]$Text)
     return ($Text.ToLowerInvariant() -replace '[^\p{L}\p{N}]+', '')
@@ -145,8 +153,12 @@ function ConvertFrom-WowgetRegistryDoc {
     return [pscustomobject]@{ Version = $Doc['version']; Entries = @($entries) }
 }
 
-# The registry snapshot shipped in the release zip, the offline fallback.
+# The registry snapshot shipped in the release zip, the offline fallback. Tests point
+# $script:WowgetRegistrySnapshot at their own file.
+$script:WowgetRegistrySnapshot = $null
+
 function Get-WowgetRegistrySnapshotPath {
+    if ($script:WowgetRegistrySnapshot) { return $script:WowgetRegistrySnapshot }
     return [System.IO.Path]::Combine((Split-Path -Parent $script:WowgetModuleRoot), 'registry.json')
 }
 

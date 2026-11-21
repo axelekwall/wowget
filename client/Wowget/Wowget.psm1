@@ -8,7 +8,7 @@ $script:WowgetModuleRoot = $PSScriptRoot
 $script:WowgetVersion = '0.0.0-dev'
 
 # Order matters: classes and helpers come before the files that use them.
-foreach ($file in @('Errors', 'Fs', 'Paths', 'Flavor', 'Zip', 'Manifest', 'Markers', 'Http', 'Api', 'UrlSource', 'Installer', 'Ops', 'Cli')) {
+foreach ($file in @('Errors', 'Fs', 'Paths', 'Flavor', 'Zip', 'Manifest', 'TomlImport', 'Markers', 'Http', 'Api', 'UrlSource', 'Installer', 'Ops', 'Search', 'Reconcile', 'Doctor', 'Migrate', 'SelfUpdate', 'Cli')) {
     . ([System.IO.Path]::Combine($PSScriptRoot, "$file.ps1"))
 }
 

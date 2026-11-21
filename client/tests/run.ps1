@@ -13,10 +13,24 @@ if ($Lint) {
     Import-Module PSScriptAnalyzer
     $settings = [System.IO.Path]::Combine($client, 'PSScriptAnalyzerSettings.psd1')
     $testSettings = [System.IO.Path]::Combine($PSScriptRoot, 'PSScriptAnalyzerSettings.psd1')
+    # PSScriptAnalyzer 1.25 now and then throws a NullReferenceException from inside the analyzer on
+    # code it accepts on the next run, so a crash (not a finding) is retried once.
+    $analyze = {
+        param([hashtable]$Arguments)
+        try { Invoke-ScriptAnalyzer @Arguments }
+        catch {
+            $crash = $_.Exception -is [System.NullReferenceException] -or $_.Exception.InnerException -is [System.NullReferenceException]
+            if (-not $crash) { throw }
+            Write-Warning "PSScriptAnalyzer crashed ($($_.Exception.Message)); running it once more."
+            Invoke-ScriptAnalyzer @Arguments
+        }
+    }
     $findings = @(
-        Invoke-ScriptAnalyzer -Path ([System.IO.Path]::Combine($client, 'Wowget')) -Recurse -Settings $settings
-        Invoke-ScriptAnalyzer -Path ([System.IO.Path]::Combine($client, 'wowget.ps1')) -Settings $settings
-        Invoke-ScriptAnalyzer -Path $PSScriptRoot -Recurse -Settings $testSettings
+        & $analyze @{ Path = [System.IO.Path]::Combine($client, 'Wowget'); Recurse = $true; Settings = $settings }
+        foreach ($script in 'wowget.ps1', 'build-release.ps1', 'install.ps1') {
+            & $analyze @{ Path = [System.IO.Path]::Combine($client, $script); Settings = $settings }
+        }
+        & $analyze @{ Path = $PSScriptRoot; Recurse = $true; Settings = $testSettings }
     )
     $findings | Format-Table -AutoSize RuleName, Severity, ScriptName, Line, Message | Out-String -Width 200
     "PSScriptAnalyzer: $($findings.Count) finding(s)"

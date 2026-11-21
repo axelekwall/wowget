@@ -1,3 +1,5 @@
 * text=auto eol=lf
 # Real-world TOC fixtures keep their CRLF line endings byte for byte.
 test/fixtures/*.toc -text
+# toml-test cases keep their line endings and bytes.
+client/tests/toml-test/** -text
