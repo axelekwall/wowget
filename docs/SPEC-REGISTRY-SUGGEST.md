@@ -1,5 +1,9 @@
 # Registry suggestions
 
+> To be replaced. Suggestions move to the wowget service's queue and admin
+> interface in service phase 3 (see [SPEC-SERVICE.md](SPEC-SERVICE.md)). Until
+> then this flow stays in use, by the PowerShell client too.
+
 Extends SPEC-SEARCH.md. Scope: a way for users to propose the addons they use
 for the registry without a GitHub token, git or a fork.
 
