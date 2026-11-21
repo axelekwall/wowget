@@ -253,10 +253,16 @@ Rules carried over from the Bun client:
 | Thing | Windows | macOS | Linux | Override |
 |---|---|---|---|---|
 | Manifest | `%APPDATA%\wowget\wowget.json` | `~/.config/wowget/wowget.json` | `$XDG_CONFIG_HOME/wowget/wowget.json` | `--manifest`, `WOWGET_MANIFEST` |
-| Machine state (device sync metadata, operation receipts, lock file) | `%LOCALAPPDATA%\wowget\state\` | `~/Library/Application Support/wowget/` | `$XDG_STATE_HOME/wowget/` | `WOWGET_STATE_DIR` |
+| Machine state (device sync metadata, target ID map, contribution setting, operation receipts, lock file) | `%LOCALAPPDATA%\wowget\state\` | `~/Library/Application Support/wowget/` | `$XDG_STATE_HOME/wowget/` | `WOWGET_STATE_DIR` |
 | Cache | `%LOCALAPPDATA%\wowget\cache\` | `~/Library/Caches/wowget/` | `$XDG_CACHE_HOME/wowget/` | `WOWGET_CACHE_DIR` |
 | Game directory | as SPEC-TARGETS-WINDOWS.md | | | `WOWGET_GAME_DIR`, `--game-dir` |
 | Service | `https://api.wowget.dev` (placeholder until the domain is chosen) | | | `WOWGET_API_URL` |
+
+The machine state directory holds `sync.json` (enrollment, the map from
+manifest target names to opaque device-local target IDs, the last report
+revision) and `contributions.json` (the catalogue contribution setting,
+including an opt-out saved by the installer before enrollment). Neither holds
+the device credential; see "Data sent by sync".
 
 `GITHUB_TOKEN` and `WOWGET_REGISTRY_URL` are no longer read: the service
 talks to GitHub with its own token, and `WOWGET_API_URL` replaces the
@@ -308,6 +314,7 @@ There is no database. `state.db` from the Bun client is not read.
   line endings, a final newline. After writing, the file is read back and must
   equal what was meant; otherwise the previous file is restored and the write
   fails, as today.
+
 ### TOML import
 
 The first command converts a TOML manifest when either:
@@ -467,9 +474,9 @@ client's, except:
 | `logout` | Revoke this device credential and clear local sync state. |
 | `migrate` | New. Runs the TOML import and the marker adoption below on request. Also runs by itself on first start. |
 
-
-Running `wowget` without arguments prints command help. `--json` keeps the result shapes. Fields that came from state rows come from
-markers now; `installedAt` keeps its meaning.
+Running `wowget` without arguments prints command help. `--json` keeps the
+result shapes. Fields that came from state rows come from markers now;
+`installedAt` keeps its meaning.
 
 Kept unchanged, though not repeated above: global `--manifest`, `--json`,
 `--force`, `--verbose`; repeatable `--target`/`-t` on the commands that take
@@ -523,6 +530,12 @@ inventory or sync implicitly.
   and the chosen device label before approval. Enrollment stores a revocable,
   device-scoped credential without uploading the inventory. The first
   explicit sync sends the initial report.
+- Web add and remove operations edit the manifest this device uses. When that
+  manifest is shared with other machines (a symlink into a dotfiles
+  repository, or `WOWGET_MANIFEST` pointing outside the default location),
+  those edits reach the other machines once the shared file is committed or
+  synced. `wowget login` detects both cases and says so before approval, and
+  `wowget sync` repeats it in its summary when it changed a shared manifest.
 - `wowget sync` fetches pending operations for the enrolled device, takes the
   existing write lock while inspecting and changing local state, and applies
   operations through the same command logic as a local add, remove or
@@ -612,9 +625,17 @@ credential or device fields. If the setting cannot be read, skip the
 contribution. Changing it never affects the ability to sync.
 `wowget suggest` remains an explicit account-free alternative.
 
-Store device credentials outside the manifest with OS credential storage
-where available, or a current-user-only file (Unix mode 0600, current-user
-ACL on Windows). Keep tokens out of URLs, logs, and command output.
+Store the device credential outside the manifest, with built-in storage only
+(no `Add-Type` with C# source):
+
+- Windows: `ConvertFrom-SecureString` without a key, which encrypts with DPAPI
+  for the current user, written to `<state>/credential` with a current-user
+  ACL.
+- macOS: the Keychain through the built-in `security add-generic-password`
+  and `find-generic-password` commands, with service name `wowget`.
+- Linux: `<state>/credential` with mode 0600.
+
+Keep tokens out of URLs, logs, and command output.
 
 ## Tests and CI
 

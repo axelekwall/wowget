@@ -1,5 +1,8 @@
 # Registry suggestions
 
+> Replaced. Suggestions go to the wowget service's queue and admin interface;
+> see [SPEC-SERVICE.md](SPEC-SERVICE.md). Kept as a record of the Bun client.
+
 Extends SPEC-SEARCH.md. Scope: a way for users to propose the addons they use
 for the registry without a GitHub token, git or a fork.
 

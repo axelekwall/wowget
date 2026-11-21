@@ -29,8 +29,10 @@ manages the registry and suggestion queue. The reasons are in PLAN.md,
   with Wrangler.
 - **D1** (SQLite) for the registry, suggestions, search index and release
   cache. The optional dashboard also uses D1 for accounts, credentials,
-  devices, last reports and pending operations. Publish and acknowledge
-  changes with conditional writes and transactions.
+  devices, last reports and pending operations. D1 has no interactive
+  transactions: claim and acknowledge with conditional statements
+  (`UPDATE … WHERE status = 'pending' … RETURNING`), and make multi-statement
+  changes atomic with `batch()`.
 - **Rate limits**:
   - **Short windows** (bursts per IP hash): the Workers Rate Limiting
     binding. It supports 10- and 60-second periods and counts per
@@ -280,8 +282,9 @@ to run its normal update for that addon. Devices and targets are individually
 addressable. A shared cross-device profile is outside the first version.
 
 - Fetch pending operations and submit a report and acknowledgements
-  through authenticated device endpoints. Use an atomic claim so a
-  cancellation applies only before execution starts. An interrupted client
+  through authenticated device endpoints. Claim operations with one
+  conditional `UPDATE … RETURNING`, so a cancellation applies only before
+  execution starts. An interrupted client
   can resume its claimed operations. Include stable operation IDs and
   target and addon preconditions from the report on which the web edit
   was based. Use conditional report revisions so a stale retry cannot
@@ -342,7 +345,7 @@ CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- versi
 - **WoWInterface catalogue**: a scheduled Worker downloads and projects the
   catalogue fields listed in SPEC-SEARCH.md. Compare against the live D1
   catalogue and stage only changed rows and removed IDs. Apply the staged
-  changes in one D1 transaction after the entire import succeeds. Unchanged
+  changes in one D1 `batch()` after the entire import succeeds. Unchanged
   entries remain in place. Failed or incomplete imports leave the last good
   catalogue available. Track in-progress imports in D1 and clean up
   abandoned staging data.
@@ -400,6 +403,10 @@ CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- versi
   | Access service token (client id and secret) | GitHub Actions | release publication calling `/admin/api/version` |
   | Cloudflare API token, Workers and D1 edit | GitHub Actions | deploying the service |
   | Release signing key (ECDSA P-256 private key) | GitHub Actions, release job only | signing release zips |
+  | Better Auth secret | Worker | signing and encrypting dashboard sessions and auth tokens |
+
+  The passkey relying-party ID and allowed origins are Worker configuration,
+  not secrets, and are fixed before the first enrollment.
 - Keeping the service code public adds no attack surface: the public client
   already shows every endpoint, and the defences (rate limits, size caps,
   host allowlists, Access, secrets) do not depend on the code being hidden.
@@ -439,6 +446,24 @@ CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- versi
    publication. Test credentials and recovery, device isolation, stale
    reports and operation replay, and verify that account-free use never
    contributes automatically and that an opted-out device stays opted out.
+
+## Open questions
+
+- **Discovery intake.** The separate `POST /v1/discovery` request arrives
+  from the same IP shortly after the authenticated sync, whose report already
+  holds the same public addon IDs, so the operator could correlate the two.
+  Either derive candidates on the service from the reports of devices with
+  contributions on (dropping the device link when queueing), or keep the
+  separate request with a delayed, randomized submission and word the
+  disclosure as "not stored with your account". Decide before phase 3.
+- **Where heavy jobs run.** Full catalogue imports and ZIP inspection are
+  unlikely to fit the Free plan's 10 ms CPU per invocation. Choose between
+  Workers Paid with all jobs on Cloudflare, and keeping those two jobs in
+  GitHub Actions (free) posting results to the admin API. Decide with the
+  phase 0 benchmark.
+- **Better Auth and email.** Check whether its user schema requires an email
+  before building signup; if it does, choose between a placeholder value and
+  the SimpleWebAuthn alternative above.
 
 ## Not in scope
 

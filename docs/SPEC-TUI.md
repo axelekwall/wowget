@@ -1,5 +1,9 @@
 # Terminal UI
 
+> Retired. The PowerShell client is command-only; see
+> [SPEC-POWERSHELL.md](SPEC-POWERSHELL.md) and PLAN.md, "Decisions (2026-11-20)".
+> Kept as a record of the Bun client.
+
 Extends SPEC-MVP.md, SPEC-TARGETS-WINDOWS.md and SPEC-SEARCH.md. Scope: a
 full-screen terminal UI over the existing core, for users who do not want to
 learn the commands. The CLI stays as it is.
