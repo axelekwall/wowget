@@ -1,0 +1,3 @@
+# bun test only scans test/, so it never picks up the service tests, which run with Vitest.
+[test]
+root = "test"
