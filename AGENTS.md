@@ -26,13 +26,24 @@ bun run build            compile dist/wowget for this machine
 bun run build:release    cross-compile every shipped binary (what CI runs)
 bun run registry:check   check registry/addons.toml against the live sources
 bun scripts/pr-reviews.ts   Codex review status and unresolved review threads (see Pull requests)
+
+cd service, then:
+pnpm install             service dependencies; run it first in every new checkout or worktree
+pnpm test                Vitest in the Workers runtime, with local D1
+pnpm run typecheck       tsc --noEmit over the service, its tests and scripts
+pnpm run dev             wrangler dev on http://localhost:8787
+pnpm run migrate:local   apply migrations/ to the local D1 database
+pnpm run catalogue:import --local   load the WoWInterface catalogue into the local D1
 ```
 
-Bun only, never npm, npx, pnpm, yarn or node. CI pins Bun 1.4.4; use the same version.
+Bun for the current client and `scripts/`, never npm, npx, pnpm, yarn or node there. Node and
+pnpm for `service/`, never Bun there. CI pins Bun 1.4.4, Node 26 and the pnpm version in
+`service/package.json`; use the same versions.
 
 CI (`.github/workflows/ci.yml`) runs typecheck, tests and `build:release` on Linux, the tests on
 Windows, and the cross-compiled Windows binary. It does not run for pull requests that only
-change Markdown, `docs/` or `LICENSE`. `pr-title.yml` lints every PR title.
+change Markdown, `docs/`, `LICENSE` or `service/`. `service-ci.yml` runs the service's typecheck
+and tests when `service/` changes. `pr-title.yml` lints every PR title.
 
 ## Layout
 
@@ -44,6 +55,8 @@ src/tui/       the terminal UI (OpenTUI). Imports only from src/core.
 scripts/       release, registry and maintenance scripts that CI and contributors run
 registry/      addons.toml, the curated registry that search and bare-name add read
 test/          bun tests; helpers/tmp.ts for temp directories, helpers/fetch.ts for a fake fetch
+service/       the Cloudflare Worker (Hono, D1, Wrangler) of docs/SPEC-SERVICE.md; its own pnpm
+               project with src/, test/ (Vitest), migrations/ and scripts/
 ```
 
 ## Rules
@@ -82,7 +95,8 @@ test/          bun tests; helpers/tmp.ts for temp directories, helpers/fetch.ts 
   you.
 - Run `bun install` in a new worktree before anything else. Without its own `node_modules`, a
   worktree inside the repository resolves packages from the main checkout's, which differ
-  whenever the branch changes dependencies.
+  whenever the branch changes dependencies. Work on the service also needs `pnpm install` in
+  `service/`.
 - Worktrees run tests and typecheck in parallel safely: tests use their own temp directories,
   and neither `bun test` nor `tsconfig.json` reaches into `.claude/`.
 - Remove the worktree once its pull request is merged (`git worktree remove <path>`).
