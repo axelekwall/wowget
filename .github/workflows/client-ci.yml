@@ -1,0 +1,62 @@
+name: Client CI
+
+# The PowerShell client. Each job runs the PowerShell release pinned in client/runtime.json, not the
+# one the runner has installed.
+on:
+  push:
+    branches: [main]
+    paths: ["client/**", ".github/workflows/client-ci.yml"]
+  pull_request:
+    paths: ["client/**", ".github/workflows/client-ci.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: client-ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: linux-x64
+            exe: pwsh
+          - os: windows-latest
+            asset: win-x64
+            exe: pwsh.exe
+          - os: macos-latest
+            asset: osx-arm64
+            exe: pwsh
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      PESTER_VERSION: 5.9.1
+      PSSCRIPTANALYZER_VERSION: 1.25.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the pinned PowerShell
+        run: |
+          url=$(jq -r --arg a "${{ matrix.asset }}" '.assets[$a].url' client/runtime.json)
+          sha=$(jq -r --arg a "${{ matrix.asset }}" '.assets[$a].sha256' client/runtime.json)
+          archive="$RUNNER_TEMP/pwsh-archive"
+          curl -fsSL --retry 3 -o "$archive" "$url"
+          echo "$sha  $archive" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/pwsh"
+          if [[ "$url" == *.zip ]]; then unzip -q "$archive" -d "$RUNNER_TEMP/pwsh"; else tar -xzf "$archive" -C "$RUNNER_TEMP/pwsh"; chmod +x "$RUNNER_TEMP/pwsh/pwsh"; fi
+          echo "PWSH=$RUNNER_TEMP/pwsh/${{ matrix.exe }}" >> "$GITHUB_ENV"
+          echo "PSModulePath=$RUNNER_TEMP/modules" >> "$GITHUB_ENV"
+      - name: Install Pester and PSScriptAnalyzer
+        run: |
+          mkdir -p "$RUNNER_TEMP/modules"
+          "$PWSH" -NoLogo -NoProfile -Command "\$PSVersionTable.PSVersion.ToString(); Save-PSResource -Name Pester -Version $PESTER_VERSION -Path '$RUNNER_TEMP/modules' -Repository PSGallery -TrustRepository; Save-PSResource -Name PSScriptAnalyzer -Version $PSSCRIPTANALYZER_VERSION -Path '$RUNNER_TEMP/modules' -Repository PSGallery -TrustRepository"
+      - name: Pester
+        run: '"$PWSH" -NoLogo -NoProfile -File client/tests/run.ps1'
+      - name: PSScriptAnalyzer
+        run: '"$PWSH" -NoLogo -NoProfile -File client/tests/run.ps1 -Lint'
