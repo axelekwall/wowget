@@ -96,6 +96,14 @@ and [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing
   Last-Modified and fetch time. Release lists are trimmed to the fields resolution reads
   before they are stored. GitHub topic search uses the same table, keyed by the lower-cased
   query.
+- **Search candidates** are bounded: exact, prefix and substring catalogue matches are read
+  separately, each capped at the 500 most downloaded. Ranking (tier, then popularity) gives
+  the same results unless more than 500 rows of one kind outrank a row. Words shorter than
+  three characters cannot use the trigram index, so such queries scan the index table.
+  `github=1` searches also pass a second limiter, 10 per IP hash per 60 seconds, so one address
+  cannot use up the token's 30 searches a minute.
+- **Pins** with `.` or `..` path segments are `bad_request`, since the pin becomes part of a
+  GitHub API path requested with the service token.
 - **Catalogue import** compares the download with the previous successful run's projection
   (a workflow artifact) instead of reading the live catalogue. When the artifact is missing or
   its entry count differs from D1, the import replaces the whole catalogue. A download with
