@@ -54,10 +54,13 @@ InModuleScope Wowget {
         }
 
         It 'adopts with the release found by content, a previous release and the recovered ids' {
+            $oldest = New-WgAddonZipBytes @{ Questie = ''; QuestieDB = '' } -Content 'oldest'
             $old = New-WgAddonZipBytes @{ Questie = ''; QuestieDB = '' } -Content 'old'
             $new = New-WgAddonZipBytes @{ Questie = ''; QuestieDB = '' } -Content 'new'
+            Add-WgBunCache $dirs 'Questie' 'v0.9' 'Questie-v0.9.zip' $oldest -AgeMinutes 120 | Out-Null
             Add-WgBunCache $dirs 'Questie' 'v1.0' 'Questie-v1.0.zip' $old -AgeMinutes 60 | Out-Null
             Add-WgBunCache $dirs 'Questie' 'v2.0' 'Questie-v2.0.zip' $new | Out-Null
+            Add-WgPinned 'github:o/questie' 'v0.9' 'v0.9' 'Questie-v0.9.zip' $oldest
             Add-WgPinned 'github:o/questie' 'v1.0' 'v1.0' 'Questie-v1.0.zip' $old
             Add-WgPinned 'github:o/questie' 'v2.0' 'v2.0' 'Questie-v2.0.zip' $new
             Install-WgBunZip $new $paths.era
@@ -69,16 +72,19 @@ InModuleScope Wowget {
             $era = $r.adopted | Where-Object target -EQ 'era'
             $era.how | Should -Be 'cache'
             $era.releaseId | Should -Be 'v2.0'
-            $era.previous | Should -Be 'v1.0'
+            # v1.0 is newer than v0.9 but is retail's installed release, so it is not era's rollback point.
+            $era.previous | Should -Be 'v0.9'
             $era.folders | Should -Be @('Questie', 'QuestieDB')
-            ($r.adopted | Where-Object target -EQ 'retail').releaseId | Should -Be 'v1.0'
+            $retail = $r.adopted | Where-Object target -EQ 'retail'
+            $retail.releaseId | Should -Be 'v1.0'
+            $retail.previous | Should -Be 'v0.9'
 
             $list = Invoke-WowgetList -Options $o
             ($list.addons | Where-Object target -EQ 'era').version | Should -Be '2.0'
             ($list.addons | Where-Object target -EQ 'era').status | Should -Be 'ok'
-            # rollback on era reinstalls v1.0 from the cache.
+            # rollback on era reinstalls v0.9 from the cache.
             $o.Targets = @('era')
-            (Invoke-WowgetRollback -Options $o -Name 'Questie').addons[0].releaseId | Should -Be 'v1.0'
+            (Invoke-WowgetRollback -Options $o -Name 'Questie').addons[0].releaseId | Should -Be 'v0.9'
             [System.IO.File]::Exists((Get-WowgetMigrationRecordPath $o.Env)) | Should -BeTrue
         }
 

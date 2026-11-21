@@ -225,13 +225,10 @@ function Invoke-WowgetAdoption {
             }
             if ($hits.Count -eq 1) {
                 $m = $hits[0]
-                $others = @($releases | Where-Object { $_.Path -ne $m.Release.Path -and $null -ne (& $contentsOf $_) })
-                $previous = $null
-                if ($others.Count) { $previous = [pscustomobject]@{ Entry = $entry; Flavor = $target.Flavor; Release = $others[0]; Sha256 = (& $contentsOf $others[0]).Sha256; ReleaseId = $null; Version = $null } }
                 $targetPlans.Add([pscustomobject]@{
-                        Entry = $entry; Target = $target; How = 'cache'; Folders = $m.Folders
+                        Entry = $entry; Target = $target; How = 'cache'; Folders = $m.Folders; Releases = $releases
                         Current = [pscustomobject]@{ Entry = $entry; Flavor = $target.Flavor; Release = $m.Release; Sha256 = $m.Contents.Sha256; ReleaseId = $null; Version = $null }
-                        Previous = $previous
+                        Previous = $null
                     })
                 continue
             }
@@ -257,7 +254,7 @@ function Invoke-WowgetAdoption {
                 $skipped.Add([pscustomobject][ordered]@{ name = $entry.Name; target = $target.Name; reason = $why })
                 continue
             }
-            $targetPlans.Add([pscustomobject]@{ Entry = $entry; Target = $target; How = 'fallback'; Folders = $folders; Current = $null; Previous = $null })
+            $targetPlans.Add([pscustomobject]@{ Entry = $entry; Target = $target; How = 'fallback'; Folders = $folders; Releases = $releases; Current = $null; Previous = $null })
         }
 
         # A folder two addons would claim stays without a marker.
@@ -282,6 +279,25 @@ function Invoke-WowgetAdoption {
             if ($kept.Count -ne @($plan.Folders).Count -and $plan.How -eq 'cache') { $plan.How = 'fallback'; $plan.Current = $null; $plan.Previous = $null }
             $plan.Folders = $kept
             $plans.Add($plan)
+        }
+    }
+
+    # The rollback point of an install is the newest other cached release of the addon. The cache is
+    # shared by every target, so a zip that is another target's installed release (possibly built
+    # for another flavor) is never chosen.
+    $activeZips = @{}
+    foreach ($plan in $plans) {
+        if (-not $plan.Current) { continue }
+        $key = $plan.Entry.Name.ToLowerInvariant()
+        if (-not $activeZips.ContainsKey($key)) { $activeZips[$key] = [System.Collections.Generic.HashSet[string]]::new() }
+        [void]$activeZips[$key].Add($plan.Current.Release.Path)
+    }
+    foreach ($plan in $plans) {
+        if (-not $plan.Current) { continue }
+        $active = $activeZips[$plan.Entry.Name.ToLowerInvariant()]
+        $other = @($plan.Releases | Where-Object { -not $active.Contains($_.Path) -and $null -ne (& $contentsOf $_) }) | Select-Object -First 1
+        if ($other) {
+            $plan.Previous = [pscustomobject]@{ Entry = $plan.Entry; Flavor = $plan.Target.Flavor; Release = $other; Sha256 = (& $contentsOf $other).Sha256; ReleaseId = $null; Version = $null }
         }
     }
 
